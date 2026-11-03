@@ -205,6 +205,22 @@ pub const Ctx = struct {
         return self.request.body;
     }
 
+    /// Request trailer fields. HTTP/1 chunked requests may populate these;
+    /// adapters without trailer support expose an empty slice.
+    pub fn trailers(self: *const Ctx) []const Header {
+        return self.request.trailers;
+    }
+
+    /// Look up a request trailer by name.
+    pub fn trailer(self: *const Ctx, name: []const u8) ?[]const u8 {
+        for (self.request.trailers) |field| {
+            if (std.ascii.eqlIgnoreCase(field.name, name)) {
+                return field.value;
+            }
+        }
+        return null;
+    }
+
     /// Decode any `Content-Encoding` layers using the request arena.
     ///
     /// The decoded output is bounded by `Limits.max_body_bytes`. An absent or
@@ -522,6 +538,41 @@ test "headerValues iterates duplicate request fields" {
     try std.testing.expectEqualStrings("two", values.next().?);
     try std.testing.expect(values.next() == null);
     try std.testing.expectEqual(@as(usize, 3), context.headers().len);
+}
+
+test "trailers are exposed by name and as a slice" {
+    var trailers = [_]netz.http1.Header{
+        .{ .name = "X-Checksum", .value = "abc" },
+        .{ .name = "X-Trace", .value = "one" },
+    };
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .trailers = &trailers,
+        .consumed = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = Response.init(arena.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectEqual(@as(usize, 2), context.trailers().len);
+    try std.testing.expectEqualStrings("abc", context.trailer("x-checksum").?);
+    try std.testing.expect(context.trailer("missing") == null);
 }
 
 test "typed locals round-trip through the request arena" {
