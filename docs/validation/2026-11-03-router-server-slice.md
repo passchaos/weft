@@ -58,6 +58,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   lowercase response field mapping and graceful GOAWAY.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both
   adapters.
+- Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part
+  count, header count, and header-byte limits.
 
 ## Verification
 
@@ -73,14 +75,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 57/57 tests passed (36 unit, 21 package/integration).
-- ReleaseFast: 57/57 tests passed.
+- Debug: 60/60 tests passed (38 unit, 22 package/integration).
+- ReleaseFast: 60/60 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 91.7 ns/lookup 10900287 lookups/s
-router param:  routes=256  lookups=1000000 99.7 ns/lookup 10028127 lookups/s
+router static: routes=1024 lookups=2000000 89.0 ns/lookup 11236190 lookups/s
+router param:  routes=256  lookups=1000000 118.9 ns/lookup 8412830 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -89,7 +91,7 @@ guarantee.
 
 ## Remaining gaps
 
-- Streaming request bodies (responses are streamed).
+- Streaming request bodies and streaming multipart/file uploads.
 - Brotli and zstd response compression.
 - CPU-bound handler preemption without cancellation points.
 - Concurrent HTTP/2 stream dispatch and HTTP/3.

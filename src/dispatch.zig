@@ -213,8 +213,15 @@ fn applyHandlerError(context: *ctx_mod.Ctx, err: anyerror) void {
 }
 
 fn statusForHandlerError(err: anyerror) u16 {
-    if (err == error.UnsupportedMediaType) return 415;
+    if (err == error.UnsupportedMediaType or err == error.NotMultipart) return 415;
     if (err == error.PayloadTooLarge) return 413;
-    if (err == error.BadRequest or err == error.InvalidJson) return 400;
+    if (err == error.BadRequest or
+        err == error.InvalidJson or
+        err == error.MissingBoundary or
+        err == error.InvalidMultipart or
+        err == error.TooManyParts)
+    {
+        return 400;
+    }
     return 500;
 }

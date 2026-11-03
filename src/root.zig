@@ -31,6 +31,9 @@ pub const withContext = @import("ctx.zig").withContext;
 
 pub const query = @import("query.zig");
 pub const cookie = @import("cookie.zig");
+pub const multipart = @import("multipart.zig");
+pub const MultipartPart = @import("multipart.zig").Part;
+pub const MultipartForm = @import("multipart.zig").Form;
 pub const StaticFiles = @import("static_files.zig").StaticFiles;
 pub const MimeType = @import("static_files.zig").MimeType;
 pub const default_mime_types = @import("static_files.zig").default_mime_types;
@@ -60,6 +63,7 @@ comptime {
     _ = @import("stream.zig");
     _ = @import("query.zig");
     _ = @import("cookie.zig");
+    _ = @import("multipart.zig");
     _ = @import("static_files.zig");
     _ = @import("router.zig");
     _ = @import("server.zig");

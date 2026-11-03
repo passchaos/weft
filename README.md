@@ -93,6 +93,8 @@ pub fn main(init: std.process.Init) !void {
   becomes `400`; an unsupported coding becomes `415`; an oversized decoded
   body becomes `413`.
 - `ctx.bodyForm()` parses decoded `application/x-www-form-urlencoded` bodies.
+- `ctx.multipart()` parses `multipart/form-data` with bounded part and header
+  counts; part data borrows the bounded request body.
 - `ctx.cookie(name)` reads request cookies; `ctx.setCookie(...)` appends a
   validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
@@ -293,6 +295,7 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
   copied into the response arena; CR/LF injection is rejected.
 - `max_middleware` bounds the combined server/group/route middleware chain.
 - `max_query_params` bounds decoded query pairs.
+- `max_multipart_parts` bounds `multipart/form-data` parts.
 - `request_timeout` optionally races the handler/middleware chain against a
   timer. On expiry the chain is canceled at its next cancellation point and the
   request returns `503`. CPU-bound handlers with no cancellation point cannot be
@@ -329,8 +332,8 @@ zig build bench -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
-On the reference development host, a ReleaseFast run reports roughly 80–100 ns
-per lookup (about 10M–12M lookups per second) depending on host load,
+On the reference development host, ReleaseFast runs range from roughly 80–120
+ns per lookup (about 8M–12M lookups per second) depending on host load,
 including capture allocation from a fixed arena.
 
 ## Status

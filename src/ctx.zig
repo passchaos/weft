@@ -5,6 +5,7 @@ const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
 const cookie_mod = @import("cookie.zig");
 const stream_mod = @import("stream.zig");
+const multipart_mod = @import("multipart.zig");
 
 pub const Response = response_mod.Response;
 pub const Limits = limits_mod.Limits;
@@ -253,6 +254,19 @@ pub const Ctx = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.BadRequest,
         };
+    }
+
+    /// Parse a decoded `multipart/form-data` body. Part data borrows the
+    /// request body; parser-owned names and headers use the request arena.
+    pub fn multipart(self: *Ctx) !multipart_mod.Form {
+        const content_type = self.header("content-type") orelse
+            return error.UnsupportedMediaType;
+        return multipart_mod.parse(
+            self.arena,
+            content_type,
+            try self.decodedBody(),
+            .{ .max_parts = self.limits.max_multipart_parts },
+        );
     }
 
     /// Read a request cookie by name. Cookie names are case-sensitive.

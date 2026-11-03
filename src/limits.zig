@@ -31,6 +31,8 @@ pub const Limits = struct {
     /// Maximum decoded query pairs stored for one request. Repeated keys each
     /// count as one pair.
     max_query_params: usize = 64,
+    /// Maximum parts accepted from one multipart/form-data body.
+    max_multipart_parts: usize = 64,
     /// Optional wall-clock budget for handler and middleware execution. When
     /// set, weft races the chain against a timer and cancels it at the next
     /// cancellation point, returning `503`.
