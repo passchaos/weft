@@ -81,6 +81,11 @@ fn clientInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
     });
 }
 
+fn etagRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.text("hello");
+}
+
 fn trailerRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     try ctx.text("body");
@@ -289,6 +294,77 @@ test "package: middleware order, short-circuit, and locals" {
     try stopped_context.run();
     try std.testing.expectEqual(@as(u16, 403), stopped_context.response.status);
     try std.testing.expectEqualStrings("stopped", stopped_context.response.body);
+}
+
+test "package: ETag middleware answers conditional GET" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var etag = weft.middleware.Etag{};
+    var middleware = [_]weft.Handler{etag.handler()};
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 4096,
+            },
+            .max_connections = 1,
+            .middleware = &middleware,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/etag", etagRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/etag",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var first = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer first.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), first.response.status);
+    try std.testing.expectEqualStrings("hello", first.response.body);
+    const tag = first.response.header("etag").?;
+
+    const headers = [_]netz.http1.Header{.{
+        .name = "If-None-Match",
+        .value = tag,
+    }};
+    var second = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .headers = &headers },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer second.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 304), second.response.status);
+    try std.testing.expectEqualStrings("", second.response.body);
+    try std.testing.expectEqualStrings(tag, second.response.header("etag").?);
+
+    server.stop();
+    try group.await(io);
 }
 
 test "package: end-to-end HTTP/1 request" {
