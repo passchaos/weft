@@ -130,9 +130,9 @@ fn streamed(app: *App, ctx: *weft.Ctx) anyerror!void {
 ## Static files
 
 `weft.StaticFiles` is a route handler that streams files below a directory. It
-supports ETag/`If-None-Match`, single `Range` requests (`206`/`416`), `HEAD`,
-index files, MIME detection, dotfile rejection, and traversal-safe path
-normalization.
+supports ETag/`If-None-Match`, single and multipart `Range` requests
+(`206`/`416`), `HEAD`, index files, MIME detection, dotfile rejection, and
+traversal-safe path normalization.
 
 ```zig
 var files = weft.StaticFiles{
@@ -274,5 +274,5 @@ The first slice targets HTTP/1.1 through `netz.http1.runtime`, and mirrors
 HTTP/1.0 request versions with appropriate connection semantics. The public
 `Ctx`/`Handler`/`Router` surface is protocol-version agnostic so an HTTP/2,
 HTTP/3, or TLS adapter can be added without changing application handlers.
-Remaining slices include multi-range and multi-encoding responses, preemptive
-request deadlines, and TLS/HTTP2/HTTP3 adapters.
+Remaining slices include multi-encoding responses, preemptive request
+deadlines, and TLS/HTTP2/HTTP3 adapters.

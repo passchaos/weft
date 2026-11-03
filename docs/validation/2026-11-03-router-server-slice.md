@@ -37,8 +37,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
 - `StaticFiles` handler with traversal-safe normalization, dotfile/symlink
-  policy, MIME detection, ETag/`If-None-Match`, single `Range` support
-  (`206`/`416`), index files, and streamed file reads.
+  policy, MIME detection, ETag/`If-None-Match`, single and multipart `Range`
+  support (`206`/`416`), index files, and streamed file reads.
 - Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
   `bodyJson`/`bodyForm`; malformed JSON maps to `400`, unsupported codings to
   `415`, and oversized decoded bodies to `413`.
@@ -75,7 +75,7 @@ guarantee.
 ## Remaining gaps
 
 - Streaming request bodies (responses are streamed).
-- Multi-range and multi-encoding responses.
+- Multi-encoding responses.
 - Preemptive per-request deadlines for handlers.
 - TLS and HTTP/2/HTTP/3 adapters.
 - Compression currently supports gzip only.

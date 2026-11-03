@@ -126,9 +126,9 @@ pub const StaticFiles = struct {
             }
         }
 
-        var start: usize = 0;
-        var length: usize = size;
-        var partial = false;
+        const mime = self.contentType(relative);
+
+        var ranges: ?RangeSet = null;
         if (ctx.header("range")) |range_header| {
             switch (parseRange(range_header, size)) {
                 .ignore => {},
@@ -144,11 +144,25 @@ pub const StaticFiles = struct {
                     );
                     return ctx.text("Range Not Satisfiable");
                 },
-                .range => |range| {
-                    start = range.start;
-                    length = range.length;
-                    partial = true;
-                },
+                .ranges => |set| ranges = set,
+            }
+        }
+
+        var multipart: ?Multipart = null;
+        if (ranges) |set| {
+            if (set.count > 1) {
+                multipart = self.prepareMultipart(
+                    ctx,
+                    set,
+                    mime,
+                    size,
+                ) catch |err| switch (err) {
+                    error.PayloadTooLarge => {
+                        ctx.setStatus(413);
+                        return ctx.text("Content Too Large");
+                    },
+                    else => return err,
+                };
             }
         }
 
@@ -158,6 +172,37 @@ pub const StaticFiles = struct {
         }) catch return notFound(ctx);
         errdefer file.close(ctx.io);
 
+        try ctx.setHeader("ETag", etag);
+        try ctx.setHeader("Accept-Ranges", "bytes");
+        if (self.cache_control) |cache| {
+            try ctx.setHeader("Cache-Control", cache);
+        }
+
+        if (multipart) |multi| {
+            const state = try ctx.arena.create(MultiRange);
+            state.* = .{
+                .file = file,
+                .io = ctx.io,
+                .parts = multi.parts,
+                .count = multi.count,
+                .headers = multi.headers,
+                .final = multi.final,
+            };
+            ctx.setStatus(206);
+            try ctx.setHeader("Content-Type", multi.content_type);
+            try ctx.stream(.{
+                .context = state,
+                .write_fn = writeMulti,
+                .length = multi.length,
+                .cancel_fn = cancelMulti,
+            });
+            return;
+        }
+
+        const start: usize = if (ranges) |set| set.parts[0].start else 0;
+        const length: usize = if (ranges) |set| set.parts[0].length else size;
+        const partial = ranges != null;
+
         const state = try ctx.arena.create(FileStream);
         state.* = .{
             .file = file,
@@ -166,12 +211,7 @@ pub const StaticFiles = struct {
             .length = length,
         };
 
-        try ctx.setHeader("Content-Type", self.contentType(relative));
-        try ctx.setHeader("ETag", etag);
-        try ctx.setHeader("Accept-Ranges", "bytes");
-        if (self.cache_control) |cache| {
-            try ctx.setHeader("Cache-Control", cache);
-        }
+        try ctx.setHeader("Content-Type", mime);
         if (partial) {
             ctx.setStatus(206);
             try ctx.setHeader(
@@ -190,6 +230,63 @@ pub const StaticFiles = struct {
             .length = length,
             .cancel_fn = cancelFile,
         });
+    }
+
+    fn prepareMultipart(
+        self: *StaticFiles,
+        ctx: *ctx_mod.Ctx,
+        set: RangeSet,
+        mime: []const u8,
+        size: usize,
+    ) !Multipart {
+        _ = self;
+        var boundary_bytes: [16]u8 = undefined;
+        try std.Io.randomSecure(ctx.io, &boundary_bytes);
+        const hex = std.fmt.bytesToHex(boundary_bytes, .lower);
+        const boundary = try ctx.arena.dupe(u8, &hex);
+
+        var multipart = Multipart{
+            .count = set.count,
+            .content_type = try std.fmt.allocPrint(
+                ctx.arena,
+                "multipart/byteranges; boundary={s}",
+                .{boundary},
+            ),
+        };
+        var total: usize = 0;
+        for (set.parts[0..set.count], 0..) |part, index| {
+            multipart.parts[index] = part;
+            const header = try std.fmt.allocPrint(
+                ctx.arena,
+                "--{s}\r\nContent-Type: {s}\r\nContent-Range: bytes {d}-{d}/{d}\r\n\r\n",
+                .{
+                    boundary,
+                    mime,
+                    part.start,
+                    part.start + part.length - 1,
+                    size,
+                },
+            );
+            multipart.headers[index] = header;
+            total = std.math.add(usize, total, header.len) catch
+                return error.PayloadTooLarge;
+            total = std.math.add(usize, total, part.length) catch
+                return error.PayloadTooLarge;
+            total = std.math.add(usize, total, 2) catch
+                return error.PayloadTooLarge;
+        }
+        multipart.final = try std.fmt.allocPrint(
+            ctx.arena,
+            "--{s}--\r\n",
+            .{boundary},
+        );
+        total = std.math.add(usize, total, multipart.final.len) catch
+            return error.PayloadTooLarge;
+        if (total > ctx.limits.max_response_bytes) {
+            return error.PayloadTooLarge;
+        }
+        multipart.length = total;
+        return multipart;
     }
 
     fn contentType(self: *const StaticFiles, path: []const u8) []const u8 {
@@ -213,32 +310,79 @@ const FileStream = struct {
     length: usize,
 };
 
+const Multipart = struct {
+    parts: [max_ranges]RangePart = undefined,
+    count: usize,
+    headers: [max_ranges][]const u8 = undefined,
+    final: []const u8 = undefined,
+    content_type: []const u8,
+    length: usize = undefined,
+};
+
+const MultiRange = struct {
+    file: std.Io.File,
+    io: std.Io,
+    parts: [max_ranges]RangePart,
+    count: usize,
+    headers: [max_ranges][]const u8,
+    final: []const u8,
+};
+
 fn writeFile(raw: ?*anyopaque, writer: *stream_mod.Writer) anyerror!void {
     const state: *FileStream = @ptrCast(@alignCast(raw orelse
         return error.InvalidWriterState));
     defer state.file.close(state.io);
-
-    var buffer: [16 * 1024]u8 = undefined;
-    var offset = state.offset;
-    var remaining = state.length;
-    while (remaining > 0) {
-        const want = @min(remaining, buffer.len);
-        const parts = [_][]u8{buffer[0..want]};
-        const read = try state.file.readPositional(
-            state.io,
-            &parts,
-            offset,
-        );
-        if (read == 0) return error.UnexpectedEof;
-        try writer.write(buffer[0..read]);
-        offset += read;
-        remaining -= read;
-    }
+    try writeRange(state.file, state.io, state.offset, state.length, writer);
 }
 
 fn cancelFile(raw: ?*anyopaque) void {
     const state: *FileStream = @ptrCast(@alignCast(raw orelse return));
     state.file.close(state.io);
+}
+
+fn writeMulti(raw: ?*anyopaque, writer: *stream_mod.Writer) anyerror!void {
+    const state: *MultiRange = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    defer state.file.close(state.io);
+
+    for (state.parts[0..state.count], 0..) |part, index| {
+        try writer.write(state.headers[index]);
+        try writeRange(
+            state.file,
+            state.io,
+            part.start,
+            part.length,
+            writer,
+        );
+        try writer.write("\r\n");
+    }
+    try writer.write(state.final);
+}
+
+fn cancelMulti(raw: ?*anyopaque) void {
+    const state: *MultiRange = @ptrCast(@alignCast(raw orelse return));
+    state.file.close(state.io);
+}
+
+fn writeRange(
+    file: std.Io.File,
+    io: std.Io,
+    offset_start: usize,
+    length: usize,
+    writer: *stream_mod.Writer,
+) anyerror!void {
+    var buffer: [16 * 1024]u8 = undefined;
+    var offset = offset_start;
+    var remaining = length;
+    while (remaining > 0) {
+        const want = @min(remaining, buffer.len);
+        const parts = [_][]u8{buffer[0..want]};
+        const read = try file.readPositional(io, &parts, offset);
+        if (read == 0) return error.UnexpectedEof;
+        try writer.write(buffer[0..read]);
+        offset += read;
+        remaining -= read;
+    }
 }
 
 fn notFound(ctx: *ctx_mod.Ctx) anyerror!void {
@@ -288,21 +432,57 @@ fn etagMatches(header: []const u8, etag: []const u8) bool {
     return false;
 }
 
+const max_ranges = 16;
+
+const RangePart = struct {
+    start: usize,
+    length: usize,
+};
+
+const RangeSet = struct {
+    parts: [max_ranges]RangePart = undefined,
+    count: usize = 0,
+};
+
 const Range = union(enum) {
     ignore,
     unsatisfiable,
-    range: struct {
-        start: usize,
-        length: usize,
-    },
+    ranges: RangeSet,
+};
+
+const ParsedRange = union(enum) {
+    ignore,
+    unsatisfiable,
+    range: RangePart,
 };
 
 fn parseRange(header: []const u8, size: usize) Range {
     const value = std.mem.trim(u8, header, " \t");
     if (!std.ascii.startsWithIgnoreCase(value, "bytes=")) return .ignore;
     const spec = std.mem.trim(u8, value["bytes=".len..], " \t");
-    if (std.mem.indexOfScalar(u8, spec, ',') != null) return .ignore;
+    if (spec.len == 0) return .ignore;
 
+    var set = RangeSet{};
+    var iterator = std.mem.splitScalar(u8, spec, ',');
+    while (iterator.next()) |raw_part| {
+        const part = std.mem.trim(u8, raw_part, " \t");
+        if (part.len == 0) return .ignore;
+        switch (parseOneRange(part, size)) {
+            .ignore => return .ignore,
+            .unsatisfiable => continue,
+            .range => |range| {
+                if (set.count >= max_ranges) return .ignore;
+                set.parts[set.count] = range;
+                set.count += 1;
+            },
+        }
+    }
+
+    if (set.count == 0) return .unsatisfiable;
+    return .{ .ranges = set };
+}
+
+fn parseOneRange(spec: []const u8, size: usize) ParsedRange {
     const dash = std.mem.indexOfScalar(u8, spec, '-') orelse return .ignore;
     const first = std.mem.trim(u8, spec[0..dash], " \t");
     const last = std.mem.trim(u8, spec[dash + 1 ..], " \t");
@@ -371,33 +551,31 @@ test "static path normalization rejects traversal and dotfiles" {
     );
 }
 
-test "static range parsing handles single and suffix ranges" {
-    try std.testing.expectEqual(
-        @as(usize, 0),
-        parseRange("bytes=0-9", 10).range.start,
-    );
-    try std.testing.expectEqual(
-        @as(usize, 10),
-        parseRange("bytes=0-9", 10).range.length,
-    );
-    try std.testing.expectEqual(
-        @as(usize, 5),
-        parseRange("bytes=5-", 10).range.start,
-    );
-    try std.testing.expectEqual(
-        @as(usize, 5),
-        parseRange("bytes=5-", 10).range.length,
-    );
-    try std.testing.expectEqual(
-        @as(usize, 5),
-        parseRange("bytes=-5", 10).range.start,
-    );
-    try std.testing.expectEqual(
-        @as(usize, 5),
-        parseRange("bytes=-5", 10).range.length,
-    );
+test "static range parsing handles single, suffix, and multiple ranges" {
+    const single = parseRange("bytes=0-9", 10).ranges;
+    try std.testing.expectEqual(@as(usize, 1), single.count);
+    try std.testing.expectEqual(@as(usize, 0), single.parts[0].start);
+    try std.testing.expectEqual(@as(usize, 10), single.parts[0].length);
+
+    const open = parseRange("bytes=5-", 10).ranges;
+    try std.testing.expectEqual(@as(usize, 5), open.parts[0].start);
+    try std.testing.expectEqual(@as(usize, 5), open.parts[0].length);
+
+    const suffix = parseRange("bytes=-5", 10).ranges;
+    try std.testing.expectEqual(@as(usize, 5), suffix.parts[0].start);
+    try std.testing.expectEqual(@as(usize, 5), suffix.parts[0].length);
+
+    const multiple = parseRange("bytes=0-1,3-4", 10).ranges;
+    try std.testing.expectEqual(@as(usize, 2), multiple.count);
+    try std.testing.expectEqual(@as(usize, 0), multiple.parts[0].start);
+    try std.testing.expectEqual(@as(usize, 2), multiple.parts[0].length);
+    try std.testing.expectEqual(@as(usize, 3), multiple.parts[1].start);
+    try std.testing.expectEqual(@as(usize, 2), multiple.parts[1].length);
+
+    const mixed = parseRange("bytes=0-1,20-", 10).ranges;
+    try std.testing.expectEqual(@as(usize, 1), mixed.count);
     try std.testing.expect(parseRange("bytes=20-", 10) == .unsatisfiable);
-    try std.testing.expect(parseRange("bytes=0-1,3-4", 10) == .ignore);
+    try std.testing.expect(parseRange("bytes=", 10) == .ignore);
 }
 
 test "static etag matching accepts weak and wildcard forms" {

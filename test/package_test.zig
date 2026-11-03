@@ -988,6 +988,45 @@ test "package: static files serve 200, 304, 206, and HEAD" {
         range_response.response.header("content-range").?,
     );
 
+    var multi_range = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{.{
+            .name = "Range",
+            .value = "bytes=0-1,4-5",
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer multi_range.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 206), multi_range.response.status);
+    const multipart_type = multi_range.response.header("content-type").?;
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        multipart_type,
+        "multipart/byteranges; boundary=",
+    ));
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        multi_range.response.body,
+        "Content-Range: bytes 0-1/15",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        multi_range.response.body,
+        "Content-Range: bytes 4-5/15",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        multi_range.response.body,
+        "<h",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        multi_range.response.body,
+        "st",
+    ) != null);
+
     var head_response = try netz.http1.runtime.Client.requestUri(
         allocator,
         runtime_io,
