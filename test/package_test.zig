@@ -1524,7 +1524,7 @@ test "package: static files serve 200, 304, 206, and HEAD" {
         .data = "SECRET=1",
     });
 
-    var static = weft.StaticFiles{ .dir = tmp.dir };
+    var static = weft.StaticFiles{ .dir = tmp.dir, .download = true };
 
     var backend = try netz.runtime.Backend.init(allocator);
     defer backend.deinit();
@@ -1628,6 +1628,10 @@ test "package: static files serve 200, 304, 206, and HEAD" {
     try std.testing.expectEqualStrings(
         "text/html; charset=utf-8",
         index_response.response.header("content-type").?,
+    );
+    try std.testing.expectEqualStrings(
+        "attachment; filename=\"index.html\"",
+        index_response.response.header("content-disposition").?,
     );
     const etag = index_response.response.header("etag").?;
     const last_modified = index_response.response.header("last-modified").?;
@@ -1910,7 +1914,7 @@ test "package: static files negotiate precompressed sidecars" {
         .data = compressed,
     });
 
-    var static = weft.StaticFiles{ .dir = tmp.dir };
+    var static = weft.StaticFiles{ .dir = tmp.dir, .download = true };
 
     var backend = try netz.runtime.Backend.init(allocator);
     defer backend.deinit();

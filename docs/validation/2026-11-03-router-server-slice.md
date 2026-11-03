@@ -65,6 +65,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   `If-Modified-Since`, `If-Unmodified-Since`) in RFC order, plus `If-Range`
   ETag and HTTP-date forms. HTTP dates accept IMF-fixdate, RFC 850, and
   asctime inputs.
+- `StaticFiles` can force downloads with `Content-Disposition: attachment`
+  and an escaped basename.
 - `StaticFiles` negotiates precompressed `.br`/`.zst`/`.gz` sidecars from
   `Accept-Encoding` (q-weighted, `br > zstd > gzip` on ties), preserves the
   original MIME type, emits `Content-Encoding`/`Vary: Accept-Encoding`, and
@@ -150,8 +152,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 102/102 tests passed (69 unit, 33 package/integration).
-- ReleaseFast: 102/102 tests passed.
+- Debug: 103/103 tests passed (70 unit, 33 package/integration).
+- ReleaseFast: 103/103 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

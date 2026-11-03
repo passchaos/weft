@@ -87,6 +87,8 @@ pub const StaticFiles = struct {
     /// Redirect directory requests that lack a trailing slash so relative URLs
     /// in the served index document resolve against the directory.
     redirect_directories: bool = true,
+    /// Emit `Content-Disposition: attachment` with the served basename.
+    download: bool = false,
     mime_types: []const MimeType = &default_mime_types,
 
     pub fn handler(self: *StaticFiles) ctx_mod.Handler {
@@ -287,6 +289,12 @@ pub const StaticFiles = struct {
 
         try ctx.setHeader("ETag", etag);
         try ctx.setHeader("Last-Modified", &last_modified_value);
+        if (self.download) {
+            try ctx.setHeader(
+                "Content-Disposition",
+                try attachmentValue(ctx.arena, fileName(relative)),
+            );
+        }
         if (content_encoding == null) {
             try ctx.setHeader("Accept-Ranges", "bytes");
         }
@@ -601,6 +609,29 @@ fn parseQuality(text: []const u8) ?u16 {
     return whole * 1000 + fraction;
 }
 
+fn fileName(path: []const u8) []const u8 {
+    const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse
+        return path;
+    return path[slash + 1 ..];
+}
+
+fn attachmentValue(
+    allocator: std.mem.Allocator,
+    filename: []const u8,
+) ![]const u8 {
+    var output = std.ArrayListUnmanaged(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.appendSlice(allocator, "attachment; filename=\"");
+    for (filename) |char| {
+        if (char == '"' or char == '\\') {
+            try output.append(allocator, '\\');
+        }
+        try output.append(allocator, char);
+    }
+    try output.append(allocator, '"');
+    return output.toOwnedSlice(allocator);
+}
+
 fn sidecarIsFresh(
     source: std.Io.Timestamp,
     sidecar: std.Io.Timestamp,
@@ -881,4 +912,17 @@ test "static quality parsing clamps malformed values" {
     try std.testing.expect(parseQuality("2") == null);
     try std.testing.expect(parseQuality("") == null);
     try std.testing.expect(parseQuality("abc") == null);
+}
+
+test "static download disposition escapes filenames" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectEqualStrings("file.txt", fileName("dir/file.txt"));
+    try std.testing.expectEqualStrings("file.txt", fileName("file.txt"));
+
+    const value = try attachmentValue(allocator, "a\"b.txt");
+    defer allocator.free(value);
+    try std.testing.expectEqualStrings(
+        "attachment; filename=\"a\\\"b.txt\"",
+        value,
+    );
 }

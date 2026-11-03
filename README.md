@@ -334,6 +334,8 @@ larger than `max_file_bytes` or `Limits.max_response_bytes` return `413`.
 Directory requests without a trailing slash return `301` to the slash form,
 preserving the query string, so relative links in the index document resolve
 correctly; set `.redirect_directories = false` to serve the index in place.
+Set `.download = true` to emit `Content-Disposition: attachment` with the
+served basename.
 
 With `precompressed` enabled (the default), sibling `.br`, `.zst`, and `.gz`
 sidecars are served according to `Accept-Encoding` (`br` preferred, then
