@@ -58,6 +58,12 @@ pub fn parse(
 
     const delimiter = try std.fmt.allocPrint(allocator, "--{s}", .{boundary});
     defer allocator.free(delimiter);
+    const next_delimiter = try std.fmt.allocPrint(
+        allocator,
+        "\r\n--{s}",
+        .{boundary},
+    );
+    defer allocator.free(next_delimiter);
 
     var parts = std.ArrayListUnmanaged(Part).empty;
     errdefer {
@@ -69,22 +75,46 @@ pub fn parse(
         parts.deinit(allocator);
     }
 
-    var iterator = std.mem.splitSequence(u8, body, delimiter);
-    _ = iterator.next(); // Preamble.
+    // Only accept a boundary at the start of the body or after a CRLF, so
+    // field data containing the boundary text is not mistaken for a delimiter.
+    var cursor: usize = 0;
+    if (std.mem.startsWith(u8, body, delimiter) and
+        body.len > delimiter.len and
+        (body[delimiter.len] == '\r' or
+            (body[delimiter.len] == '-' and
+                delimiter.len + 1 < body.len and
+                body[delimiter.len + 1] == '-')))
+    {
+        cursor = delimiter.len;
+    } else if (findDelimiter(body, 0, next_delimiter)) |found| {
+        cursor = found + next_delimiter.len;
+    } else {
+        return error.InvalidMultipart;
+    }
 
-    while (iterator.next()) |raw_segment| {
-        if (raw_segment.len == 0) continue;
-        var segment = raw_segment;
-        if (std.mem.startsWith(u8, segment, "--")) break;
-        if (std.mem.startsWith(u8, segment, "\r\n")) segment = segment[2..];
+    while (true) {
+        if (cursor >= body.len) return error.InvalidMultipart;
+        if (body[cursor] == '-') {
+            if (cursor + 1 < body.len and body[cursor + 1] == '-') break;
+            return error.InvalidMultipart;
+        }
+        if (body[cursor] != '\r' or
+            cursor + 1 >= body.len or
+            body[cursor + 1] != '\n')
+        {
+            return error.InvalidMultipart;
+        }
+        cursor += 2;
+
+        const next = findDelimiter(body, cursor, next_delimiter) orelse
+            return error.InvalidMultipart;
+        const segment = body[cursor..next];
+        cursor = next + next_delimiter.len;
 
         const separator = std.mem.indexOf(u8, segment, "\r\n\r\n") orelse
             return error.InvalidMultipart;
         const header_block = segment[0..separator];
-        var data = segment[separator + 4 ..];
-        if (std.mem.endsWith(u8, data, "\r\n")) {
-            data = data[0 .. data.len - 2];
-        }
+        const data = segment[separator + 4 ..];
 
         var headers = std.ArrayListUnmanaged(Header).empty;
         errdefer headers.deinit(allocator);
@@ -150,6 +180,30 @@ pub fn parse(
 
     if (parts.items.len == 0) return error.InvalidMultipart;
     return .{ .parts = try parts.toOwnedSlice(allocator) };
+}
+
+/// Find a `\r\n--boundary` occurrence whose boundary is followed by either
+/// `-` (close delimiter) or CRLF (next part).
+fn findDelimiter(
+    body: []const u8,
+    from: usize,
+    needle: []const u8,
+) ?usize {
+    var index = from;
+    while (std.mem.indexOfPos(u8, body, index, needle)) |found| {
+        const after = found + needle.len;
+        if (after < body.len) {
+            if (body[after] == '\r') return found;
+            if (body[after] == '-' and
+                after + 1 < body.len and
+                body[after + 1] == '-')
+            {
+                return found;
+            }
+        }
+        index = found + 1;
+    }
+    return null;
 }
 
 fn boundaryFromContentType(
@@ -289,6 +343,54 @@ test "multipart parses fields and files" {
     try std.testing.expectEqualStrings("hello", file.data);
     try std.testing.expectEqualStrings("a.txt", file.filename.?);
     try std.testing.expectEqualStrings("text/plain", file.content_type.?);
+}
+
+test "multipart ignores boundary text inside part data" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "--weft-not-a-boundary\r\n" ++
+        "--weft--\r\n";
+
+    var form = try parse(
+        arena.allocator(),
+        "multipart/form-data; boundary=weft",
+        body,
+        .{},
+    );
+    defer form.deinit(arena.allocator());
+
+    const field = form.part("field").?;
+    try std.testing.expectEqualStrings("--weft-not-a-boundary", field.data);
+}
+
+test "multipart accepts a preamble before the first boundary" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const body =
+        "ignored preamble\r\n" ++
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "value\r\n" ++
+        "--weft--\r\n";
+
+    var form = try parse(
+        arena.allocator(),
+        "multipart/form-data; boundary=weft",
+        body,
+        .{},
+    );
+    defer form.deinit(arena.allocator());
+
+    try std.testing.expectEqualStrings("value", form.part("field").?.data);
 }
 
 test "multipart rejects missing boundaries and malformed parts" {

@@ -101,7 +101,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both
   adapters.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part
-  count, header count, and header-byte limits.
+  count, header count, and header-byte limits. Boundaries are matched only at
+  the start of the body or after CRLF, so boundary text inside field data is
+  not treated as a delimiter.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
   with semaphore-bounded sessions.
@@ -121,8 +123,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 88/88 tests passed (59 unit, 29 package/integration).
-- ReleaseFast: 88/88 tests passed.
+- Debug: 90/90 tests passed (61 unit, 29 package/integration).
+- ReleaseFast: 90/90 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

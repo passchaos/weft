@@ -97,7 +97,8 @@ pub fn main(init: std.process.Init) !void {
   body becomes `413`.
 - `ctx.bodyForm()` parses decoded `application/x-www-form-urlencoded` bodies.
 - `ctx.multipart()` parses `multipart/form-data` with bounded part and header
-  counts; part data borrows the bounded request body.
+  counts; part data borrows the bounded request body, and boundaries are
+  matched only at line starts so field data containing boundary text is safe.
 - `ctx.cookie(name)` reads request cookies; `ctx.setCookie(...)` appends a
   validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
