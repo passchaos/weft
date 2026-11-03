@@ -278,8 +278,9 @@ Built-ins:
   configured request-header validation, and `Vary` maintenance.
 - `Compress` — gzip, deflate, Brotli, and zstd negotiation from
   `Accept-Encoding` quality values, compressible content types, and bodies
-  above `min_bytes`; existing `Content-Encoding`, `no-transform`, and refused
-  identity are respected.
+  above `min_bytes`; streamed bodies are gzip-compressed as concatenated
+  members. Existing `Content-Encoding`, `no-transform`, and refused identity
+  are respected.
 - `recover` — converts an uncommitted handler failure into `500`, or marks a
   committed partial response `Connection: close`.
 - `Metrics` — lock-free total, active, status-class, and latency counters with a

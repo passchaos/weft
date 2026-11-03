@@ -1,5 +1,6 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const stream_mod = @import("../stream.zig");
 const vort = @import("vort");
 
 const flate = std.compress.flate;
@@ -32,6 +33,36 @@ pub const Compress = struct {
         const response = &ctx.response;
         if (response.hasHeader("content-encoding")) return;
         if (noTransform(response.header("cache-control"))) return;
+
+        if (response.stream) |body| {
+            switch (negotiation) {
+                .coding => |coding| {
+                    if (coding != .gzip) return;
+                    if (!compressible(response.header("content-type"))) return;
+                    if (body.length) |length| {
+                        if (length < self.min_bytes) return;
+                    }
+                    const wrapper = try ctx.arena.create(StreamCompress);
+                    wrapper.* = .{
+                        .allocator = ctx.arena,
+                        .original = body,
+                        .level = self.level,
+                    };
+                    response.setHeader(
+                        "Content-Encoding",
+                        "gzip",
+                    ) catch return;
+                    _ = response.removeHeader("content-length");
+                    response.stream = .{
+                        .context = wrapper,
+                        .write_fn = StreamCompress.run,
+                        .cancel_fn = StreamCompress.cancel,
+                    };
+                },
+                else => {},
+            }
+            return;
+        }
 
         switch (negotiation) {
             .identity => return,
@@ -239,6 +270,56 @@ fn compressBody(
     }
 }
 
+/// Streaming gzip wrapper. Each producer chunk becomes one gzip member; RFC
+/// 1952 permits concatenated members, and a final empty member guarantees a
+/// valid stream even when the producer writes no data.
+const StreamCompress = struct {
+    allocator: std.mem.Allocator,
+    original: stream_mod.Body,
+    level: flate.Compress.Options,
+
+    fn run(raw: ?*anyopaque, output: *stream_mod.Writer) anyerror!void {
+        const self: *StreamCompress = @ptrCast(@alignCast(raw orelse
+            return error.InvalidWriterState));
+        var chunk = ChunkCompress{
+            .allocator = self.allocator,
+            .output = output,
+            .level = self.level,
+        };
+        var writer = stream_mod.Writer{
+            .context = &chunk,
+            .write_fn = ChunkCompress.writeChunk,
+        };
+        try self.original.run(&writer);
+        try ChunkCompress.writeChunk(&chunk, "");
+    }
+
+    fn cancel(raw: ?*anyopaque) void {
+        const self: *StreamCompress = @ptrCast(@alignCast(raw orelse return));
+        self.original.cancel();
+    }
+};
+
+const ChunkCompress = struct {
+    allocator: std.mem.Allocator,
+    output: *stream_mod.Writer,
+    level: flate.Compress.Options,
+
+    fn writeChunk(raw: ?*anyopaque, data: []const u8) anyerror!void {
+        const self: *ChunkCompress = @ptrCast(@alignCast(raw orelse
+            return error.InvalidWriterState));
+        const compressed = try compressBody(
+            self.allocator,
+            data,
+            .gzip,
+            self.level,
+            3,
+        );
+        defer self.allocator.free(compressed);
+        try self.output.write(compressed);
+    }
+};
+
 fn noTransform(cache_control: ?[]const u8) bool {
     const value = cache_control orelse return false;
     var parts = std.mem.splitScalar(u8, value, ',');
@@ -264,6 +345,9 @@ fn quality(params: []const u8) ?f64 {
 
 fn compressible(content_type: ?[]const u8) bool {
     const value = content_type orelse return false;
+    // Event streams are incremental and latency-sensitive; compressing them
+    // would also defeat per-event delivery.
+    if (std.ascii.startsWithIgnoreCase(value, "text/event-stream")) return false;
     inline for (.{
         "text/",
         "application/json",
@@ -605,6 +689,100 @@ test "compress middleware supports zstd" {
     defer allocator.free(original);
     @memset(original, 'a');
     try expectRoundTrip("zstd", context.response.body, original);
+}
+
+test "compress middleware wraps streamed bodies with gzip" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const Producer = struct {
+        var chunk: []const u8 = &.{};
+
+        fn run(_: ?*anyopaque, writer: *stream_mod.Writer) anyerror!void {
+            try writer.write(chunk);
+            try writer.write(chunk);
+        }
+    };
+
+    const Collector = struct {
+        allocator: std.mem.Allocator,
+        bytes: std.ArrayListUnmanaged(u8) = .empty,
+
+        fn write(raw: ?*anyopaque, data: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            try self.bytes.appendSlice(self.allocator, data);
+        }
+    };
+
+    const chunk = try allocator.alloc(u8, 2048);
+    defer allocator.free(chunk);
+    @memset(chunk, 'a');
+    Producer.chunk = chunk;
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "gzip",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 0 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 64 * 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.setHeader("Content-Type", "text/plain");
+                try ctx.setHeader("Content-Length", "4096");
+                try ctx.stream(.{
+                    .write_fn = Producer.run,
+                    .length = 4096,
+                });
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqualStrings(
+        "gzip",
+        context.response.header("content-encoding").?,
+    );
+    try std.testing.expect(
+        context.response.header("content-length") == null,
+    );
+
+    var collector = Collector{ .allocator = arena.allocator() };
+    var writer = stream_mod.Writer{
+        .context = &collector,
+        .write_fn = Collector.write,
+    };
+    if (context.response.stream) |*body| {
+        try body.run(&writer);
+    } else return error.TestUnexpectedResult;
+
+    const decode_headers = [_]@import("netz").http1.Header{.{
+        .name = "Content-Encoding",
+        .value = "gzip",
+    }};
+    const decoded = try @import("netz").http1.content_coding.decodeHeadersAlloc(
+        arena.allocator(),
+        &decode_headers,
+        collector.bytes.items,
+        4096,
+    );
+    try std.testing.expectEqual(@as(usize, 4096), decoded.bytes.len);
+    for (decoded.bytes) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
 }
 
 test "compress middleware honors no-transform" {

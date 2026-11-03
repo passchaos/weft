@@ -57,6 +57,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   no longer matches.
 - Server options accept custom `404`, `400`, and `405` fallback handlers that
   can inspect `RouteFailure`; default status and `Allow` are pre-set.
+- Streamed response bodies are gzip-compressed as concatenated gzip members
+  when gzip is negotiated, with cancellation forwarded to the original
+  producer.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -85,14 +88,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 67/67 tests passed (42 unit, 25 package/integration).
-- ReleaseFast: 67/67 tests passed.
+- Debug: 68/68 tests passed (43 unit, 25 package/integration).
+- ReleaseFast: 68/68 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 85.3 ns/lookup 11729311 lookups/s
-router param:  routes=256  lookups=1000000 90.4 ns/lookup 11061508 lookups/s
+router static: routes=1024 lookups=2000000 84.0 ns/lookup 11910934 lookups/s
+router param:  routes=256  lookups=1000000 90.5 ns/lookup 11047493 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
