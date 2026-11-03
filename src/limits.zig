@@ -21,8 +21,19 @@ pub const Limits = struct {
     max_request_arena_bytes: usize = 256 * 1024,
     /// Maximum response body bytes accepted before the response is written.
     max_response_bytes: usize = 16 * 1024 * 1024,
-    /// Absolute Slowloris-style request-head budget.
-    request_head_timeout: ?std.Io.Duration = null,
+    /// Maximum response header fields accepted before the response is written.
+    max_response_headers: usize = 100,
+    /// Maximum bytes for the response status line and header fields. This
+    /// bounds the response head independently of the body budget.
+    max_response_head_bytes: usize = 64 * 1024,
+    /// Maximum number of global plus route middleware entries for one request.
+    max_middleware: usize = 32,
+    /// Maximum decoded query pairs stored for one request. Repeated keys each
+    /// count as one pair.
+    max_query_params: usize = 64,
+    /// Absolute Slowloris-style request-head budget. Set to null only when a
+    /// trusted transport already provides an equivalent deadline.
+    request_head_timeout: ?std.Io.Duration = .fromSeconds(30),
     /// Disable Nagle for application-driven writes.
     tcp_nodelay: bool = true,
     /// Emit a Date field when the response does not contain one.

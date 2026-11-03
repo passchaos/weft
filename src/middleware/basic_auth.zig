@@ -26,11 +26,22 @@ pub const BasicAuth = struct {
     fn call(self: *BasicAuth, ctx: *ctx_mod.Ctx) anyerror!void {
         const authorization = ctx.header("authorization") orelse
             return self.challenge(ctx);
-        if (!std.mem.startsWith(u8, authorization, "Basic ")) {
+
+        const value = std.mem.trim(u8, authorization, " \t");
+        var separator: ?usize = null;
+        for (value, 0..) |char, index| {
+            if (char == ' ' or char == '\t') {
+                separator = index;
+                break;
+            }
+        }
+        const split = separator orelse return self.challenge(ctx);
+        if (!std.ascii.eqlIgnoreCase(value[0..split], "Basic")) {
             return self.challenge(ctx);
         }
 
-        const encoded = authorization["Basic ".len..];
+        const encoded = std.mem.trim(u8, value[split + 1 ..], " \t");
+        if (encoded.len == 0) return self.challenge(ctx);
         const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(
             encoded,
         ) catch return self.challenge(ctx);
@@ -43,7 +54,7 @@ pub const BasicAuth = struct {
             "{s}:{s}",
             .{ self.username, self.password },
         );
-        if (!std.mem.eql(u8, decoded, expected)) {
+        if (!constantTimeEql(decoded, expected)) {
             return self.challenge(ctx);
         }
 
@@ -52,6 +63,7 @@ pub const BasicAuth = struct {
 
     fn challenge(self: *BasicAuth, ctx: *ctx_mod.Ctx) anyerror!void {
         ctx.setStatus(401);
+        try ctx.setHeader("Cache-Control", "no-store");
         try ctx.setHeader(
             "WWW-Authenticate",
             try std.fmt.allocPrint(
@@ -63,6 +75,13 @@ pub const BasicAuth = struct {
         try ctx.text("Unauthorized");
     }
 };
+
+fn constantTimeEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    var difference: u8 = 0;
+    for (a, b) |left, right| difference |= left ^ right;
+    return difference == 0;
+}
 
 test "basic auth accepts valid credentials and rejects missing ones" {
     const allocator = std.testing.allocator;
@@ -108,17 +127,18 @@ test "basic auth accepts valid credentials and rejects missing ones" {
 
     const valid_header = try std.fmt.allocPrint(
         arena.allocator(),
-        "Basic {s}",
+        "basic   {s}",
         .{credentials[0..encoded_len]},
     );
+    var valid_headers = [_]netz.http1.Header{.{
+        .name = "Authorization",
+        .value = valid_header,
+    }};
     var valid_request: netz.http1.Request = .{
         .method = .GET,
         .target = "/admin",
         .version = .http_1_1,
-        .headers = &.{.{
-            .name = "Authorization",
-            .value = valid_header,
-        }},
+        .headers = &valid_headers,
         .body = "",
         .consumed = 0,
     };
@@ -135,4 +155,52 @@ test "basic auth accepts valid credentials and rejects missing ones" {
     try valid_context.run();
     try std.testing.expectEqual(@as(u16, 200), valid_context.response.status);
     try std.testing.expectEqualStrings("secret", valid_context.response.body);
+}
+
+test "basic auth rejects a wrong password" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var auth = BasicAuth{ .username = "admin", .password = "secret" };
+    var encoded_buffer: [64]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(
+        &encoded_buffer,
+        "admin:wrong",
+    );
+    const header = try std.fmt.allocPrint(
+        arena.allocator(),
+        "Basic {s}",
+        .{encoded},
+    );
+
+    var headers = [_]netz.http1.Header{.{
+        .name = "Authorization",
+        .value = header,
+    }};
+    var request: netz.http1.Request = .{
+        .method = .GET,
+        .target = "/admin",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{auth.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.text("secret");
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqual(@as(u16, 401), context.response.status);
 }

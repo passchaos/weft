@@ -83,4 +83,22 @@ pub fn build(b: *std.Build) void {
 
     const examples_step = b.step("examples", "Build all examples");
     examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
+
+    const benchmark = b.addExecutable(.{
+        .name = "router-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/router.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+            },
+        }),
+    });
+    const run_benchmark = b.addRunArtifact(benchmark);
+    const bench_step = b.step(
+        "bench",
+        "Run router microbenchmarks (use -Doptimize=ReleaseFast for real numbers)",
+    );
+    bench_step.dependOn(&run_benchmark.step);
 }

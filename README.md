@@ -1,8 +1,8 @@
 # weft
 
 `weft` is the application weaving layer on top of [`netz`](../netz): routing,
-middleware, typed request locals, and a bounded HTTP/1 server adapter for Zig
-0.16.
+middleware, typed request locals, decoded request data, and a bounded HTTP/1
+server adapter for Zig 0.16.
 
 The split is deliberate:
 
@@ -29,7 +29,16 @@ fn home(app: *App, ctx: *weft.Ctx) anyerror!void {
 fn hello(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     const name = ctx.param("name") orelse "stranger";
-    try ctx.json(.{ .message = "hello", .name = name });
+    try ctx.json(.{
+        .message = "hello",
+        .name = name,
+        .lang = ctx.queryParam("lang") orelse "en",
+    });
+}
+
+fn health(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.json(.{ .status = "ok" });
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -37,24 +46,54 @@ pub fn main(init: std.process.Init) !void {
     defer backend.deinit();
     const io = backend.io();
 
+    const common = [_]weft.Handler{
+        weft.handler(weft.middleware.requestId),
+        weft.handler(weft.middleware.serverHeader),
+        weft.handler(weft.middleware.securityHeaders),
+        weft.handler(weft.middleware.log),
+    };
+
     var server = try weft.Server(App).init(
         io,
         init.gpa,
-        .{ .address = .{ .ip4 = .loopback(8080) } },
+        .{
+            .address = .{ .ip4 = .loopback(8080) },
+            .middleware = &common,
+        },
         .{},
     );
     defer server.deinit();
 
     var router = server.router();
     try router.get("/", home, .{});
-    try router.get("/hello/:name", hello, .{ .middleware = &.{
-        weft.handler(weft.middleware.requestId),
-        weft.handler(weft.middleware.serverHeader),
-    } });
+    try router.get("/hello/:name", hello, .{});
+
+    // Groups share a prefix and middleware.
+    var api = try router.group("/api", .{});
+    try api.get("/health", health, .{});
 
     try server.serve();
 }
 ```
+
+## Request API
+
+`Ctx` is a concrete request context; handlers never see protocol framing types.
+
+- `ctx.param(name)` returns a **percent-decoded** path capture.
+- `ctx.queryParam(name)` returns the first **percent-decoded** query value.
+  `+` is decoded as a space. `ctx.queryPairs()` exposes all pairs in wire order.
+- `ctx.header(name)`, `ctx.body()`, `ctx.method()`, and `ctx.target()` expose the
+  parsed request.
+- `ctx.bodyJson(T)` parses JSON with the request arena.
+- `ctx.bodyForm()` parses `application/x-www-form-urlencoded` bodies.
+- `ctx.cookie(name)` reads request cookies; `ctx.setCookie(...)` appends a
+  validated `Set-Cookie` field.
+- `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
+  type-based, and values live in the request arena.
+
+Malformed percent escapes and decoded control bytes are rejected with `400`
+before a handler runs.
 
 ## Middleware
 
@@ -70,6 +109,32 @@ fn auth(ctx: *weft.Ctx) anyerror!void {
 }
 ```
 
+`next()` may be called at most once per handler invocation. Not calling it
+short-circuits the chain. A response written before `next()` is preserved.
+
+Middleware runs in this order:
+
+1. server-level `Options.middleware` (including for `404`, `405`, and automatic
+   `OPTIONS`);
+2. group middleware, outer group first;
+3. route middleware in registration order;
+4. the route handler.
+
+Built-ins:
+
+- `requestId` — preserves a validated incoming `X-Request-Id` or generates a
+  128-bit hex id, and always echoes it in the response.
+- `serverHeader` — adds `Server` unless already set.
+- `log` — logs method, target, request id, status, and elapsed nanoseconds.
+- `securityHeaders` / `SecurityHeaders` — configurable browser hardening fields.
+- `BasicAuth` — constant-time Basic credential check with a challenge response.
+- `Cors` — exact-origin allow list, credential support, preflight handling, and
+  `Vary` maintenance.
+- `Compress` — gzip for accepted `Accept-Encoding`, compressible content types,
+  and bodies above `min_bytes`; existing `Content-Encoding` is respected.
+- `recover` — converts an uncommitted handler failure into `500`, or marks a
+  committed partial response `Connection: close`.
+
 Parameterized middleware uses a user-owned context:
 
 ```zig
@@ -80,24 +145,41 @@ var auth = weft.middleware.BasicAuth{
 try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 ```
 
-`next()` may be called at most once per handler invocation. Not calling it
-short-circuits the chain. A response written before `next()` is preserved.
-
 ## Router
 
-- Static segments are more specific than `:param`, which is more specific than
-  the trailing `*` wildcard.
+- Routes are indexed by a segment trie, so lookup cost scales with path depth
+  rather than the number of registered routes.
+- At each segment, a static child wins over `:param`, which wins over the
+  trailing `*` wildcard. Precedence is decided at the leftmost differing
+  segment, independent of registration order.
 - `:param` captures one segment; `*` captures the remaining path.
 - `router.any(...)` matches every method.
-- Route middleware runs in registration order.
+- `HEAD` falls back to a `GET` route when no explicit `HEAD` route exists.
+- A path that exists for other methods returns `405` with an `Allow` field.
+- `OPTIONS` is answered automatically with `204` and `Allow` when no explicit
+  `OPTIONS` route exists.
+- `router.group(prefix, options)` shares a prefix and middleware; groups can
+  nest.
+- Invalid patterns, duplicate method/path pairs, and wildcard/`any` conflicts
+  are rejected at registration time.
+- Path depth, captures per route, allowed methods, and middleware length are
+  all bounded.
 
 ## Limits
 
 `weft.Limits` maps Netz's HTTP/1 limits and adds weft-owned budgets:
 
-- `max_request_arena_bytes` bounds per-request headers, bodies, params, and
-  middleware locals.
-- `max_response_bytes` rejects oversized responses before they are written.
+- `max_request_arena_bytes` bounds per-request headers, bodies, params,
+  decoded query values, response headers, and middleware locals.
+- `max_response_bytes` rejects oversized response bodies before they are
+  written.
+- `max_response_headers` and `max_response_head_bytes` bound the response head
+  independently of the body. Weft reserves head room for `Content-Length`,
+  `Date`, and `Connection` fields that Netz may add, so the configured budget
+  describes the complete wire head. Header names and values are validated and
+  copied into the response arena; CR/LF injection is rejected.
+- `max_middleware` bounds the combined server/group/route middleware chain.
+- `max_query_params` bounds decoded query pairs.
 - `max_connections` bounds concurrent connections through the worker count.
 - `max_requests_per_connection` bounds persistent HTTP/1 reuse.
 
@@ -110,8 +192,15 @@ short-circuits the chain. A response written before `next()` is preserved.
 3. await the serving task;
 4. call `server.deinit()`.
 
-`stop()` cancels pending accepts. An in-flight request may be interrupted by
-cancellation; fully graceful drain is a future slice.
+`stop()` is cooperative: idle workers stop accepting within
+`accept_poll_interval`, in-flight requests finish, and subsequent responses
+carry `Connection: close`. `serve` waits for workers to drain before returning.
+A connection blocked waiting for a subsequent keep-alive request is bounded by
+`request_head_timeout` (30 seconds by default). A handler that never returns
+still holds its worker; fully preemptive cancellation is not part of this slice.
+
+Register routes before calling `serve`. Matching is read-only, but registration
+itself is not synchronized with in-flight requests.
 
 ## Build and test
 
@@ -119,10 +208,19 @@ cancellation; fully graceful drain is a future slice.
 zig build
 zig build test
 zig build run-hello
+zig build bench -Doptimize=ReleaseFast
 ```
+
+The router benchmark registers 1024 static routes and 256 parameter routes.
+On the reference development host, a ReleaseFast run reports roughly 80 ns per
+static lookup and 90 ns per parameter lookup (about 12.4M and 11.1M lookups per
+second), including capture allocation from a fixed arena.
 
 ## Status
 
-The first slice targets HTTP/1.1 through `netz.http1.runtime`. The public
-`Ctx`/`Handler`/`Router` surface is protocol-version agnostic so an HTTP/2 or
-HTTP/3 adapter can be added without changing application handlers.
+The first slice targets HTTP/1.1 through `netz.http1.runtime`, and mirrors
+HTTP/1.0 request versions with appropriate connection semantics. The public
+`Ctx`/`Handler`/`Router` surface is protocol-version agnostic so an HTTP/2,
+HTTP/3, or TLS adapter can be added without changing application handlers.
+Streaming responses, static-file serving, and preemptive request deadlines
+remain future slices.

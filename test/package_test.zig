@@ -265,3 +265,446 @@ test "package: query parameters are parsed" {
     try context.run();
     try std.testing.expectEqualStrings("weft", context.response.body);
 }
+
+const MethodHandlers = struct {
+    fn resource(ctx: *weft.Ctx) anyerror!void {
+        try ctx.text("resource");
+    }
+
+    fn echo(ctx: *weft.Ctx) anyerror!void {
+        try ctx.json(.{
+            .name = ctx.param("name") orelse "",
+            .q = ctx.queryParam("q") orelse "",
+        });
+    }
+
+    fn tooManyHeaders(ctx: *weft.Ctx) anyerror!void {
+        try ctx.setHeader("X-A", "a");
+        try ctx.setHeader("X-B", "b");
+        try ctx.setHeader("X-C", "c");
+        try ctx.text("ok");
+    }
+};
+
+test "package: 405, automatic OPTIONS, and HEAD fallback" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+            .max_requests_per_connection = 4,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.addRaw(
+        .GET,
+        "/resource",
+        weft.handler(MethodHandlers.resource),
+        .{},
+    );
+    try router.addRaw(
+        .POST,
+        "/resource",
+        weft.handler(MethodHandlers.resource),
+        .{},
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+    const uri = try std.fmt.allocPrint(allocator, "{s}/resource", .{base});
+    defer allocator.free(uri);
+
+    var put_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .method = .PUT },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer put_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 405), put_response.response.status);
+    const allow = put_response.response.header("allow").?;
+    try std.testing.expect(std.mem.indexOf(u8, allow, "GET") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allow, "HEAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allow, "POST") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allow, "OPTIONS") != null);
+
+    var options_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .method = .OPTIONS },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer options_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 204),
+        options_response.response.status,
+    );
+    try std.testing.expect(
+        options_response.response.header("allow") != null,
+    );
+
+    var head_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .method = .HEAD },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer head_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), head_response.response.status);
+    try std.testing.expectEqualStrings("", head_response.response.body);
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: decoded params and query values" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().addRaw(
+        .GET,
+        "/hello/:name",
+        weft.handler(MethodHandlers.echo),
+        .{},
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/hello/a%20b?q=hello+world",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"name\":\"a b\",\"q\":\"hello world\"}",
+        response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: malformed query encoding is a 400" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().addRaw(
+        .GET,
+        "/hello/:name",
+        weft.handler(MethodHandlers.echo),
+        .{},
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/hello/x?q=%zz",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 400), response.response.status);
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: global middleware covers 404 responses" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .middleware = &.{weft.handler(weft.middleware.serverHeader)},
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/missing",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 404), response.response.status);
+    try std.testing.expectEqualStrings(
+        "weft",
+        response.response.header("server").?,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: HTTP/1.0 responses mirror the request version" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .version = .http_1_0 },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(
+        netz.http1.Version.http_1_0,
+        response.response.version,
+    );
+    try std.testing.expectEqualStrings(
+        "hello from weft",
+        response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: stop drains an idle keep-alive connection" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .request_head_timeout = .fromMilliseconds(100),
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const address = server.address();
+    var stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    // Give the worker time to accept and block waiting for a request head.
+    try std.Io.sleep(io, .fromMilliseconds(50), .awake);
+    server.stop();
+    try group.await(io);
+}
+
+test "package: response header budget failure becomes 500" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .max_response_headers = 4,
+                .max_response_head_bytes = 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().addRaw(
+        .GET,
+        "/headers",
+        weft.handler(MethodHandlers.tooManyHeaders),
+        .{},
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/headers",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 500), response.response.status);
+
+    server.stop();
+    try group.await(io);
+}

@@ -7,8 +7,20 @@ pub const Handler = ctx_mod.Handler;
 pub const Param = ctx_mod.Param;
 pub const max_params = ctx_mod.max_params;
 
+/// Maximum number of path segments accepted by the matcher. The bound keeps
+/// recursive traversal and node teardown stack-safe for hostile targets.
+pub const max_path_segments = 128;
+
+/// Maximum methods stored in one `Allow` field.
+pub const max_allowed_methods = 16;
+
 pub const RouteOptions = struct {
     /// Middleware runs in order before the route handler.
+    middleware: []const Handler = &.{},
+};
+
+pub const GroupOptions = struct {
+    /// Middleware runs before every route registered through the group.
     middleware: []const Handler = &.{},
 };
 
@@ -18,14 +30,78 @@ pub const Route = struct {
     pattern: []const u8,
     handler: Handler,
     middleware: []const Handler,
+    /// Segment weights used for diagnostics and tie-breaking documentation.
+    /// Matching itself walks the trie, where precedence is structural.
     specificity: u32,
+    /// Number of `:param` and `*` captures in `pattern`.
+    capture_count: usize,
 };
 
 pub const Match = struct {
     route: *const Route,
+    /// Raw (not percent-decoded) path capture values. `Ctx.param` exposes
+    /// decoded values.
     params: []const Param,
     path: []const u8,
     query: []const u8 = "",
+
+    pub fn deinit(self: Match, allocator: std.mem.Allocator) void {
+        allocator.free(self.params);
+    }
+};
+
+/// Methods that match a path but not the requested method. The server turns
+/// this into `405 Method Not Allowed` with an `Allow` field.
+pub const AllowedMethods = struct {
+    methods: [max_allowed_methods]netz.http1.Method = undefined,
+    len: usize = 0,
+
+    pub fn add(self: *AllowedMethods, method: netz.http1.Method) void {
+        self.addRaw(method);
+        if (method == .GET) self.addRaw(.HEAD);
+        // The server answers OPTIONS for any matched path.
+        self.addRaw(.OPTIONS);
+    }
+
+    pub fn contains(self: *const AllowedMethods, method: netz.http1.Method) bool {
+        for (self.methods[0..self.len]) |candidate| {
+            if (methodEqual(candidate, method)) return true;
+        }
+        return false;
+    }
+
+    pub fn slice(self: *const AllowedMethods) []const netz.http1.Method {
+        return self.methods[0..self.len];
+    }
+
+    /// Render the field value, e.g. `GET, HEAD, OPTIONS`.
+    pub fn value(self: *const AllowedMethods, allocator: std.mem.Allocator) ![]const u8 {
+        var names: [max_allowed_methods][]const u8 = undefined;
+        for (self.methods[0..self.len], 0..) |method, index| {
+            names[index] = method.string();
+        }
+        return std.mem.join(allocator, ", ", names[0..self.len]);
+    }
+
+    fn addRaw(self: *AllowedMethods, method: netz.http1.Method) void {
+        if (self.contains(method)) return;
+        if (self.len >= max_allowed_methods) return;
+        self.methods[self.len] = method;
+        self.len += 1;
+    }
+};
+
+pub const Resolution = union(enum) {
+    matched: Match,
+    method_not_allowed: AllowedMethods,
+    not_found,
+};
+
+const Node = struct {
+    static_children: std.StringHashMapUnmanaged(*Node) = .empty,
+    param: ?*Node = null,
+    routes: std.ArrayListUnmanaged(*Route) = .empty,
+    wildcard_routes: std.ArrayListUnmanaged(*Route) = .empty,
 };
 
 const Segment = struct {
@@ -51,34 +127,278 @@ const SegmentIterator = struct {
     }
 };
 
-const Candidate = struct {
-    route: ?*const Route = null,
-    params: [max_params]Param = undefined,
+const Captures = struct {
+    values: [max_params][]const u8 = undefined,
     count: usize = 0,
-    score: u32 = 0,
+};
+
+const PatternInfo = struct {
+    captures: usize,
+    segments: usize,
 };
 
 /// A method-and-path router with `:param` captures and a trailing `*` wildcard.
 ///
-/// Routes are stored in registration order. Matching selects the most specific
-/// candidate (static > parameter > wildcard), with registration order breaking
-/// ties. This keeps the implementation small while giving deterministic
-/// precedence.
+/// Routes are indexed by a segment trie. At every segment the matcher prefers
+/// a static child, then a parameter child, then a wildcard. This makes lookup
+/// proportional to the number of path segments instead of the number of
+/// registered routes, while preserving the usual static > parameter > wildcard
+/// precedence. Registration order only matters for otherwise identical routes,
+/// which are rejected as duplicates.
+///
+/// Register routes before starting the server. Matching is read-only, but the
+/// router itself is not internally synchronized against concurrent registration.
 pub fn Router(comptime H: type) type {
     return struct {
+        const Self = @This();
+
+        const GroupStorage = struct {
+            prefix: []const u8,
+            middleware: []const Handler,
+        };
+
         allocator: std.mem.Allocator,
-        routes: std.ArrayListUnmanaged(Route) = .empty,
+        root: Node = .{},
+        all_routes: std.ArrayListUnmanaged(*Route) = .empty,
+        groups: std.ArrayListUnmanaged(*GroupStorage) = .empty,
+        max_middleware: usize = 32,
+
+        /// A prefix and middleware scope returned by `Router.group`.
+        pub const Group = struct {
+            owner: *Self,
+            prefix: []const u8,
+            middleware: []const Handler,
+
+            pub fn addRaw(
+                self: Group,
+                method: ?netz.http1.Method,
+                pattern: []const u8,
+                handler: Handler,
+                route_options: RouteOptions,
+            ) !void {
+                if (pattern.len == 0) return error.InvalidPattern;
+                const combined_pattern = try joinPath(
+                    self.owner.allocator,
+                    self.prefix,
+                    pattern,
+                );
+                defer self.owner.allocator.free(combined_pattern);
+                const combined_middleware = try concatHandlers(
+                    self.owner.allocator,
+                    self.middleware,
+                    route_options.middleware,
+                );
+                defer self.owner.allocator.free(combined_middleware);
+
+                try self.owner.addRaw(
+                    method,
+                    combined_pattern,
+                    handler,
+                    .{ .middleware = combined_middleware },
+                );
+            }
+
+            pub fn get(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    .GET,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            pub fn post(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    .POST,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            pub fn put(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    .PUT,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            pub fn delete(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    .DELETE,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            pub fn patch(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    .PATCH,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            pub fn head(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    .HEAD,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            pub fn options(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    .OPTIONS,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            pub fn any(
+                self: Group,
+                pattern: []const u8,
+                comptime f: fn (*H, *Ctx) anyerror!void,
+                route_options: RouteOptions,
+            ) !void {
+                return self.addRaw(
+                    null,
+                    pattern,
+                    ctx_mod.handlerFor(H, f),
+                    route_options,
+                );
+            }
+
+            /// Create a nested group whose prefix and middleware extend this
+            /// group.
+            pub fn group(
+                self: Group,
+                prefix: []const u8,
+                group_options: GroupOptions,
+            ) !Group {
+                return self.owner.groupWith(
+                    self.prefix,
+                    self.middleware,
+                    prefix,
+                    group_options.middleware,
+                );
+            }
+        };
 
         pub fn init(allocator: std.mem.Allocator) @This() {
             return .{ .allocator = allocator };
         }
 
+        pub fn initWithMaxMiddleware(
+            allocator: std.mem.Allocator,
+            max_middleware: usize,
+        ) @This() {
+            return .{
+                .allocator = allocator,
+                .max_middleware = max_middleware,
+            };
+        }
+
+        /// Create a route group with a shared prefix and middleware chain.
+        pub fn group(
+            self: *@This(),
+            prefix: []const u8,
+            group_options: GroupOptions,
+        ) !Group {
+            return self.groupWith("", &.{}, prefix, group_options.middleware);
+        }
+
+        fn groupWith(
+            self: *@This(),
+            base_prefix: []const u8,
+            base_middleware: []const Handler,
+            prefix: []const u8,
+            middleware: []const Handler,
+        ) !Group {
+            const normalized = try normalizeGroupPrefix(prefix);
+            const combined_prefix = try joinPath(
+                self.allocator,
+                base_prefix,
+                normalized,
+            );
+            errdefer self.allocator.free(combined_prefix);
+            const combined_middleware = try concatHandlers(
+                self.allocator,
+                base_middleware,
+                middleware,
+            );
+            errdefer self.allocator.free(combined_middleware);
+
+            const storage = try self.allocator.create(GroupStorage);
+            errdefer self.allocator.destroy(storage);
+            storage.* = .{
+                .prefix = combined_prefix,
+                .middleware = combined_middleware,
+            };
+            try self.groups.append(self.allocator, storage);
+
+            return .{
+                .owner = self,
+                .prefix = storage.prefix,
+                .middleware = storage.middleware,
+            };
+        }
+
         pub fn deinit(self: *@This()) void {
-            for (self.routes.items) |route| {
+            for (self.all_routes.items) |route| {
                 self.allocator.free(route.pattern);
                 self.allocator.free(route.middleware);
+                self.allocator.destroy(route);
             }
-            self.routes.deinit(self.allocator);
+            self.all_routes.deinit(self.allocator);
+            for (self.groups.items) |storage| {
+                self.allocator.free(storage.prefix);
+                self.allocator.free(storage.middleware);
+                self.allocator.destroy(storage);
+            }
+            self.groups.deinit(self.allocator);
+            self.deinitNode(&self.root);
             self.* = undefined;
         }
 
@@ -89,6 +409,14 @@ pub fn Router(comptime H: type) type {
             handler: Handler,
             route_options: RouteOptions,
         ) !void {
+            const info = try validatePattern(pattern);
+            if (route_options.middleware.len > self.max_middleware) {
+                return error.TooMuchMiddleware;
+            }
+            try self.checkConflict(pattern, method);
+
+            const route = try self.allocator.create(Route);
+            errdefer self.allocator.destroy(route);
             const pattern_copy = try self.allocator.dupe(u8, pattern);
             errdefer self.allocator.free(pattern_copy);
             const middleware_copy = try self.allocator.dupe(
@@ -97,13 +425,39 @@ pub fn Router(comptime H: type) type {
             );
             errdefer self.allocator.free(middleware_copy);
 
-            try self.routes.append(self.allocator, .{
+            route.* = .{
                 .method = method,
                 .pattern = pattern_copy,
                 .handler = handler,
                 .middleware = middleware_copy,
                 .specificity = computeSpecificity(pattern),
-            });
+                .capture_count = info.captures,
+            };
+
+            const trimmed = std.mem.trim(u8, pattern_copy, "/");
+            var node = &self.root;
+            var segments = SegmentIterator{ .source = trimmed };
+            var wildcard = false;
+            while (segments.next()) |segment| {
+                if (std.mem.eql(u8, segment.text, "*")) {
+                    try node.wildcard_routes.append(self.allocator, route);
+                    wildcard = true;
+                    break;
+                }
+                if (segment.text[0] == ':') {
+                    if (node.param == null) {
+                        node.param = try self.createNode();
+                    }
+                    node = node.param.?;
+                } else {
+                    node = try self.staticChild(node, segment.text);
+                }
+            }
+
+            if (!wildcard) {
+                try node.routes.append(self.allocator, route);
+            }
+            try self.all_routes.append(self.allocator, route);
         }
 
         pub fn get(
@@ -179,42 +533,326 @@ pub fn Router(comptime H: type) type {
             return self.addRaw(null, pattern, ctx_mod.handlerFor(H, f), route_options);
         }
 
+        /// Match a method and path, distinguishing a missing path from a
+        /// present path with no matching method.
+        pub fn resolve(
+            self: *@This(),
+            method: netz.http1.Method,
+            path: []const u8,
+            allocator: std.mem.Allocator,
+        ) !Resolution {
+            const source = if (std.mem.eql(u8, path, "*"))
+                ""
+            else if (path.len > 0 and path[0] == '/')
+                std.mem.trim(u8, path, "/")
+            else
+                return .not_found;
+
+            var captures = Captures{};
+            var allowed = AllowedMethods{};
+            if (self.matchNode(&self.root, source, 0, 0, method, &captures, &allowed)) |route| {
+                return .{ .matched = try buildMatch(
+                    route,
+                    &captures,
+                    allocator,
+                    path,
+                ) };
+            }
+
+            // HEAD falls back to GET, matching the HTTP semantics that a GET
+            // resource is readable without its representation.
+            if (method == .HEAD) {
+                var get_captures = Captures{};
+                if (self.matchNode(&self.root, source, 0, 0, .GET, &get_captures, &allowed)) |route| {
+                    return .{ .matched = try buildMatch(
+                        route,
+                        &get_captures,
+                        allocator,
+                        path,
+                    ) };
+                }
+            }
+
+            if (allowed.len > 0) return .{ .method_not_allowed = allowed };
+            return .not_found;
+        }
+
+        /// Match a method and path, returning null for both a missing path and
+        /// a method mismatch. Use `resolve` when the distinction matters.
         pub fn match(
             self: *@This(),
             method: netz.http1.Method,
             path: []const u8,
             allocator: std.mem.Allocator,
         ) !?Match {
-            var best: ?Candidate = null;
-            for (self.routes.items) |*route| {
-                if (route.method) |route_method| {
-                    if (!std.mem.eql(
-                        u8,
-                        route_method.string(),
-                        method.string(),
-                    )) continue;
-                }
+            return switch (try self.resolve(method, path, allocator)) {
+                .matched => |matched| matched,
+                else => null,
+            };
+        }
 
-                var candidate = Candidate{};
-                if (!matchRoute(route, path, &candidate)) continue;
-                if (best == null or candidate.score > best.?.score) {
-                    candidate.route = route;
-                    best = candidate;
+        fn matchNode(
+            self: *@This(),
+            node: *Node,
+            source: []const u8,
+            position: usize,
+            depth: usize,
+            method: netz.http1.Method,
+            captures: *Captures,
+            allowed: *AllowedMethods,
+        ) ?*Route {
+            if (depth > max_path_segments) return null;
+            if (position >= source.len) {
+                for (node.routes.items) |route| {
+                    if (routeMatches(route.method, method)) return route;
+                    if (route.method) |route_method| allowed.add(route_method);
+                }
+                for (node.wildcard_routes.items) |route| {
+                    if (routeMatches(route.method, method)) {
+                        if (captures.count >= max_params) return null;
+                        captures.values[captures.count] = "";
+                        captures.count += 1;
+                        return route;
+                    }
+                    if (route.method) |route_method| allowed.add(route_method);
+                }
+                return null;
+            }
+
+            const end = std.mem.indexOfScalarPos(
+                u8,
+                source,
+                position,
+                '/',
+            ) orelse source.len;
+            const segment = source[position..end];
+            const next_position = if (end < source.len) end + 1 else source.len;
+
+            if (node.static_children.get(segment)) |child| {
+                if (self.matchNode(
+                    child,
+                    source,
+                    next_position,
+                    depth + 1,
+                    method,
+                    captures,
+                    allowed,
+                )) |route| return route;
+            }
+
+            if (segment.len > 0) {
+                if (node.param) |child| {
+                    if (captures.count >= max_params) return null;
+                    captures.values[captures.count] = segment;
+                    captures.count += 1;
+                    if (self.matchNode(
+                        child,
+                        source,
+                        next_position,
+                        depth + 1,
+                        method,
+                        captures,
+                        allowed,
+                    )) |route| return route;
+                    captures.count -= 1;
                 }
             }
 
-            const winner = best orelse return null;
-            const params = try allocator.dupe(
-                Param,
-                winner.params[0..winner.count],
-            );
+            for (node.wildcard_routes.items) |route| {
+                if (routeMatches(route.method, method)) {
+                    if (captures.count >= max_params) return null;
+                    captures.values[captures.count] = source[position..];
+                    captures.count += 1;
+                    return route;
+                }
+                if (route.method) |route_method| allowed.add(route_method);
+            }
+            return null;
+        }
+
+        fn buildMatch(
+            route: *const Route,
+            captures: *const Captures,
+            allocator: std.mem.Allocator,
+            path: []const u8,
+        ) !Match {
+            const params = try allocator.alloc(Param, route.capture_count);
+            var capture_index: usize = 0;
+            var segments = SegmentIterator{
+                .source = std.mem.trim(u8, route.pattern, "/"),
+            };
+            while (segments.next()) |segment| {
+                if (segment.text[0] == ':') {
+                    params[capture_index] = .{
+                        .name = segment.text[1..],
+                        .value = captures.values[capture_index],
+                    };
+                    capture_index += 1;
+                } else if (std.mem.eql(u8, segment.text, "*")) {
+                    params[capture_index] = .{
+                        .name = "*",
+                        .value = captures.values[capture_index],
+                    };
+                    capture_index += 1;
+                }
+            }
             return .{
-                .route = winner.route.?,
+                .route = route,
                 .params = params,
                 .path = path,
             };
         }
+
+        fn createNode(self: *@This()) !*Node {
+            const node = try self.allocator.create(Node);
+            node.* = .{};
+            return node;
+        }
+
+        fn staticChild(
+            self: *@This(),
+            node: *Node,
+            segment: []const u8,
+        ) !*Node {
+            if (node.static_children.get(segment)) |child| return child;
+
+            const key = try self.allocator.dupe(u8, segment);
+            errdefer self.allocator.free(key);
+            const child = try self.createNode();
+            errdefer self.allocator.destroy(child);
+            try node.static_children.put(self.allocator, key, child);
+            return child;
+        }
+
+        /// Reject duplicate and shadowed registrations before mutating the
+        /// trie, so a failed add leaves the router unchanged.
+        fn checkConflict(
+            self: *@This(),
+            pattern: []const u8,
+            method: ?netz.http1.Method,
+        ) !void {
+            const trimmed = std.mem.trim(u8, pattern, "/");
+            var node: *Node = &self.root;
+            var segments = SegmentIterator{ .source = trimmed };
+            while (segments.next()) |segment| {
+                if (std.mem.eql(u8, segment.text, "*")) {
+                    try checkRoutesConflict(node.wildcard_routes.items, method);
+                    return;
+                }
+                if (segment.text[0] == ':') {
+                    node = node.param orelse return;
+                } else {
+                    node = node.static_children.get(segment.text) orelse return;
+                }
+            }
+            try checkRoutesConflict(node.routes.items, method);
+        }
+
+        fn deinitNode(self: *@This(), node: *Node) void {
+            var iterator = node.static_children.iterator();
+            while (iterator.next()) |entry| {
+                self.deinitNode(entry.value_ptr.*);
+                self.allocator.free(entry.key_ptr.*);
+            }
+            node.static_children.deinit(self.allocator);
+            if (node.param) |child| self.deinitNode(child);
+            node.routes.deinit(self.allocator);
+            node.wildcard_routes.deinit(self.allocator);
+            if (node != &self.root) self.allocator.destroy(node);
+        }
     };
+}
+
+fn checkRoutesConflict(
+    routes: []const *Route,
+    method: ?netz.http1.Method,
+) !void {
+    for (routes) |route| {
+        const existing = route.method orelse return error.RouteConflict;
+        const incoming = method orelse return error.RouteConflict;
+        if (methodEqual(existing, incoming)) return error.DuplicateRoute;
+    }
+}
+
+fn normalizeGroupPrefix(prefix: []const u8) ![]const u8 {
+    if (prefix.len == 0) return "";
+    if (prefix[0] != '/') return error.InvalidPattern;
+    const trimmed = std.mem.trimEnd(u8, prefix, "/");
+    if (trimmed.len == 0) return "";
+
+    var segments = SegmentIterator{ .source = trimmed[1..] };
+    while (segments.next()) |segment| {
+        if (segment.text.len == 0) return error.InvalidPattern;
+        for (segment.text) |char| {
+            if (char == ':' or char == '*' or char == '?' or char == '#' or
+                char < 0x20 or char == 0x7f)
+            {
+                return error.InvalidPattern;
+            }
+        }
+    }
+    return trimmed;
+}
+
+fn joinPath(
+    allocator: std.mem.Allocator,
+    prefix: []const u8,
+    suffix: []const u8,
+) ![]u8 {
+    if (suffix.len == 0) return allocator.dupe(u8, prefix);
+    if (suffix[0] != '/') return error.InvalidPattern;
+    if (std.mem.eql(u8, suffix, "/")) {
+        return allocator.dupe(u8, if (prefix.len == 0) "/" else prefix);
+    }
+    if (prefix.len == 0) return allocator.dupe(u8, suffix);
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, suffix });
+}
+
+fn concatHandlers(
+    allocator: std.mem.Allocator,
+    first: []const Handler,
+    second: []const Handler,
+) ![]const Handler {
+    const total = first.len + second.len;
+    const combined = try allocator.alloc(Handler, total);
+    @memcpy(combined[0..first.len], first);
+    @memcpy(combined[first.len..], second);
+    return combined;
+}
+
+fn validatePattern(pattern: []const u8) !PatternInfo {
+    if (pattern.len == 0 or pattern[0] != '/') return error.InvalidPattern;
+
+    // Allow trailing slashes (`/users/` equals `/users`) but reject interior
+    // or repeated empty segments, which would otherwise create ambiguous
+    // matches.
+    const trimmed = std.mem.trimEnd(u8, pattern[1..], "/");
+    if (trimmed.len == 0) return .{ .captures = 0, .segments = 0 };
+
+    var captures: usize = 0;
+    var segments_count: usize = 0;
+    var segments = SegmentIterator{ .source = trimmed };
+    while (segments.next()) |segment| {
+        segments_count += 1;
+        if (segments_count > max_path_segments) return error.PatternTooDeep;
+        if (segment.text.len == 0) return error.InvalidPattern;
+        for (segment.text) |char| {
+            if (char == '?' or char == '#' or char < 0x20 or char == 0x7f) {
+                return error.InvalidPattern;
+            }
+        }
+        if (segment.text[0] == ':') {
+            if (segment.text.len == 1) return error.InvalidPattern;
+            captures += 1;
+        } else if (segment.text[0] == '*') {
+            if (!std.mem.eql(u8, segment.text, "*")) return error.InvalidPattern;
+            if (segments.next() != null) return error.InvalidPattern;
+            captures += 1;
+            break;
+        }
+        if (captures > max_params) return error.TooManyParams;
+    }
+    return .{ .captures = captures, .segments = segments_count };
 }
 
 fn computeSpecificity(pattern: []const u8) u32 {
@@ -233,70 +871,23 @@ fn computeSpecificity(pattern: []const u8) u32 {
     return score;
 }
 
-fn matchRoute(
-    route: *const Route,
-    path: []const u8,
-    out: *Candidate,
+fn routeMatches(
+    route_method: ?netz.http1.Method,
+    request_method: netz.http1.Method,
 ) bool {
-    const pattern = std.mem.trim(u8, route.pattern, "/");
-    const target = std.mem.trim(u8, path, "/");
-    var pattern_segments = SegmentIterator{ .source = pattern };
-    var path_segments = SegmentIterator{ .source = target };
+    const method = route_method orelse return true;
+    return methodEqual(method, request_method);
+}
 
-    var count: usize = 0;
-    var score: u32 = 0;
-
-    while (true) {
-        const pattern_segment = pattern_segments.next();
-        const path_segment = path_segments.next();
-
-        if (pattern_segment == null and path_segment == null) break;
-        if (pattern_segment == null) return false;
-
-        if (path_segment == null) {
-            if (!std.mem.eql(u8, pattern_segment.?.text, "*")) return false;
-            if (pattern_segments.next() != null) return false;
-            if (count >= max_params) return false;
-            out.params[count] = .{ .name = "*", .value = "" };
-            count += 1;
-            score += 1;
-            break;
-        }
-
-        const pattern_text = pattern_segment.?.text;
-        const path_text = path_segment.?.text;
-
-        if (std.mem.eql(u8, pattern_text, "*")) {
-            if (pattern_segments.next() != null) return false;
-            if (count >= max_params) return false;
-            out.params[count] = .{
-                .name = "*",
-                .value = target[path_segment.?.start..],
-            };
-            count += 1;
-            score += 1;
-            break;
-        }
-
-        if (pattern_text.len > 0 and pattern_text[0] == ':') {
-            if (path_text.len == 0) return false;
-            if (count >= max_params) return false;
-            out.params[count] = .{
-                .name = pattern_text[1..],
-                .value = path_text,
-            };
-            count += 1;
-            score += 2;
-            continue;
-        }
-
-        if (!std.mem.eql(u8, pattern_text, path_text)) return false;
-        score += 4;
-    }
-
-    out.count = count;
-    out.score = score;
-    return true;
+fn methodEqual(a: netz.http1.Method, b: netz.http1.Method) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .extension => |a_extension| switch (b) {
+            .extension => |b_extension| std.mem.eql(u8, a_extension, b_extension),
+            else => false,
+        },
+        else => true,
+    };
 }
 
 test "static routes match exact paths" {
@@ -370,4 +961,171 @@ test "static routes win over parameter routes" {
     defer allocator.free(matched.params);
     try std.testing.expectEqualStrings("/users/me", matched.route.pattern);
     try std.testing.expectEqual(@as(usize, 0), matched.params.len);
+}
+
+test "leftmost static segment wins independent of registration order" {
+    const allocator = std.testing.allocator;
+    var router = Router(void).init(allocator);
+    defer router.deinit();
+
+    const Dummy = struct {
+        fn handle(ctx: *Ctx) anyerror!void {
+            _ = ctx;
+        }
+    };
+
+    try router.addRaw(.GET, "/a/:b/c", ctx_mod.handler(Dummy.handle), .{});
+    try router.addRaw(.GET, "/a/b/:c", ctx_mod.handler(Dummy.handle), .{});
+
+    const matched = (try router.match(.GET, "/a/b/c", allocator)).?;
+    defer allocator.free(matched.params);
+    try std.testing.expectEqualStrings("/a/b/:c", matched.route.pattern);
+    try std.testing.expectEqualStrings("c", matched.params[0].value);
+}
+
+test "method mismatch returns allowed methods and HEAD falls back to GET" {
+    const allocator = std.testing.allocator;
+    var router = Router(void).init(allocator);
+    defer router.deinit();
+
+    const Dummy = struct {
+        fn handle(ctx: *Ctx) anyerror!void {
+            _ = ctx;
+        }
+    };
+
+    try router.addRaw(.GET, "/resource", ctx_mod.handler(Dummy.handle), .{});
+    try router.addRaw(.POST, "/resource", ctx_mod.handler(Dummy.handle), .{});
+    try router.addRaw(.DELETE, "/other", ctx_mod.handler(Dummy.handle), .{});
+
+    const head = (try router.resolve(.HEAD, "/resource", allocator)).matched;
+    defer allocator.free(head.params);
+    try std.testing.expectEqual(netz.http1.Method.GET, head.route.method.?);
+
+    const denied = try router.resolve(.PUT, "/resource", allocator);
+    try std.testing.expect(denied == .method_not_allowed);
+    try std.testing.expect(denied.method_not_allowed.contains(.GET));
+    try std.testing.expect(denied.method_not_allowed.contains(.HEAD));
+    try std.testing.expect(denied.method_not_allowed.contains(.POST));
+    try std.testing.expect(denied.method_not_allowed.contains(.OPTIONS));
+
+    const missing = try router.resolve(.PUT, "/missing", allocator);
+    try std.testing.expect(missing == .not_found);
+}
+
+test "invalid and conflicting registrations are rejected" {
+    const allocator = std.testing.allocator;
+    var router = Router(void).init(allocator);
+    defer router.deinit();
+
+    const Dummy = struct {
+        fn handle(ctx: *Ctx) anyerror!void {
+            _ = ctx;
+        }
+    };
+
+    try router.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{});
+    try std.testing.expectError(
+        error.DuplicateRoute,
+        router.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{}),
+    );
+    try std.testing.expectError(
+        error.RouteConflict,
+        router.addRaw(null, "/users/:id", ctx_mod.handler(Dummy.handle), .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidPattern,
+        router.addRaw(.GET, "/users/*/edit", ctx_mod.handler(Dummy.handle), .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidPattern,
+        router.addRaw(.GET, "users", ctx_mod.handler(Dummy.handle), .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidPattern,
+        router.addRaw(.GET, "//users", ctx_mod.handler(Dummy.handle), .{}),
+    );
+}
+
+test "route groups compose prefixes and middleware" {
+    const allocator = std.testing.allocator;
+    var router = Router(void).init(allocator);
+    defer router.deinit();
+
+    const Dummy = struct {
+        fn handle(ctx: *Ctx) anyerror!void {
+            _ = ctx;
+        }
+
+        fn middleware(ctx: *Ctx) anyerror!void {
+            try ctx.next();
+        }
+    };
+
+    var api = try router.group("/api", .{
+        .middleware = &.{ctx_mod.handler(Dummy.middleware)},
+    });
+    try api.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{});
+
+    var v1 = try api.group("/v1", .{
+        .middleware = &.{ctx_mod.handler(Dummy.middleware)},
+    });
+    try v1.addRaw(.GET, "/health", ctx_mod.handler(Dummy.handle), .{});
+
+    const user = (try router.match(.GET, "/api/users/42", allocator)).?;
+    defer allocator.free(user.params);
+    try std.testing.expectEqualStrings("/api/users/:id", user.route.pattern);
+    try std.testing.expectEqual(@as(usize, 1), user.route.middleware.len);
+
+    const health = (try router.match(.GET, "/api/v1/health", allocator)).?;
+    defer allocator.free(health.params);
+    try std.testing.expectEqualStrings("/api/v1/health", health.route.pattern);
+    try std.testing.expectEqual(@as(usize, 2), health.route.middleware.len);
+
+    try std.testing.expectError(
+        error.InvalidPattern,
+        router.group("api", .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidPattern,
+        router.group("/api/:version", .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidPattern,
+        api.addRaw(.GET, "", ctx_mod.handler(Dummy.handle), .{}),
+    );
+}
+
+test "lookup cost stays flat across many routes" {
+    const allocator = std.testing.allocator;
+    var router = Router(void).init(allocator);
+    defer router.deinit();
+
+    const Dummy = struct {
+        fn handle(ctx: *Ctx) anyerror!void {
+            _ = ctx;
+        }
+    };
+
+    var index: usize = 0;
+    while (index < 512) : (index += 1) {
+        const pattern = try std.fmt.allocPrint(
+            allocator,
+            "/api/v1/resource{d}",
+            .{index},
+        );
+        defer allocator.free(pattern);
+        try router.addRaw(.GET, pattern, ctx_mod.handler(Dummy.handle), .{});
+    }
+
+    const matched = (try router.match(
+        .GET,
+        "/api/v1/resource511",
+        allocator,
+    )).?;
+    defer allocator.free(matched.params);
+    try std.testing.expectEqualStrings(
+        "/api/v1/resource511",
+        matched.route.pattern,
+    );
 }

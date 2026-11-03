@@ -2,9 +2,13 @@ const std = @import("std");
 const netz = @import("netz");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
+const query_mod = @import("query.zig");
+const cookie_mod = @import("cookie.zig");
 
 pub const Response = response_mod.Response;
 pub const Limits = limits_mod.Limits;
+pub const QueryPair = query_mod.Pair;
+pub const SetCookie = cookie_mod.SetCookie;
 
 pub const Param = struct {
     name: []const u8,
@@ -63,6 +67,10 @@ pub const Ctx = struct {
     limits: Limits,
     request: *const netz.http1.Request,
     query: []const u8 = "",
+    /// Decoded query pairs, bounded by `limits.max_query_params`.
+    query_params: []const QueryPair = &.{},
+    /// Decoded path captures. `Router` produces raw captures; the server
+    /// decodes them before invoking handlers.
     params: []const Param = &.{},
     response: Response,
     locals: Locals = .{},
@@ -125,18 +133,74 @@ pub const Ctx = struct {
         return null;
     }
 
-    /// Look up the first raw query value. Percent-decoding is intentionally
-    /// left to the application for now.
+    /// Look up the first decoded query value. Repeated keys resolve to the
+    /// first occurrence; `queryPairs` exposes the full ordered list.
     pub fn queryParam(self: *const Ctx, name: []const u8) ?[]const u8 {
+        if (self.query_params.len > 0) {
+            for (self.query_params) |pair| {
+                if (std.mem.eql(u8, pair.name, name)) return pair.value;
+            }
+            return null;
+        }
+
+        // Fallback for manually constructed contexts that only set `query`.
         var pairs = std.mem.splitScalar(u8, self.query, '&');
         while (pairs.next()) |pair| {
-            const equals = std.mem.indexOfScalar(u8, pair, '=') orelse
-                continue;
+            const equals = std.mem.indexOfScalar(u8, pair, '=') orelse pair.len;
             if (std.mem.eql(u8, pair[0..equals], name)) {
-                return pair[equals + 1 ..];
+                return query_mod.decodeComponent(
+                    self.arena,
+                    pair[equals + 1 ..],
+                    true,
+                ) catch null;
             }
         }
         return null;
+    }
+
+    /// All decoded query pairs in wire order.
+    pub fn queryPairs(self: *const Ctx) []const QueryPair {
+        return self.query_params;
+    }
+
+    /// Parse the request body as JSON using the request arena.
+    pub fn bodyJson(self: *Ctx, comptime T: type) !T {
+        return std.json.parseFromSliceLeaky(T, self.arena, self.body(), .{});
+    }
+
+    /// Parse an `application/x-www-form-urlencoded` request body. The returned
+    /// query owns arena allocations for the request lifetime.
+    pub fn bodyForm(self: *Ctx) !query_mod.Query {
+        const media_type = "application/x-www-form-urlencoded";
+        const content_type = self.header("content-type") orelse
+            return error.UnsupportedMediaType;
+        if (!std.ascii.startsWithIgnoreCase(content_type, media_type)) {
+            return error.UnsupportedMediaType;
+        }
+        if (content_type.len > media_type.len) {
+            const delimiter = content_type[media_type.len];
+            if (delimiter != ';' and delimiter != ' ' and delimiter != '\t') {
+                return error.UnsupportedMediaType;
+            }
+        }
+        return query_mod.parse(
+            self.arena,
+            self.body(),
+            self.limits.max_query_params,
+        );
+    }
+
+    /// Read a request cookie by name. Cookie names are case-sensitive.
+    pub fn cookie(self: *const Ctx, name: []const u8) ?[]const u8 {
+        return cookie_mod.find(self.request.headers, name);
+    }
+
+    /// Append a `Set-Cookie` response field.
+    pub fn setCookie(self: *Ctx, set_cookie: SetCookie) !void {
+        try self.addHeader(
+            "Set-Cookie",
+            try cookie_mod.serialize(self.arena, set_cookie),
+        );
     }
 
     pub fn set(self: *Ctx, comptime T: type, value: T) !void {
@@ -167,8 +231,28 @@ pub const Ctx = struct {
         try self.response.setHeader(name, value);
     }
 
+    /// Append a header field, preserving duplicates. Intended for list-valued
+    /// fields such as `Set-Cookie`.
+    pub fn addHeader(
+        self: *Ctx,
+        name: []const u8,
+        value: []const u8,
+    ) !void {
+        try self.response.appendHeader(name, value);
+    }
+
+    pub fn responseHeader(self: *const Ctx, name: []const u8) ?[]const u8 {
+        return self.response.header(name);
+    }
+
     pub fn text(self: *Ctx, value: []const u8) !void {
         try self.response.text(value);
+    }
+
+    pub fn redirect(self: *Ctx, status: u16, location: []const u8) !void {
+        if (status < 300 or status > 399) return error.InvalidRedirectStatus;
+        self.setStatus(status);
+        try self.setHeader("Location", location);
     }
 
     pub fn json(self: *Ctx, value: anytype) !void {

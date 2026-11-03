@@ -50,6 +50,21 @@ pub fn main(init: std.process.Init) !void {
     defer backend.deinit();
     const io = backend.io();
 
+    var auth = weft.middleware.BasicAuth{
+        .username = "admin",
+        .password = "secret",
+        .realm = "weft-example",
+    };
+
+    // Global middleware runs for every route, including 404 and 405 responses.
+    const common = [_]weft.Handler{
+        weft.handler(weft.middleware.requestId),
+        weft.handler(weft.middleware.serverHeader),
+        weft.handler(weft.middleware.securityHeaders),
+        weft.handler(weft.middleware.compress),
+        weft.handler(weft.middleware.log),
+    };
+
     var server = try weft.Server(App).init(
         io,
         allocator,
@@ -62,31 +77,17 @@ pub fn main(init: std.process.Init) !void {
                 .max_response_bytes = 64 * 1024,
             },
             .max_connections = 4,
+            .middleware = &common,
         },
         .{ .name = "weft" },
     );
     defer server.deinit();
 
-    var auth = weft.middleware.BasicAuth{
-        .username = "admin",
-        .password = "secret",
-        .realm = "weft-example",
-    };
-
-    const common = [_]weft.Handler{
-        weft.handler(weft.middleware.requestId),
-        weft.handler(weft.middleware.serverHeader),
-        weft.handler(weft.middleware.log),
-    };
-
     var router = server.router();
-    try router.get("/", home, .{ .middleware = &common });
-    try router.get("/hello/:name", hello, .{ .middleware = &common });
-    try router.get("/assets/*", assets, .{ .middleware = &common });
-    try router.get("/admin", admin, .{ .middleware = &.{
-        weft.handler(weft.middleware.requestId),
-        auth.handler(),
-    } });
+    try router.get("/", home, .{});
+    try router.get("/hello/:name", hello, .{});
+    try router.get("/assets/*", assets, .{});
+    try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 
     const address = server.address();
     std.debug.print("weft listening on http://{f}\n", .{address});

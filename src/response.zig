@@ -1,48 +1,140 @@
 const std = @import("std");
 const netz = @import("netz");
+const limits_mod = @import("limits.zig");
 
 pub const Header = netz.http1.Header;
+
+/// Head room reserved for fields the HTTP/1 writer may add itself:
+/// `Content-Length`, `Date`, and an optional `Connection`/`Trailer` field.
+pub const head_bytes_overhead = 128;
+pub const head_fields_overhead = 3;
 
 /// A response being built by a handler or middleware.
 ///
 /// The response is intentionally concrete: it holds the same `Header` type
 /// Netz writes and is converted to Netz's `ResponseOptions` only at the
-/// connection boundary. That keeps middleware composition free of generic
-/// request/response types.
+/// connection boundary. Header names and values are copied into the response
+/// allocator, so a handler can pass slices with a shorter lifetime (including
+/// stack buffers) without leaving dangling response fields.
 pub const Response = struct {
     allocator: std.mem.Allocator,
     max_body_bytes: usize,
+    max_headers: usize,
+    max_head_bytes: usize,
     status: u16 = 200,
     reason: []const u8 = "OK",
     headers: std.ArrayListUnmanaged(Header) = .empty,
     body: []const u8 = "",
+    /// True when `body` was allocated by this response and must be released
+    /// by `deinit` or `reset`.
+    body_owned: bool = false,
+    /// Sum of encoded header field bytes, excluding the status line.
+    header_bytes: usize = 0,
     /// True once the application has selected a status, header, or body.
     /// The server uses this to decide whether an error should become a 500.
     committed: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, max_body_bytes: usize) Response {
+        return initWithLimits(allocator, .{
+            .max_response_bytes = max_body_bytes,
+            .max_response_headers = std.math.maxInt(usize),
+            .max_response_head_bytes = std.math.maxInt(usize),
+        });
+    }
+
+    pub fn initWithLimits(
+        allocator: std.mem.Allocator,
+        limits: limits_mod.Limits,
+    ) Response {
         return .{
             .allocator = allocator,
-            .max_body_bytes = max_body_bytes,
+            .max_body_bytes = limits.max_response_bytes,
+            .max_headers = limits.max_response_headers -| head_fields_overhead,
+            .max_head_bytes = limits.max_response_head_bytes -| head_bytes_overhead,
         };
     }
 
     pub fn deinit(self: *Response) void {
+        self.clearHeaders();
         self.headers.deinit(self.allocator);
+        if (self.body_owned) self.allocator.free(self.body);
         self.* = undefined;
     }
 
+    /// Clear status, headers, and body while retaining the header list
+    /// capacity. Used by recovery middleware before a response is committed.
+    pub fn reset(self: *Response) void {
+        self.clearHeaders();
+        self.headers.clearRetainingCapacity();
+        if (self.body_owned) self.allocator.free(self.body);
+        self.body = "";
+        self.body_owned = false;
+        self.header_bytes = 0;
+        self.status = 200;
+        self.reason = "OK";
+        self.committed = false;
+    }
+
     pub fn setStatus(self: *Response, status: u16) void {
-        self.status = status;
-        self.reason = reasonFor(status);
+        // HTTP status codes are three digits. Reject nonsense locally rather
+        // than letting it reach the wire encoder.
+        self.status = if (status >= 100 and status <= 999) status else 500;
+        self.reason = reasonFor(self.status);
         self.committed = true;
     }
 
+    /// Set or replace a header field. Field names are matched
+    /// case-insensitively, matching HTTP semantics.
     pub fn setHeader(self: *Response, name: []const u8, value: []const u8) !void {
+        try validateHeaderName(name);
+        try validateHeaderValue(value);
+
+        if (self.findHeader(name)) |index| {
+            const old = self.headers.items[index];
+            const value_copy = try self.allocator.dupe(u8, value);
+            const next_bytes = self.header_bytes - old.value.len + value_copy.len;
+            if (15 + self.reason.len + next_bytes > self.max_head_bytes) {
+                self.allocator.free(value_copy);
+                return error.ResponseHeadTooLarge;
+            }
+            self.allocator.free(old.value);
+            self.headers.items[index].value = value_copy;
+            self.header_bytes = next_bytes;
+            self.committed = true;
+            return;
+        }
+
+        try self.appendHeader(name, value);
+    }
+
+    /// Append a header field, preserving duplicates. Use this for
+    /// `Set-Cookie` and other list-valued fields.
+    pub fn appendHeader(
+        self: *Response,
+        name: []const u8,
+        value: []const u8,
+    ) !void {
+        try validateHeaderName(name);
+        try validateHeaderValue(value);
+        if (self.headers.items.len + 1 > self.max_headers) {
+            return error.ResponseHeadersTooLarge;
+        }
+
+        const added = name.len + value.len + 4; // ": " + CRLF
+        if (self.headSize() + added > self.max_head_bytes) {
+            return error.ResponseHeadTooLarge;
+        }
+
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+        const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
+
         try self.headers.append(self.allocator, .{
-            .name = name,
-            .value = value,
+            .name = name_copy,
+            .value = value_copy,
         });
+        self.header_bytes += added;
         self.committed = true;
     }
 
@@ -50,7 +142,9 @@ pub const Response = struct {
     /// has been written; the request arena is the normal owner.
     pub fn setBody(self: *Response, body: []const u8) !void {
         if (body.len > self.max_body_bytes) return error.ResponseTooLarge;
+        if (self.body_owned) self.allocator.free(self.body);
         self.body = body;
+        self.body_owned = false;
         self.committed = true;
     }
 
@@ -67,26 +161,64 @@ pub const Response = struct {
             value,
             .{},
         );
+        errdefer self.allocator.free(body);
         if (body.len > self.max_body_bytes) return error.ResponseTooLarge;
         if (!self.hasHeader("content-type")) {
             try self.setHeader("Content-Type", "application/json");
         }
+        if (self.body_owned) self.allocator.free(self.body);
         self.body = body;
+        self.body_owned = true;
         self.committed = true;
     }
 
     pub fn hasHeader(self: *const Response, name: []const u8) bool {
-        for (self.headers.items) |header| {
-            if (std.ascii.eqlIgnoreCase(header.name, name)) return true;
+        return self.findHeader(name) != null;
+    }
+
+    pub fn header(self: *const Response, name: []const u8) ?[]const u8 {
+        const index = self.findHeader(name) orelse return null;
+        return self.headers.items[index].value;
+    }
+
+    pub fn removeHeader(self: *Response, name: []const u8) bool {
+        const index = self.findHeader(name) orelse return false;
+        const removed = self.headers.orderedRemove(index);
+        self.header_bytes -= removed.name.len + removed.value.len + 4;
+        self.allocator.free(removed.name);
+        self.allocator.free(removed.value);
+        return true;
+    }
+
+    /// Encoded status line plus header field bytes.
+    pub fn headSize(self: *const Response) usize {
+        // "HTTP/1.1 " + 3 status digits + " " + reason + CRLF
+        return 15 + self.reason.len + self.header_bytes;
+    }
+
+    pub fn validateHead(self: *const Response) !void {
+        if (self.headers.items.len > self.max_headers) {
+            return error.ResponseHeadersTooLarge;
         }
-        return false;
+        if (self.headSize() > self.max_head_bytes) {
+            return error.ResponseHeadTooLarge;
+        }
     }
 
     pub fn toOptions(
         self: *const Response,
         method: netz.http1.Method,
     ) netz.http1.runtime.ResponseOptions {
+        return self.toOptionsFor(method, .http_1_1);
+    }
+
+    pub fn toOptionsFor(
+        self: *const Response,
+        method: netz.http1.Method,
+        version: netz.http1.Version,
+    ) netz.http1.runtime.ResponseOptions {
         return .{
+            .version = version,
             .status = self.status,
             .reason = self.reason,
             .headers = self.headers.items,
@@ -94,12 +226,53 @@ pub const Response = struct {
             .request_method = method,
         };
     }
+
+    fn findHeader(self: *const Response, name: []const u8) ?usize {
+        for (self.headers.items, 0..) |field, index| {
+            if (std.ascii.eqlIgnoreCase(field.name, name)) return index;
+        }
+        return null;
+    }
+
+    fn clearHeaders(self: *Response) void {
+        for (self.headers.items) |field| {
+            self.allocator.free(field.name);
+            self.allocator.free(field.value);
+        }
+    }
 };
+
+pub fn validateHeaderName(name: []const u8) !void {
+    if (name.len == 0) return error.InvalidHeaderName;
+    for (name) |char| {
+        if (!isTokenChar(char)) return error.InvalidHeaderName;
+    }
+}
+
+pub fn validateHeaderValue(value: []const u8) !void {
+    for (value) |char| {
+        switch (char) {
+            '\t' => {},
+            0x20...0x7e => {},
+            else => return error.InvalidHeaderValue,
+        }
+    }
+}
+
+fn isTokenChar(char: u8) bool {
+    return switch (char) {
+        'a'...'z', 'A'...'Z', '0'...'9' => true,
+        '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => true,
+        else => false,
+    };
+}
 
 pub fn reasonFor(status: u16) []const u8 {
     return switch (status) {
         100 => "Continue",
         101 => "Switching Protocols",
+        102 => "Processing",
+        103 => "Early Hints",
         200 => "OK",
         201 => "Created",
         202 => "Accepted",
@@ -107,11 +280,15 @@ pub fn reasonFor(status: u16) []const u8 {
         204 => "No Content",
         205 => "Reset Content",
         206 => "Partial Content",
+        207 => "Multi-Status",
+        208 => "Already Reported",
+        226 => "IM Used",
         300 => "Multiple Choices",
         301 => "Moved Permanently",
         302 => "Found",
         303 => "See Other",
         304 => "Not Modified",
+        305 => "Use Proxy",
         307 => "Temporary Redirect",
         308 => "Permanent Redirect",
         400 => "Bad Request",
@@ -121,6 +298,7 @@ pub fn reasonFor(status: u16) []const u8 {
         404 => "Not Found",
         405 => "Method Not Allowed",
         406 => "Not Acceptable",
+        407 => "Proxy Authentication Required",
         408 => "Request Timeout",
         409 => "Conflict",
         410 => "Gone",
@@ -130,8 +308,12 @@ pub fn reasonFor(status: u16) []const u8 {
         414 => "URI Too Long",
         415 => "Unsupported Media Type",
         416 => "Range Not Satisfiable",
+        417 => "Expectation Failed",
         418 => "I'm a teapot",
+        421 => "Misdirected Request",
         422 => "Unprocessable Content",
+        423 => "Locked",
+        424 => "Failed Dependency",
         425 => "Too Early",
         426 => "Upgrade Required",
         428 => "Precondition Required",
@@ -144,6 +326,11 @@ pub fn reasonFor(status: u16) []const u8 {
         503 => "Service Unavailable",
         504 => "Gateway Timeout",
         505 => "HTTP Version Not Supported",
+        506 => "Variant Also Negotiates",
+        507 => "Insufficient Storage",
+        508 => "Loop Detected",
+        510 => "Not Extended",
+        511 => "Network Authentication Required",
         else => "Unknown",
     };
 }
@@ -165,4 +352,48 @@ test "response helpers commit and set headers" {
     try std.testing.expect(response.committed);
     try std.testing.expect(response.hasHeader("content-type"));
     try std.testing.expectEqualStrings("hello", response.body);
+}
+
+test "response header limits and replacement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var response = Response.initWithLimits(arena.allocator(), .{
+        .max_response_bytes = 1024,
+        .max_response_headers = 5,
+        .max_response_head_bytes = 512,
+    });
+
+    try response.setHeader("X-A", "one");
+    try response.setHeader("x-a", "two");
+    try std.testing.expectEqualStrings("two", response.header("X-A").?);
+    try std.testing.expectEqual(@as(usize, 1), response.headers.items.len);
+
+    try response.setHeader("X-B", "three");
+    try std.testing.expectError(
+        error.ResponseHeadersTooLarge,
+        response.setHeader("X-C", "four"),
+    );
+    try std.testing.expectError(
+        error.InvalidHeaderName,
+        response.setHeader("Bad Name", "x"),
+    );
+    try std.testing.expectError(
+        error.InvalidHeaderValue,
+        response.setHeader("X-Inject", "a\r\nb"),
+    );
+}
+
+test "response reset releases committed state" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var response = Response.init(arena.allocator(), 1024);
+    try response.setHeader("X-Test", "yes");
+    response.setStatus(418);
+    try response.text("tea");
+    response.reset();
+    try std.testing.expectEqual(@as(u16, 200), response.status);
+    try std.testing.expect(!response.committed);
+    try std.testing.expectEqualStrings("", response.body);
+    try std.testing.expect(!response.hasHeader("x-test"));
 }
