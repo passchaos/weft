@@ -257,7 +257,7 @@ session synchronously on the connection worker:
 ```zig
 fn wsEcho(_: ?*anyopaque, session: *weft.WebSocketSession) anyerror!void {
     var message = try session.receiveMessage();
-    defer message.deinit(session.connection.allocator);
+    defer session.deinitMessage(&message);
     try session.sendText(message.payload);
 }
 
@@ -267,9 +267,11 @@ fn ws(app: *App, ctx: *weft.Ctx) anyerror!void {
 }
 ```
 
-The session exposes text/binary sends, frame/message reads, and close. An
-optional `subprotocol` must be offered by the client. HTTP/2 and HTTP/3 reject
-WebSocket upgrades with `400`.
+The session exposes text/binary sends, ping/pong control frames,
+frame/message reads with `deinitMessage`, and explicit `sendClose(code, reason)`.
+`close()` sends a normal closure frame when one has not already been written
+and then releases the transport. An optional `subprotocol` must be offered by
+the client. HTTP/2 and HTTP/3 reject WebSocket upgrades with `400`.
 
 ## Static files
 

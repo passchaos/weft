@@ -4,6 +4,11 @@ const netz = @import("netz");
 /// A live RFC 6455 session owned by the server worker for its lifetime.
 pub const Session = struct {
     connection: netz.websocket.runtime.Connection,
+    /// True once a close frame has been written, so `close` does not send a
+    /// second one.
+    close_frame_sent: bool = false,
+
+    pub const CloseCode = netz.websocket.CloseCode;
 
     pub fn sendText(self: *Session, text: []const u8) !void {
         try self.connection.sendText(text);
@@ -11,6 +16,24 @@ pub const Session = struct {
 
     pub fn sendBinary(self: *Session, data: []const u8) !void {
         try self.connection.sendMessage(.binary, data);
+    }
+
+    pub fn sendPing(self: *Session, payload: []const u8) !void {
+        try self.connection.sendPing(payload);
+    }
+
+    pub fn sendPong(self: *Session, payload: []const u8) !void {
+        try self.connection.sendPong(payload);
+    }
+
+    /// Write a close frame. Call `close` afterwards to release the transport.
+    pub fn sendClose(
+        self: *Session,
+        code: CloseCode,
+        reason: []const u8,
+    ) !void {
+        try self.connection.sendClose(code, reason);
+        self.close_frame_sent = true;
     }
 
     pub fn receiveFrame(self: *Session) !netz.websocket.Frame {
@@ -21,7 +44,20 @@ pub const Session = struct {
         return self.connection.receiveMessage();
     }
 
+    /// Release an owned message returned by `receiveMessage`.
+    pub fn deinitMessage(
+        self: *Session,
+        message: *netz.websocket.runtime.OwnedMessage,
+    ) void {
+        message.deinit(self.connection.allocator);
+    }
+
+    /// Send a normal closure frame when possible, then release the transport.
     pub fn close(self: *Session) void {
+        if (!self.close_frame_sent) {
+            self.connection.sendClose(.normal_closure, "") catch {};
+            self.close_frame_sent = true;
+        }
         self.connection.close();
     }
 };

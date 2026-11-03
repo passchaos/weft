@@ -32,7 +32,7 @@ fn websocketEcho(
     session: *weft.WebSocketSession,
 ) anyerror!void {
     var message = try session.receiveMessage();
-    defer message.deinit(session.connection.allocator);
+    defer session.deinitMessage(&message);
     try session.sendText(message.payload);
 }
 

@@ -91,7 +91,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - HTTP/3 TLS is verified with a real certificate identity and a pinned client
   public key, in addition to the synthetic QUIC handshake test.
 - HTTP/1 WebSocket upgrades validate the RFC 6455 handshake, transfer transport
-  ownership, and run a concrete session; HTTP/2 and HTTP/3 reject upgrades.
+  ownership, and run a concrete session with text/binary sends, ping/pong,
+  message deinit, and explicit or normal close frames; HTTP/2 and HTTP/3
+  reject upgrades.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API; handler errors use the dispatcher's
   status mapping and canceled requests are excluded from status classes.
@@ -148,6 +150,7 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 
 ## Remaining gaps
 
-- Streaming request bodies and streaming multipart/file uploads.
+- Streaming request bodies and concurrent HTTP/2/HTTP/3 stream dispatch need
+  protocol-level support; the concrete requests are filed in
+  `../netz/docs/weft-integration-requests.md`.
 - CPU-bound handler preemption without cancellation points.
-- Concurrent HTTP/2 and HTTP/3 stream dispatch.
