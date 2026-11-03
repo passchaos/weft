@@ -185,8 +185,8 @@ try router.post("/upload", upload, .{ .streaming = true });
 - Bytes the handler does not read are drained before the response is written,
   keeping the connection reusable. If the runtime cannot spawn the handler
   task, weft buffers the body and replays it through the same reader.
-- HTTP/2 and HTTP/3 already buffer DATA in netz; weft exposes a one-chunk replay
-  reader for streaming routes on those adapters.
+- HTTP/2 delivers DATA through the same incremental reader; HTTP/3 currently
+  exposes a one-chunk replay reader over its buffered DATA.
 
 ## TLS
 
@@ -501,8 +501,8 @@ and runtime task wakeups, not just application dispatch.
 HTTP/1.1 is served through `netz.http1.runtime` with cleartext and TLS
 listeners, and mirrors HTTP/1.0 request versions with appropriate connection
 semantics. `Http2Server` and `Http3Server` provide h2c, TLS/ALPN h2, and
-QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1 request
-bodies stream incrementally through a bounded window; HTTP/2 and HTTP/3 expose
+QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1 and HTTP/2
+request bodies stream incrementally through a bounded window; HTTP/3 exposes
 the buffered body through a replay reader. Remaining slices include concurrent
 HTTP/2 and HTTP/3 stream dispatch and native step-driven DATA delivery for
-HTTP/2/HTTP/3 request bodies.
+HTTP/3 request bodies.

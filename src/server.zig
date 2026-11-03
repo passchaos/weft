@@ -622,6 +622,38 @@ pub fn Server(comptime H: type) type {
     };
 }
 
+fn dupeHeaders(
+    allocator: std.mem.Allocator,
+    headers: []const netz.http1.Header,
+) ![]netz.http1.Header {
+    const copy = try allocator.alloc(netz.http1.Header, headers.len);
+    var count: usize = 0;
+    errdefer {
+        freeHeaderCopy(allocator, copy[0..count]);
+        allocator.free(copy);
+    }
+    for (headers, 0..) |header, index| {
+        const name = try allocator.dupe(u8, header.name);
+        const value = allocator.dupe(u8, header.value) catch |err| {
+            allocator.free(name);
+            return err;
+        };
+        copy[index] = .{ .name = name, .value = value };
+        count += 1;
+    }
+    return copy;
+}
+
+fn freeHeaderCopy(
+    allocator: std.mem.Allocator,
+    headers: []const netz.http1.Header,
+) void {
+    for (headers) |header| {
+        allocator.free(header.name);
+        allocator.free(header.value);
+    }
+}
+
 fn dispatchWithReplay(
     server: anytype,
     request: *const netz.http1.Request,
@@ -712,10 +744,7 @@ fn StreamingRead(comptime H: type) type {
             );
             reader_initialized = true;
 
-            headers = try self.allocator.dupe(
-                netz.http1.Header,
-                head.headers,
-            );
+            headers = try dupeHeaders(self.allocator, head.headers);
             target_copy = try self.allocator.dupe(u8, target);
 
             self.reader = reader.?;
@@ -780,6 +809,7 @@ fn StreamingRead(comptime H: type) type {
                 self.reader = null;
             }
             if (self.headers) |headers| {
+                freeHeaderCopy(self.allocator, headers);
                 self.allocator.free(headers);
                 self.headers = null;
             }

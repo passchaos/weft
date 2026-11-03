@@ -41,14 +41,14 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Streaming response bodies through a concrete `StreamBody`/`StreamWriter` seam,
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
-- Streaming request bodies for HTTP/1 through `RouteOptions.streaming` and
-  `Ctx.bodyReader()`, using a bounded `max_streaming_window_bytes` producer/
-  consumer window between the connection task and a handler task. Unread bytes
-  are drained before the response is written, `Ctx.readBody()` buffers into the
-  request arena, and a buffered replay path covers runtimes without concurrent
-  tasks.
-- HTTP/2 and HTTP/3 expose a one-chunk replay reader for streaming routes over
-  their already-buffered DATA bodies.
+- Streaming request bodies for HTTP/1 and HTTP/2 through
+  `RouteOptions.streaming` and `Ctx.bodyReader()`, using a bounded
+  `max_streaming_window_bytes` producer/consumer window between the connection
+  task and a handler task. Unread bytes are drained before the response is
+  written, `Ctx.readBody()` buffers into the request arena, and a buffered
+  replay path covers runtimes without concurrent tasks.
+- HTTP/3 exposes a one-chunk replay reader for streaming routes over its
+  already-buffered DATA body.
 - `Ctx.sse` plus `sse.write`/`sse.comment` helpers for `text/event-stream`
   responses, with multiline `data:` framing, `id`/`event`/`retry` fields,
   injection rejection, and compression opt-out.
@@ -160,6 +160,6 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 ## Remaining gaps
 
 - Concurrent HTTP/2/HTTP/3 stream dispatch and native step-driven DATA
-  delivery for HTTP/2/HTTP/3 request bodies; netz now exposes the primitives
-  and weft currently replays buffered bodies on those adapters.
+  delivery for HTTP/3 request bodies; netz exposes the primitives and weft
+  currently replays the buffered HTTP/3 body.
 - CPU-bound handler preemption without cancellation points.

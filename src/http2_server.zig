@@ -256,8 +256,6 @@ pub fn Http2Server(comptime H: type) type {
         ) !void {
             var served: usize = 0;
             var last_stream_id: u31 = 0;
-            // Bound per-request allocations by the same arena budget as the
-            // HTTP/1 adapter.
             const arena_buffer = try self.allocator.alloc(
                 u8,
                 self.options.limits.max_request_arena_bytes,
@@ -274,9 +272,37 @@ pub fn Http2Server(comptime H: type) type {
                     return;
                 }
 
-                var request = connection.readRequestWithTimeout(
+                var fixed_arena = std.heap.FixedBufferAllocator.init(
+                    arena_buffer,
+                );
+                const arena = fixed_arena.allocator();
+
+                var state = H2StreamingRead(H){
+                    .server = self,
+                    .connection = connection,
+                    .allocator = self.allocator,
+                    .arena = arena,
+                    .client_info = .{
+                        .address = connection.stream.socket.address,
+                        .protocol = .http_2,
+                        .tls = self.options.tls != null,
+                    },
+                };
+                defer state.body.deinit(self.allocator);
+                defer state.clearStreaming();
+
+                var request = connection.readRequestStreamingWithHeadAndTimeout(
                     self.options.idle_timeout,
+                    &state,
+                    H2StreamingRead(H).onHead,
+                    H2StreamingRead(H).onChunk,
                 ) catch |err| {
+                    if (state.streaming) {
+                        state.reader.?.finish();
+                        if (state.future) |*future| {
+                            _ = future.await(self.io) catch {};
+                        }
+                    }
                     if (err == error.Timeout) {
                         if (self.shutdown.isSet()) {
                             connection.sendGoAway(
@@ -294,34 +320,77 @@ pub fn Http2Server(comptime H: type) type {
                 defer request.deinit(self.allocator);
                 last_stream_id = request.stream_id;
 
-                // Bound per-request allocations by the same arena budget as
-                // the HTTP/1 adapter.
-                var fixed_arena = std.heap.FixedBufferAllocator.init(
-                    arena_buffer,
-                );
-                const arena = fixed_arena.allocator();
+                const method = netz.http1.Method.parse(request.method) catch
+                    return;
+                const target = if (request.path.len == 0) "/" else request.path;
 
-                const client_info = ctx_mod.ClientInfo{
-                    .address = connection.stream.socket.address,
-                    .protocol = .http_2,
-                    .tls = self.options.tls != null,
-                };
-
-                var response = self.dispatch(
-                    &request,
-                    client_info,
-                    arena,
-                ) catch |err| blk: {
-                    if (err == error.Canceled) return error.Canceled;
-                    std.log.scoped(.weft).warn(
-                        "http2 dispatch failed: {s}",
-                        .{@errorName(err)},
-                    );
-                    break :blk internalErrorResponse(
+                var response: Response = undefined;
+                if (state.streaming) {
+                    state.reader.?.finish();
+                    response = state.future.?.await(self.io) catch |err| blk: {
+                        if (err == error.Canceled) return error.Canceled;
+                        std.log.scoped(.weft).warn(
+                            "http2 dispatch failed: {s}",
+                            .{@errorName(err)},
+                        );
+                        break :blk internalErrorResponse(
+                            arena,
+                            self.options.limits,
+                        );
+                    };
+                } else {
+                    const headers = try convertH2Headers(
                         arena,
-                        self.options.limits,
+                        request.headers,
+                        request.authority,
                     );
-                };
+                    var handler_request = netz.http1.Request{
+                        .method = method,
+                        .target = target,
+                        .version = .http_1_1,
+                        .headers = headers,
+                        .body = state.body.items,
+                        .consumed = 0,
+                    };
+
+                    if (state.fallback_streaming) {
+                        response = dispatchReplayH2(
+                            self,
+                            &handler_request,
+                            state.client_info,
+                            arena,
+                            state.body.items,
+                            self.options.limits,
+                        ) catch |err| blk: {
+                            if (err == error.Canceled) return error.Canceled;
+                            std.log.scoped(.weft).warn(
+                                "http2 dispatch failed: {s}",
+                                .{@errorName(err)},
+                            );
+                            break :blk internalErrorResponse(
+                                arena,
+                                self.options.limits,
+                            );
+                        };
+                    } else {
+                        response = self.dispatchRequest(
+                            &handler_request,
+                            state.client_info,
+                            arena,
+                            null,
+                        ) catch |err| blk: {
+                            if (err == error.Canceled) return error.Canceled;
+                            std.log.scoped(.weft).warn(
+                                "http2 dispatch failed: {s}",
+                                .{@errorName(err)},
+                            );
+                            break :blk internalErrorResponse(
+                                arena,
+                                self.options.limits,
+                            );
+                        };
+                    }
+                }
 
                 if (response.body.len > self.options.limits.max_response_bytes) {
                     response.reset();
@@ -336,7 +405,8 @@ pub fn Http2Server(comptime H: type) type {
 
                 try self.respond(
                     connection,
-                    &request,
+                    request.stream_id,
+                    request.method,
                     &response,
                     arena,
                 );
@@ -349,52 +419,13 @@ pub fn Http2Server(comptime H: type) type {
             ) catch {};
         }
 
-        fn dispatch(
+        fn dispatchRequest(
             self: *@This(),
-            owned: *const netz.http2.runtime.OwnedRequest,
+            request: *const netz.http1.Request,
             client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
+            body_reader: ?*ctx_mod.BodyReader,
         ) !Response {
-            const method = netz.http1.Method.parse(owned.method) catch
-                return error.InvalidMethod;
-            const target = if (owned.path.len == 0) "/" else owned.path;
-
-            var header_count: usize = 0;
-            for (owned.headers) |field| {
-                if (!isPseudoHeader(field.name)) header_count += 1;
-            }
-            const has_host = findHeader(owned.headers, "host") != null;
-            const add_host = owned.authority != null and !has_host;
-            if (add_host) header_count += 1;
-
-            const headers = try arena.alloc(netz.http1.Header, header_count);
-            var index: usize = 0;
-            for (owned.headers) |field| {
-                if (isPseudoHeader(field.name)) continue;
-                headers[index] = .{ .name = field.name, .value = field.value };
-                index += 1;
-            }
-            if (add_host) {
-                headers[index] = .{
-                    .name = "Host",
-                    .value = owned.authority.?,
-                };
-            }
-
-            var request = netz.http1.Request{
-                .method = method,
-                .target = target,
-                .version = .http_1_1,
-                .headers = headers,
-                .body = owned.body,
-                .consumed = 0,
-            };
-
-            var replay: ?body_stream_mod.Reader = null;
-            if (self.app_router.isStreaming(method, target)) {
-                replay = body_stream_mod.Reader.initReplay(owned.body);
-            }
-
             return dispatch_mod.dispatch(
                 H,
                 &self.app,
@@ -407,17 +438,18 @@ pub fn Http2Server(comptime H: type) type {
                     .bad_request = self.options.bad_request,
                     .method_not_allowed = self.options.method_not_allowed,
                 },
-                &request,
+                request,
                 client_info,
                 arena,
-                if (replay) |*reader| reader else null,
+                body_reader,
             );
         }
 
         fn respond(
             self: *@This(),
             connection: *netz.http2.runtime.Connection,
-            owned: *const netz.http2.runtime.OwnedRequest,
+            stream_id: u31,
+            method: []const u8,
             response: *Response,
             arena: std.mem.Allocator,
         ) !void {
@@ -430,14 +462,14 @@ pub fn Http2Server(comptime H: type) type {
             }
 
             if (response.stream) |body| {
-                const body_forbidden = std.mem.eql(u8, owned.method, "HEAD") or
+                const body_forbidden = std.mem.eql(u8, method, "HEAD") or
                     response.status == 204 or
                     response.status == 304 or
                     (response.status >= 100 and response.status < 200);
                 if (body_forbidden) {
                     body.cancel();
                     response.stream = null;
-                    if (std.mem.eql(u8, owned.method, "HEAD")) {
+                    if (std.mem.eql(u8, method, "HEAD")) {
                         if (body.length) |length| {
                             response.setHeader(
                                 "Content-Length",
@@ -449,7 +481,13 @@ pub fn Http2Server(comptime H: type) type {
                             ) catch {};
                         }
                     }
-                    try self.writeBuffered(connection, owned, response, arena);
+                    try self.writeBuffered(
+                        connection,
+                        stream_id,
+                        method,
+                        response,
+                        arena,
+                    );
                     return;
                 }
 
@@ -463,38 +501,53 @@ pub fn Http2Server(comptime H: type) type {
                         try std.fmt.allocPrint(arena, "{d}", .{length}),
                     ) catch {};
                 }
-                try self.writeStreaming(connection, owned, response, body, arena);
+                try self.writeStreaming(
+                    connection,
+                    stream_id,
+                    method,
+                    response,
+                    body,
+                    arena,
+                );
                 return;
             }
 
-            try self.writeBuffered(connection, owned, response, arena);
+            try self.writeBuffered(
+                connection,
+                stream_id,
+                method,
+                response,
+                arena,
+            );
         }
 
         fn writeBuffered(
             self: *@This(),
             connection: *netz.http2.runtime.Connection,
-            owned: *const netz.http2.runtime.OwnedRequest,
+            stream_id: u31,
+            method: []const u8,
             response: *Response,
             arena: std.mem.Allocator,
         ) !void {
             _ = self;
-            const options = try toResponseOptions(response, owned, arena);
-            try connection.writeResponse(owned.stream_id, options);
+            const options = try toResponseOptions(response, method, arena);
+            try connection.writeResponse(stream_id, options);
         }
 
         fn writeStreaming(
             self: *@This(),
             connection: *netz.http2.runtime.Connection,
-            owned: *const netz.http2.runtime.OwnedRequest,
+            stream_id: u31,
+            method: []const u8,
             response: *Response,
             body: stream_mod.Body,
             arena: std.mem.Allocator,
         ) !void {
             const headers = try headerFields(response, arena);
-            var writer = connection.startResponse(owned.stream_id, .{
+            var writer = connection.startResponse(stream_id, .{
                 .status = response.status,
                 .headers = headers,
-                .request_method = owned.method,
+                .request_method = method,
             }) catch |err| {
                 body.cancel();
                 return err;
@@ -517,16 +570,244 @@ pub fn Http2Server(comptime H: type) type {
     };
 }
 
+fn dupeH2Headers(
+    allocator: std.mem.Allocator,
+    fields: []const netz.http2.Hpack.HeaderField,
+    authority: ?[]const u8,
+) ![]netz.http1.Header {
+    var count: usize = 0;
+    for (fields) |field| {
+        if (!isPseudoHeader(field.name)) count += 1;
+    }
+    const has_host = findHeader(fields, "host") != null;
+    const add_host = authority != null and !has_host;
+    if (add_host) count += 1;
+
+    const headers = try allocator.alloc(netz.http1.Header, count);
+    var index: usize = 0;
+    errdefer {
+        freeH2HeaderCopy(allocator, headers[0..index]);
+        allocator.free(headers);
+    }
+    for (fields) |field| {
+        if (isPseudoHeader(field.name)) continue;
+        const name = try allocator.dupe(u8, field.name);
+        const value = allocator.dupe(u8, field.value) catch |err| {
+            allocator.free(name);
+            return err;
+        };
+        headers[index] = .{ .name = name, .value = value };
+        index += 1;
+    }
+    if (add_host) {
+        const name = try allocator.dupe(u8, "Host");
+        const value = allocator.dupe(u8, authority.?) catch |err| {
+            allocator.free(name);
+            return err;
+        };
+        headers[index] = .{ .name = name, .value = value };
+        index += 1;
+    }
+    return headers;
+}
+
+fn freeH2HeaderCopy(
+    allocator: std.mem.Allocator,
+    headers: []const netz.http1.Header,
+) void {
+    for (headers) |header| {
+        allocator.free(header.name);
+        allocator.free(header.value);
+    }
+}
+
+fn convertH2Headers(
+    allocator: std.mem.Allocator,
+    fields: []const netz.http2.Hpack.HeaderField,
+    authority: ?[]const u8,
+) ![]netz.http1.Header {
+    var count: usize = 0;
+    for (fields) |field| {
+        if (!isPseudoHeader(field.name)) count += 1;
+    }
+    const has_host = findHeader(fields, "host") != null;
+    const add_host = authority != null and !has_host;
+    if (add_host) count += 1;
+
+    const headers = try allocator.alloc(netz.http1.Header, count);
+    var index: usize = 0;
+    for (fields) |field| {
+        if (isPseudoHeader(field.name)) continue;
+        headers[index] = .{ .name = field.name, .value = field.value };
+        index += 1;
+    }
+    if (add_host) {
+        headers[index] = .{
+            .name = "Host",
+            .value = authority.?,
+        };
+    }
+    return headers;
+}
+
+fn dispatchReplayH2(
+    server: anytype,
+    request: *const netz.http1.Request,
+    client_info: ctx_mod.ClientInfo,
+    arena: std.mem.Allocator,
+    body: []const u8,
+    limits: Limits,
+) !Response {
+    var replay = try body_stream_mod.Reader.init(
+        server.allocator,
+        server.io,
+        limits.max_streaming_window_bytes,
+    );
+    defer replay.deinit();
+    try replay.push(body);
+    replay.finish();
+    return server.dispatchRequest(request, client_info, arena, &replay);
+}
+
+fn H2StreamingRead(comptime H: type) type {
+    return struct {
+        const Self = @This();
+
+        server: *Http2Server(H),
+        connection: *netz.http2.runtime.Connection,
+        allocator: std.mem.Allocator,
+        arena: std.mem.Allocator,
+        client_info: ctx_mod.ClientInfo,
+        body: std.ArrayListUnmanaged(u8) = .empty,
+        reader: ?*body_stream_mod.Reader = null,
+        headers: ?[]netz.http1.Header = null,
+        target: ?[]u8 = null,
+        request: ?netz.http1.Request = null,
+        future: ?std.Io.Future(anyerror!Response) = null,
+        streaming: bool = false,
+        fallback_streaming: bool = false,
+
+        fn onHead(
+            self: *Self,
+            head: netz.streaming.http2.RequestHead,
+        ) !void {
+            const method = netz.http1.Method.parse(head.method) catch return;
+            const target = if (head.path.len == 0) "/" else head.path;
+            if (!self.server.app_router.isStreaming(method, target)) return;
+
+            var reader: ?*body_stream_mod.Reader = null;
+            var reader_initialized = false;
+            var headers: ?[]netz.http1.Header = null;
+            var target_copy: ?[]u8 = null;
+            var committed = false;
+            defer if (!committed) {
+                if (reader) |value| {
+                    if (reader_initialized) value.deinit();
+                    self.allocator.destroy(value);
+                }
+                if (headers) |value| self.allocator.free(value);
+                if (target_copy) |value| self.allocator.free(value);
+            };
+
+            reader = try self.allocator.create(body_stream_mod.Reader);
+            reader.?.* = try body_stream_mod.Reader.init(
+                self.allocator,
+                self.server.io,
+                self.server.options.limits.max_streaming_window_bytes,
+            );
+            reader_initialized = true;
+
+            headers = try dupeH2Headers(
+                self.allocator,
+                head.headers,
+                head.authority,
+            );
+            target_copy = try self.allocator.dupe(u8, target);
+
+            self.reader = reader.?;
+            self.headers = headers.?;
+            self.target = target_copy.?;
+            self.request = .{
+                .method = method,
+                .target = target_copy.?,
+                .version = .http_1_1,
+                .headers = headers.?,
+                .body = "",
+                .consumed = 0,
+            };
+            self.streaming = true;
+            committed = true;
+
+            self.future = std.Io.concurrent(
+                self.server.io,
+                Self.run,
+                .{self},
+            ) catch {
+                self.fallback_streaming = true;
+                self.clearStreaming();
+                return;
+            };
+        }
+
+        fn onChunk(self: *Self, chunk: []const u8) !void {
+            if (self.streaming) {
+                try self.reader.?.push(chunk);
+                return;
+            }
+            const next_total = std.math.add(
+                usize,
+                self.body.items.len,
+                chunk.len,
+            ) catch return error.BodyTooLarge;
+            if (next_total > self.server.options.limits.max_body_bytes) {
+                return error.BodyTooLarge;
+            }
+            try self.body.appendSlice(self.allocator, chunk);
+        }
+
+        fn run(self: *Self) anyerror!Response {
+            const reader = self.reader orelse
+                return error.InvalidStreamingState;
+            defer reader.drain();
+            return self.server.dispatchRequest(
+                &self.request.?,
+                self.client_info,
+                self.arena,
+                reader,
+            );
+        }
+
+        fn clearStreaming(self: *Self) void {
+            self.streaming = false;
+            if (self.reader) |reader| {
+                reader.deinit();
+                self.allocator.destroy(reader);
+                self.reader = null;
+            }
+            if (self.headers) |headers| {
+                freeH2HeaderCopy(self.allocator, headers);
+                self.allocator.free(headers);
+                self.headers = null;
+            }
+            if (self.target) |target| {
+                self.allocator.free(target);
+                self.target = null;
+            }
+            self.request = null;
+        }
+    };
+}
+
 fn toResponseOptions(
     response: *Response,
-    owned: *const netz.http2.runtime.OwnedRequest,
+    method: []const u8,
     arena: std.mem.Allocator,
 ) !netz.http2.runtime.ResponseOptions {
     return .{
         .status = response.status,
         .headers = try headerFields(response, arena),
         .body = response.body,
-        .request_method = owned.method,
+        .request_method = method,
     };
 }
 
