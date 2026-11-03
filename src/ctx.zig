@@ -123,6 +123,8 @@ pub const Ctx = struct {
     body_reader: ?BodyReader = null,
     /// Body cached by `readBody` after a streaming read.
     cached_body: ?[]const u8 = null,
+    /// Trailer view cached after a streaming read.
+    cached_trailers: ?[]const Header = null,
     client_info: ClientInfo = .{},
     /// Absolute handler deadline when `Limits.request_timeout` is configured.
     request_deadline: ?std.Io.Clock.Timestamp = null,
@@ -271,20 +273,40 @@ pub const Ctx = struct {
         return output.items;
     }
 
-    /// Request trailer fields. HTTP/1 chunked requests may populate these;
-    /// adapters without trailer support expose an empty slice.
-    pub fn trailers(self: *const Ctx) []const Header {
+    /// Request trailer fields. Streaming adapters expose trailers after the
+    /// body has been consumed; buffered adapters expose them immediately.
+    pub fn trailers(self: *Ctx) []const Header {
+        if (self.cached_trailers) |cached| return cached;
+        if (self.body_reader) |reader| {
+            switch (reader) {
+                .duplex => |duplex| {
+                    if (duplex.requestTrailers()) |fields| {
+                        self.cached_trailers = self.copyTrailers(fields);
+                    }
+                },
+                else => {},
+            }
+        }
+        if (self.cached_trailers) |cached| return cached;
         return self.request.trailers;
     }
 
     /// Look up a request trailer by name.
-    pub fn trailer(self: *const Ctx, name: []const u8) ?[]const u8 {
-        for (self.request.trailers) |field| {
+    pub fn trailer(self: *Ctx, name: []const u8) ?[]const u8 {
+        for (self.trailers()) |field| {
             if (std.ascii.eqlIgnoreCase(field.name, name)) {
                 return field.value;
             }
         }
         return null;
+    }
+
+    fn copyTrailers(self: *Ctx, fields: anytype) ?[]const Header {
+        const copied = self.arena.alloc(Header, fields.len) catch return null;
+        for (fields, copied) |field, *destination| {
+            destination.* = .{ .name = field.name, .value = field.value };
+        }
+        return copied;
     }
 
     /// Decode any `Content-Encoding` layers using the request arena.

@@ -90,6 +90,13 @@ fn trailerBody(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
     try writer.write("body");
 }
 
+fn streamingTrailerEcho(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    const reader = ctx.bodyReader().?;
+    while (try reader.next()) |_| {}
+    try ctx.text(ctx.trailer("x-checksum") orelse "");
+}
+
 fn streamingTrailerRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     try ctx.addTrailer("X-Checksum", "abc");
@@ -2221,6 +2228,11 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     );
     try router.get("/trailers", trailerRoute, .{});
     try router.get("/trailers-stream", streamingTrailerRoute, .{});
+    try router.post(
+        "/upload-trailers",
+        streamingTrailerEcho,
+        .{ .streaming = true },
+    );
     try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
 
     var group: std.Io.Group = .init;
@@ -2422,6 +2434,27 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         batch_responses[1].body,
         "two",
     ) != null);
+
+    const upload_trailer_headers = [_]netz.http2.Hpack.HeaderField{.{
+        .name = "x-checksum",
+        .value = "abc",
+    }};
+    var upload_trailer_response = try batch_client.request(.{
+        .method = "POST",
+        .path = "/upload-trailers",
+        .authority = "localhost",
+        .body = "payload",
+        .trailers = &upload_trailer_headers,
+    });
+    defer upload_trailer_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        upload_trailer_response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "abc",
+        upload_trailer_response.body,
+    );
 
     const stream_uri = try std.fmt.allocPrint(
         allocator,

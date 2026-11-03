@@ -22,8 +22,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   validated `Set-Cookie`
   serialization.
 - `Ctx.trailers()` and `Ctx.trailer(name)` expose HTTP/1 chunked request
-  trailers and buffered HTTP/2/HTTP/3 request trailers; streaming routes report
-  an empty slice.
+  trailers and buffered HTTP/2/HTTP/3 request trailers. HTTP/2 streaming routes
+  expose trailers once the body has been consumed; HTTP/3 streaming routes are
+  still buffered.
 - Response header count/byte budgets, header-name/value validation, copying
   into the response arena, replace/append semantics, and head room reserved for
   Netz-added `Content-Length`, `Date`, and `Connection` fields.
