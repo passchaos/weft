@@ -26,6 +26,11 @@ pub const Options = struct {
     method_not_allowed: ?Handler = null,
     max_connections: usize = 256,
     max_requests_per_connection: usize = 1000,
+    /// Maximum buffered-request handler tasks running concurrently per
+    /// connection. Streaming routes are still served serially.
+    max_concurrent_handlers: usize = 8,
+    /// Poll interval used while handlers are active.
+    handler_poll_interval: std.Io.Duration = .fromMilliseconds(5),
     accept_error_backoff: std.Io.Duration = .fromMilliseconds(10),
     /// TCP accept plus HTTP/2 bootstrap budget. This is also the idle shutdown
     /// polling interval for workers blocked in accept.
@@ -88,8 +93,8 @@ fn writeWithBudget(raw: ?*anyopaque, data: []const u8) anyerror!void {
 ///
 /// Routes, middleware, request locals, and response budgets are identical to
 /// the HTTP/1 adapter. HTTP/2 streams are multiplexed by Netz; each worker
-/// owns one connection and serves requests sequentially through the same
-/// application dispatch path.
+/// owns one connection, runs buffered requests in bounded handler tasks, and
+/// submits completed responses serially.
 pub fn Http2Server(comptime H: type) type {
     comptime {
         if (H == void) {
@@ -113,6 +118,8 @@ pub fn Http2Server(comptime H: type) type {
         ) !@This() {
             if (options.max_connections == 0 or
                 options.max_requests_per_connection == 0 or
+                options.max_concurrent_handlers == 0 or
+                options.handler_poll_interval.nanoseconds <= 0 or
                 options.accept_timeout.nanoseconds <= 0 or
                 options.idle_timeout.nanoseconds <= 0 or
                 options.tls_accept_timeout.nanoseconds <= 0 or
@@ -137,9 +144,15 @@ pub fn Http2Server(comptime H: type) type {
                 return error.TooMuchMiddleware;
             }
 
+            var netz_limits = options.limits.toHttp2Netz();
+            netz_limits.max_concurrent_streams = @intCast(@min(
+                options.limits.max_http2_concurrent_streams orelse
+                    options.max_concurrent_handlers,
+                options.max_concurrent_handlers,
+            ));
             var netz_server: Listener = if (options.tls) |tls_options| blk: {
                 var tls = tls_options;
-                tls.limits = options.limits.toHttp2Netz();
+                tls.limits = netz_limits;
                 tls.tcp_nodelay = options.limits.tcp_nodelay;
                 break :blk .{ .tls = try netz.http2.runtime.TlsServer.listen(
                     allocator,
@@ -151,7 +164,7 @@ pub fn Http2Server(comptime H: type) type {
                 allocator,
                 io,
                 options.address,
-                options.limits.toHttp2Netz(),
+                netz_limits,
             ) };
             errdefer netz_server.deinit();
 
@@ -256,179 +269,312 @@ pub fn Http2Server(comptime H: type) type {
         ) !void {
             var served: usize = 0;
             var last_stream_id: u31 = 0;
-            const arena_buffer = try self.allocator.alloc(
+            const capacity = @max(
+                1,
+                @min(
+                    self.options.limits.max_http2_concurrent_streams orelse
+                        self.options.max_concurrent_handlers,
+                    self.options.max_concurrent_handlers,
+                ),
+            );
+            const active = try self.allocator.alloc(H2Active(H), capacity);
+            defer self.allocator.free(active);
+            for (active, 0..) |*item, index| {
+                item.* = .{ .server = self, .slot = index };
+            }
+            defer for (active) |*item| {
+                if (!item.used) continue;
+                if (item.future) |*future| {
+                    _ = future.cancel(self.io) catch {};
+                }
+                item.stream.deinit();
+                item.body.deinit(self.allocator);
+                if (item.arena_buffer.len > 0) {
+                    self.allocator.free(item.arena_buffer);
+                }
+            };
+
+            const response_storage = try self.allocator.alloc(
+                H2ResponseMsg,
+                capacity,
+            );
+            defer self.allocator.free(response_storage);
+            var responses = std.Io.Queue(H2ResponseMsg).init(response_storage);
+
+            const serial_buffer = try self.allocator.alloc(
                 u8,
                 self.options.limits.max_request_arena_bytes,
             );
-            defer self.allocator.free(arena_buffer);
-            const client_info = ctx_mod.ClientInfo{
-                .address = connection.stream.socket.address,
-                .protocol = .http_2,
-                .tls = self.options.tls != null,
-            };
+            defer self.allocator.free(serial_buffer);
 
-            while (served < self.options.max_requests_per_connection) : (served += 1) {
-                if (self.shutdown.isSet()) {
-                    connection.sendGoAway(
-                        last_stream_id,
-                        .no_error,
-                        "shutdown",
-                    ) catch {};
-                    return;
+            var active_count: usize = 0;
+            var stop_accepting = false;
+
+            while (true) {
+                if (!stop_accepting and
+                    (self.shutdown.isSet() or
+                        served + active_count >=
+                            self.options.max_requests_per_connection))
+                {
+                    stop_accepting = true;
                 }
 
-                var stream = connection.acceptDuplexRequestWithTimeout(
-                    self.options.idle_timeout,
-                ) catch |err| {
-                    if (err == error.Timeout) {
-                        if (self.shutdown.isSet()) {
-                            connection.sendGoAway(
-                                last_stream_id,
-                                .no_error,
-                                "shutdown",
-                            ) catch {};
-                            return;
+                var progressed = false;
+                while (true) {
+                    var buffer: [1]H2ResponseMsg = undefined;
+                    const count = responses.get(
+                        self.io,
+                        &buffer,
+                        0,
+                    ) catch |err| switch (err) {
+                        error.Closed => break,
+                        else => return err,
+                    };
+                    if (count == 0) break;
+
+                    var message = buffer[0];
+                    const item = &active[message.slot];
+                    if (item.future) |*future| {
+                        _ = future.await(self.io) catch {};
+                    }
+                    self.respondDuplex(
+                        &item.stream,
+                        item.stream.method,
+                        &message.response,
+                        item.arena,
+                    ) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        std.log.scoped(.weft).warn(
+                            "http2 response failed: {s}",
+                            .{@errorName(err)},
+                        );
+                    };
+                    item.stream.deinit();
+                    item.body.deinit(self.allocator);
+                    self.allocator.free(item.arena_buffer);
+                    item.* = .{ .server = self, .slot = message.slot };
+                    active_count -= 1;
+                    served += 1;
+                    progressed = true;
+                }
+
+                if (stop_accepting and active_count == 0) break;
+
+                if (!stop_accepting and active_count < capacity) {
+                    const timeout = if (active_count == 0)
+                        self.options.idle_timeout
+                    else
+                        self.options.handler_poll_interval;
+                    var stream = connection.acceptDuplexRequestWithTimeout(
+                        timeout,
+                    ) catch |err| {
+                        if (err == error.Timeout) continue;
+                        if (err == error.Canceled) return error.Canceled;
+                        return;
+                    };
+                    last_stream_id = stream.stream_id;
+
+                    const method = netz.http1.Method.parse(stream.method) catch {
+                        stream.reset(.protocol_error) catch {};
+                        stream.deinit();
+                        continue;
+                    };
+                    const target = if (stream.path.len == 0) "/" else stream.path;
+                    const client_info = ctx_mod.ClientInfo{
+                        .address = connection.stream.socket.address,
+                        .protocol = .http_2,
+                        .tls = self.options.tls != null,
+                    };
+
+                    if (self.app_router.isStreaming(method, target)) {
+                        var serial = std.heap.FixedBufferAllocator.init(
+                            serial_buffer,
+                        );
+                        const arena = serial.allocator();
+                        const headers = convertH2Headers(
+                            arena,
+                            stream.headers,
+                            stream.authority,
+                        ) catch {
+                            stream.reset(.internal_error) catch {};
+                            stream.deinit();
+                            continue;
+                        };
+                        var handler_request = netz.http1.Request{
+                            .method = method,
+                            .target = target,
+                            .version = .http_1_1,
+                            .headers = headers,
+                            .body = "",
+                            .trailers = &.{},
+                            .consumed = 0,
+                            .must_close = false,
+                        };
+                        var response = self.dispatchRequest(
+                            &handler_request,
+                            client_info,
+                            arena,
+                            .{ .duplex = &stream },
+                        ) catch |err| blk: {
+                            if (err == error.Canceled) return error.Canceled;
+                            std.log.scoped(.weft).warn(
+                                "http2 dispatch failed: {s}",
+                                .{@errorName(err)},
+                            );
+                            break :blk internalErrorResponse(
+                                arena,
+                                self.options.limits,
+                            );
+                        };
+                        if (!stream.requestFinished()) {
+                            var drain_failed = false;
+                            while (true) {
+                                const chunk = stream.nextBody() catch {
+                                    drain_failed = true;
+                                    break;
+                                };
+                                if (chunk == null) break;
+                            }
+                            if (drain_failed) {
+                                stream.reset(.cancel) catch {};
+                                stream.deinit();
+                                continue;
+                            }
                         }
+                        if (response.body.len > self.options.limits.max_response_bytes) {
+                            response.reset();
+                            response.setStatus(500);
+                            response.text("Response Too Large") catch {};
+                        }
+                        response.validateHead() catch {
+                            response.reset();
+                            response.setStatus(500);
+                            response.text("Internal Server Error") catch {};
+                        };
+                        self.respondDuplex(
+                            &stream,
+                            stream.method,
+                            &response,
+                            arena,
+                        ) catch |err| {
+                            if (err == error.Canceled) return error.Canceled;
+                            std.log.scoped(.weft).warn(
+                                "http2 response failed: {s}",
+                                .{@errorName(err)},
+                            );
+                        };
+                        stream.deinit();
+                        served += 1;
                         continue;
                     }
-                    if (err == error.Canceled) return error.Canceled;
-                    return;
-                };
-                defer stream.deinit();
-                last_stream_id = stream.stream_id;
 
-                var fixed_arena = std.heap.FixedBufferAllocator.init(
-                    arena_buffer,
-                );
-                const arena = fixed_arena.allocator();
+                    var free_slot: ?usize = null;
+                    for (active, 0..) |*item, index| {
+                        if (!item.used) {
+                            free_slot = index;
+                            break;
+                        }
+                    }
+                    const slot = free_slot orelse {
+                        stream.reset(.refused_stream) catch {};
+                        stream.deinit();
+                        continue;
+                    };
+                    const item = &active[slot];
+                    const arena_buffer = self.allocator.alloc(
+                        u8,
+                        self.options.limits.max_request_arena_bytes,
+                    ) catch {
+                        stream.reset(.internal_error) catch {};
+                        stream.deinit();
+                        continue;
+                    };
+                    item.stream = stream;
+                    item.arena_buffer = arena_buffer;
+                    item.fixed = std.heap.FixedBufferAllocator.init(
+                        arena_buffer,
+                    );
+                    item.arena = item.fixed.allocator();
+                    item.client_info = client_info;
 
-                const method = netz.http1.Method.parse(stream.method) catch {
-                    stream.reset(.protocol_error) catch {};
-                    continue;
-                };
-                const target = if (stream.path.len == 0) "/" else stream.path;
-                const headers = convertH2Headers(
-                    arena,
-                    stream.headers,
-                    stream.authority,
-                ) catch {
-                    stream.reset(.internal_error) catch {};
-                    continue;
-                };
+                    const headers = convertH2Headers(
+                        item.arena,
+                        item.stream.headers,
+                        item.stream.authority,
+                    ) catch {
+                        item.stream.reset(.internal_error) catch {};
+                        item.stream.deinit();
+                        self.allocator.free(item.arena_buffer);
+                        item.* = .{ .server = self, .slot = slot };
+                        continue;
+                    };
 
-                var body: std.ArrayListUnmanaged(u8) = .empty;
-                defer body.deinit(self.allocator);
-                const streaming = self.app_router.isStreaming(method, target);
-                var body_reader: ?ctx_mod.BodyReader = null;
-
-                var body_failed = false;
-                if (streaming) {
-                    body_reader = .{ .duplex = &stream };
-                } else {
+                    var body_failed = false;
                     while (true) {
-                        const chunk = stream.nextBody() catch {
-                            stream.reset(.cancel) catch {};
+                        const chunk = item.stream.nextBody() catch {
                             body_failed = true;
                             break;
                         };
                         if (chunk == null) break;
                         const next_total = std.math.add(
                             usize,
-                            body.items.len,
+                            item.body.items.len,
                             chunk.?.len,
                         ) catch {
-                            stream.reset(.cancel) catch {};
                             body_failed = true;
                             break;
                         };
                         if (next_total > self.options.limits.max_body_bytes) {
-                            stream.reset(.cancel) catch {};
                             body_failed = true;
                             break;
                         }
-                        body.appendSlice(self.allocator, chunk.?) catch {
-                            stream.reset(.internal_error) catch {};
+                        item.body.appendSlice(
+                            self.allocator,
+                            chunk.?,
+                        ) catch {
                             body_failed = true;
                             break;
                         };
                     }
-                }
-                if (body_failed) continue;
-
-                var trailers = try arena.alloc(netz.http1.Header, 0);
-                if (!streaming) {
-                    if (stream.requestTrailers()) |raw| {
-                        trailers = convertH2Trailers(arena, raw) catch trailers;
-                    }
-                }
-                var handler_request = netz.http1.Request{
-                    .method = method,
-                    .target = target,
-                    .version = .http_1_1,
-                    .headers = headers,
-                    .body = if (streaming) "" else body.items,
-                    .trailers = trailers,
-                    .consumed = 0,
-                    .must_close = false,
-                };
-
-                var response = self.dispatchRequest(
-                    &handler_request,
-                    client_info,
-                    arena,
-                    body_reader,
-                ) catch |err| blk: {
-                    if (err == error.Canceled) return error.Canceled;
-                    std.log.scoped(.weft).warn(
-                        "http2 dispatch failed: {s}",
-                        .{@errorName(err)},
-                    );
-                    break :blk internalErrorResponse(
-                        arena,
-                        self.options.limits,
-                    );
-                };
-
-                if (streaming and !stream.requestFinished()) {
-                    var drain_failed = false;
-                    while (true) {
-                        const chunk = stream.nextBody() catch {
-                            drain_failed = true;
-                            break;
-                        };
-                        if (chunk == null) break;
-                    }
-                    if (drain_failed) {
-                        stream.reset(.cancel) catch {};
+                    if (body_failed) {
+                        item.stream.reset(.cancel) catch {};
+                        item.stream.deinit();
+                        self.allocator.free(item.arena_buffer);
+                        item.* = .{ .server = self, .slot = slot };
                         continue;
                     }
-                }
 
-                if (response.body.len > self.options.limits.max_response_bytes) {
-                    response.reset();
-                    response.setStatus(500);
-                    response.text("Response Too Large") catch {};
-                }
-                response.validateHead() catch {
-                    response.reset();
-                    response.setStatus(500);
-                    response.text("Internal Server Error") catch {};
-                };
-
-                self.respondDuplex(
-                    &stream,
-                    stream.method,
-                    &response,
-                    arena,
-                ) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    std.log.scoped(.weft).warn(
-                        "http2 response failed: {s}",
-                        .{@errorName(err)},
+                    var trailers = try item.arena.alloc(netz.http1.Header, 0);
+                    if (item.stream.requestTrailers()) |raw| {
+                        trailers = convertH2Trailers(item.arena, raw) catch
+                            trailers;
+                    }
+                    item.request = netz.http1.Request{
+                        .method = method,
+                        .target = target,
+                        .version = .http_1_1,
+                        .headers = headers,
+                        .body = item.body.items,
+                        .trailers = trailers,
+                        .consumed = 0,
+                        .must_close = false,
+                    };
+                    item.used = true;
+                    active_count += 1;
+                    item.future = self.io.async(
+                        H2Active(H).run,
+                        .{ item, &responses },
                     );
-                    stream.reset(.internal_error) catch {};
                     continue;
-                };
+                }
+
+                if (!progressed) {
+                    std.Io.sleep(
+                        self.io,
+                        self.options.handler_poll_interval,
+                        .awake,
+                    ) catch {};
+                }
             }
 
             connection.sendGoAway(
@@ -560,6 +706,67 @@ pub fn Http2Server(comptime H: type) type {
             } else {
                 _ = try stream.finishResponseData(response.body);
             }
+        }
+    };
+}
+
+const H2ResponseMsg = struct {
+    slot: usize,
+    response: Response,
+};
+
+fn H2Active(comptime H: type) type {
+    return struct {
+        const Self = @This();
+
+        server: *Http2Server(H),
+        stream: netz.http2.runtime.ServerDuplexStream = undefined,
+        request: netz.http1.Request = undefined,
+        client_info: ctx_mod.ClientInfo = .{},
+        arena_buffer: []u8 = &.{},
+        fixed: std.heap.FixedBufferAllocator = undefined,
+        arena: std.mem.Allocator = undefined,
+        body: std.ArrayListUnmanaged(u8) = .empty,
+        future: ?std.Io.Future(anyerror!void) = null,
+        used: bool = false,
+        slot: usize = 0,
+
+        fn run(
+            self: *Self,
+            responses: *std.Io.Queue(H2ResponseMsg),
+        ) anyerror!void {
+            var response = self.server.dispatchRequest(
+                &self.request,
+                self.client_info,
+                self.arena,
+                null,
+            ) catch |err| blk: {
+                if (err == error.Canceled) return err;
+                std.log.scoped(.weft).warn(
+                    "http2 dispatch failed: {s}",
+                    .{@errorName(err)},
+                );
+                break :blk internalErrorResponse(
+                    self.arena,
+                    self.server.options.limits,
+                );
+            };
+
+            if (response.body.len > self.server.options.limits.max_response_bytes) {
+                response.reset();
+                response.setStatus(500);
+                response.text("Response Too Large") catch {};
+            }
+            response.validateHead() catch {
+                response.reset();
+                response.setStatus(500);
+                response.text("Internal Server Error") catch {};
+            };
+
+            try responses.putOne(self.server.io, .{
+                .slot = self.slot,
+                .response = response,
+            });
         }
     };
 }

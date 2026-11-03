@@ -241,8 +241,11 @@ completed request into the concrete `Ctx` view and maps responses back to
 lowercase HTTP/2 header fields. Response streaming, `HEAD`, `404/405/OPTIONS`,
 request decoding, and timeout budgets behave the same as HTTP/1.
 
-Current HTTP/2 limitation: each worker serves one request at a time per
-connection even though the transport multiplexes streams.
+Buffered requests run in up to `max_concurrent_handlers` handler tasks per
+connection; completed responses are submitted serially by the connection
+owner. Streaming-body routes are still served serially because their handler
+pulls DATA from the duplex stream. Advertised stream concurrency is capped to
+the same handler bound.
 
 ## HTTP/3
 
@@ -514,7 +517,7 @@ listeners, and mirrors HTTP/1.0 request versions with appropriate connection
 semantics. `Http2Server` and `Http3Server` provide h2c, TLS/ALPN h2, and
 QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1 and HTTP/2
 request bodies stream incrementally through a bounded window; HTTP/3 exposes
-the buffered body through a replay reader and runs up to
-`max_concurrent_handlers` handler tasks concurrently. Remaining slices include
-concurrent HTTP/2 stream dispatch and native step-driven DATA delivery for
-HTTP/3 request bodies.
+the buffered body through a replay reader. HTTP/2 buffered requests and HTTP/3
+requests run up to `max_concurrent_handlers` handler tasks concurrently.
+Remaining slices include concurrent HTTP/2 streaming-body routes and native
+step-driven DATA delivery for HTTP/3 request bodies.

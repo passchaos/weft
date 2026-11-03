@@ -2396,6 +2396,33 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         trailers_stream_response.trailers[0].value,
     );
 
+    var batch_client = try netz.http2.runtime.Client.connect(
+        allocator,
+        io,
+        server.address(),
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer batch_client.close();
+    const batch_requests = [_]netz.http2.runtime.RequestOptions{
+        .{ .path = "/hello/one", .authority = "localhost" },
+        .{ .path = "/hello/two", .authority = "localhost" },
+    };
+    var batch_responses: [2]netz.http2.runtime.OwnedResponse = undefined;
+    try batch_client.requestBatchInto(&batch_requests, &batch_responses);
+    defer for (&batch_responses) |*response| response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), batch_responses[0].status);
+    try std.testing.expectEqual(@as(u16, 200), batch_responses[1].status);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        batch_responses[0].body,
+        "one",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        batch_responses[1].body,
+        "two",
+    ) != null);
+
     const stream_uri = try std.fmt.allocPrint(
         allocator,
         "{s}/stream/fixed",
