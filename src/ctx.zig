@@ -29,17 +29,36 @@ pub const ReplayReader = struct {
     }
 };
 
+/// Pull reader over an HTTP/2 concurrent stream.
+pub const H2StreamReader = struct {
+    stream: *netz.http2.runtime.Connection.ConcurrentStream,
+    buffer: [16 * 1024]u8 = undefined,
+
+    pub fn next(self: *H2StreamReader) !?[]const u8 {
+        while (true) {
+            const count = (try self.stream.nextBody(
+                &self.buffer,
+                null,
+            )) orelse return null;
+            if (count != 0) return self.buffer[0..count];
+        }
+    }
+};
+
 /// Incremental request-body source. HTTP/1 uses netz's pull reader, HTTP/2
-/// pulls from a duplex stream, and HTTP/3 replays its buffered body.
+/// pulls from a duplex/concurrent stream, and HTTP/3 replays its buffered
+/// body.
 pub const BodyReader = union(enum) {
     pull: *netz.http1.runtime.RequestBodyReader,
     duplex: *netz.http2.runtime.ServerDuplexStream,
+    h2_stream: *H2StreamReader,
     replay: *ReplayReader,
 
     pub fn next(self: BodyReader) !?[]const u8 {
         return switch (self) {
             .pull => |reader| reader.next(),
             .duplex => |stream| stream.nextBody(),
+            .h2_stream => |reader| reader.next(),
             .replay => |reader| reader.next(),
         };
     }
@@ -281,6 +300,11 @@ pub const Ctx = struct {
             switch (reader) {
                 .duplex => |duplex| {
                     if (duplex.requestTrailers()) |fields| {
+                        self.cached_trailers = self.copyTrailers(fields);
+                    }
+                },
+                .h2_stream => |h2_stream| {
+                    if (h2_stream.stream.trailers()) |fields| {
                         self.cached_trailers = self.copyTrailers(fields);
                     }
                 },
