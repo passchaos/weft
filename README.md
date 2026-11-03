@@ -101,6 +101,18 @@ short-circuits the chain. A response written before `next()` is preserved.
 - `max_connections` bounds concurrent connections through the worker count.
 - `max_requests_per_connection` bounds persistent HTTP/1 reuse.
 
+## Lifecycle
+
+`Server.deinit` must not run while `serve` is active. The normal order is:
+
+1. run `serve` in a task or thread;
+2. call `server.stop()`;
+3. await the serving task;
+4. call `server.deinit()`.
+
+`stop()` cancels pending accepts. An in-flight request may be interrupted by
+cancellation; fully graceful drain is a future slice.
+
 ## Build and test
 
 ```sh
