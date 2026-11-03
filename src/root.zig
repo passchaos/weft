@@ -18,6 +18,9 @@ pub const Ctx = @import("ctx.zig").Ctx;
 pub const StreamBody = @import("stream.zig").Body;
 pub const StreamWriter = @import("stream.zig").Writer;
 pub const stream = @import("stream.zig");
+pub const websocket = @import("websocket.zig");
+pub const WebSocketSession = @import("websocket.zig").Session;
+pub const WebSocketUpgrade = @import("websocket.zig").Upgrade;
 pub const Handler = @import("ctx.zig").Handler;
 pub const Locals = @import("ctx.zig").Locals;
 pub const Param = @import("ctx.zig").Param;
@@ -64,6 +67,7 @@ comptime {
     _ = @import("response.zig");
     _ = @import("ctx.zig");
     _ = @import("stream.zig");
+    _ = @import("websocket.zig");
     _ = @import("query.zig");
     _ = @import("cookie.zig");
     _ = @import("multipart.zig");

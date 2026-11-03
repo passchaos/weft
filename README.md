@@ -223,6 +223,29 @@ to lowercase HTTP/3 fields. `quic_limits`, `max_concurrent_streams`, and
 Current HTTP/3 limitation: one accept loop owns the UDP endpoint, and each
 session serves one request at a time even though QUIC multiplexes streams.
 
+## WebSockets
+
+`ctx.upgradeWebSocket(...)` selects an RFC 6455 session on HTTP/1.1. Weft
+validates the opening handshake, writes `101 Switching Protocols`, and runs the
+session synchronously on the connection worker:
+
+```zig
+fn wsEcho(_: ?*anyopaque, session: *weft.WebSocketSession) anyerror!void {
+    var message = try session.receiveMessage();
+    defer message.deinit(session.connection.allocator);
+    try session.sendText(message.payload);
+}
+
+fn ws(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.upgradeWebSocket(.{ .run_fn = wsEcho });
+}
+```
+
+The session exposes text/binary sends, frame/message reads, and close. An
+optional `subprotocol` must be offered by the client. HTTP/2 and HTTP/3 reject
+WebSocket upgrades with `400`.
+
 ## Static files
 
 `weft.StaticFiles` is a route handler that streams files below a directory. It
@@ -388,9 +411,9 @@ ns per lookup (about 7M–12M lookups per second) depending on host load,
 including capture allocation from a fixed arena.
 
 `bench-server` measures one keep-alive HTTP/1 client against a one-worker
-server. On the reference host it currently reports roughly 8.8 µs per request
-(about 114k requests/s); this includes Netz HTTP/1 framing and runtime task
-wakeups, not just application dispatch.
+server. On the reference host it reports roughly 8–16 µs per request (about
+60k–114k requests/s) depending on host load; this includes Netz HTTP/1 framing
+and runtime task wakeups, not just application dispatch.
 
 ## Status
 

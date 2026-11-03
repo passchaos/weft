@@ -402,6 +402,14 @@ pub fn Http2Server(comptime H: type) type {
             response: *Response,
             arena: std.mem.Allocator,
         ) !void {
+            if (response.upgrade != null) {
+                response.reset();
+                response.setStatus(400);
+                response.text(
+                    "WebSocket upgrade requires HTTP/1.1",
+                ) catch {};
+            }
+
             if (response.stream) |body| {
                 const body_forbidden = std.mem.eql(u8, owned.method, "HEAD") or
                     response.status == 204 or

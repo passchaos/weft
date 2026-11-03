@@ -2,6 +2,7 @@ const std = @import("std");
 const netz = @import("netz");
 const limits_mod = @import("limits.zig");
 const stream_mod = @import("stream.zig");
+const websocket_mod = @import("websocket.zig");
 
 pub const Header = netz.http1.Header;
 pub const StreamBody = stream_mod.Body;
@@ -30,6 +31,9 @@ pub const Response = struct {
     /// Incremental body selected by a handler. Mutually exclusive with a
     /// buffered `body`.
     stream: ?stream_mod.Body = null,
+    /// HTTP/1 WebSocket upgrade selected by a handler. Mutually exclusive with
+    /// a buffered or streamed body.
+    upgrade: ?websocket_mod.Upgrade = null,
     /// True when `body` was allocated by this response and must be released
     /// by `deinit` or `reset`.
     body_owned: bool = false,
@@ -61,6 +65,7 @@ pub const Response = struct {
 
     pub fn deinit(self: *Response) void {
         self.cancelStream();
+        self.cancelUpgrade();
         self.clearHeaders();
         self.headers.deinit(self.allocator);
         if (self.body_owned) self.allocator.free(self.body);
@@ -71,6 +76,7 @@ pub const Response = struct {
     /// capacity. Used by recovery middleware before a response is committed.
     pub fn reset(self: *Response) void {
         self.cancelStream();
+        self.cancelUpgrade();
         self.clearHeaders();
         self.headers.clearRetainingCapacity();
         if (self.body_owned) self.allocator.free(self.body);
@@ -149,6 +155,7 @@ pub const Response = struct {
     /// has been written; the request arena is the normal owner.
     pub fn setBody(self: *Response, body: []const u8) !void {
         if (self.stream != null) return error.StreamAlreadySet;
+        if (self.upgrade != null) return error.UpgradeAlreadySet;
         if (body.len > self.max_body_bytes) return error.ResponseTooLarge;
         if (self.body_owned) self.allocator.free(self.body);
         self.body = body;
@@ -158,6 +165,7 @@ pub const Response = struct {
 
     pub fn text(self: *Response, body: []const u8) !void {
         if (self.stream != null) return error.StreamAlreadySet;
+        if (self.upgrade != null) return error.UpgradeAlreadySet;
         if (!self.hasHeader("content-type")) {
             try self.setHeader("Content-Type", "text/plain; charset=utf-8");
         }
@@ -166,6 +174,7 @@ pub const Response = struct {
 
     pub fn json(self: *Response, value: anytype) !void {
         if (self.stream != null) return error.StreamAlreadySet;
+        if (self.upgrade != null) return error.UpgradeAlreadySet;
         const body = try std.json.Stringify.valueAlloc(
             self.allocator,
             value,
@@ -254,6 +263,11 @@ pub const Response = struct {
     fn cancelStream(self: *Response) void {
         if (self.stream) |body| body.cancel();
         self.stream = null;
+    }
+
+    fn cancelUpgrade(self: *Response) void {
+        if (self.upgrade) |upgrade| upgrade.cancel();
+        self.upgrade = null;
     }
 };
 

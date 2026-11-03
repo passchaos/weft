@@ -7,6 +7,7 @@ const limits_mod = @import("limits.zig");
 const stream_mod = @import("stream.zig");
 const dispatch_mod = @import("dispatch.zig");
 const drain_mod = @import("drain.zig");
+const websocket_mod = @import("websocket.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -252,22 +253,25 @@ pub fn Server(comptime H: type) type {
                     ) catch return error.Canceled;
                     continue;
                 };
-                defer connection.close();
+                var close_connection = true;
+                defer if (close_connection) connection.close();
 
-                self.serveConnection(&connection) catch |err| {
+                const upgraded = self.serveConnection(&connection) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     std.log.scoped(.weft).warn(
                         "connection error: {s}",
                         .{@errorName(err)},
                     );
+                    continue;
                 };
+                if (upgraded) close_connection = false;
             }
         }
 
         fn serveConnection(
             self: *@This(),
             connection: *netz.http1.runtime.Connection,
-        ) !void {
+        ) !bool {
             const arena_buffer = try self.allocator.alloc(
                 u8,
                 self.options.limits.max_request_arena_bytes,
@@ -276,15 +280,15 @@ pub fn Server(comptime H: type) type {
 
             var served: usize = 0;
             while (served < self.options.max_requests_per_connection) : (served += 1) {
-                if (self.shutdown.isSet()) return;
+                if (self.shutdown.isSet()) return false;
 
                 var request = connection.readRequest(.{
                     .max_headers = self.options.limits.max_request_headers,
                     .max_request_target_bytes = self.options.limits.max_request_target_bytes,
                 }) catch |err| {
-                    if (err == error.ConnectionClosed) return;
+                    if (err == error.ConnectionClosed) return false;
                     if (err == error.Canceled) return error.Canceled;
-                    const status = statusForReadError(err) orelse return;
+                    const status = statusForReadError(err) orelse return false;
                     connection.writeResponse(.{
                         .status = status,
                         .reason = response_mod.reasonFor(status),
@@ -293,7 +297,7 @@ pub fn Server(comptime H: type) type {
                             .value = "close",
                         }},
                     }) catch {};
-                    return;
+                    return false;
                 };
                 defer request.deinit(self.allocator);
 
@@ -348,6 +352,18 @@ pub fn Server(comptime H: type) type {
                 }
                 if (self.shutdown.isSet()) connection.gracefulShutdown();
 
+                if (response.upgrade) |upgrade_body| {
+                    if (try self.handleUpgrade(
+                        connection,
+                        &request.request,
+                        &response,
+                        upgrade_body,
+                        arena,
+                    )) {
+                        return true;
+                    }
+                }
+
                 if (response.stream) |body| {
                     const body_forbidden = request.request.method == .HEAD or
                         response.status == 204 or
@@ -387,8 +403,91 @@ pub fn Server(comptime H: type) type {
                     ));
                 }
 
-                if (!keep_alive) return;
+                if (!keep_alive) return false;
             }
+            return false;
+        }
+
+        fn handleUpgrade(
+            self: *@This(),
+            connection: *netz.http1.runtime.Connection,
+            request: *const netz.http1.Request,
+            response: *Response,
+            upgrade: websocket_mod.Upgrade,
+            arena: std.mem.Allocator,
+        ) !bool {
+            _ = arena;
+            if (!validWebSocketUpgrade(request, upgrade.subprotocol)) {
+                response.reset();
+                response.setStatus(400);
+                response.text("Bad Request") catch {};
+                return false;
+            }
+
+            const client_key = request.header("sec-websocket-key").?;
+            const accept = netz.websocket.acceptKey(client_key);
+            var headers_buffer: [2]netz.http1.Header = undefined;
+            headers_buffer[0] = .{
+                .name = "Sec-WebSocket-Accept",
+                .value = &accept,
+            };
+            var header_count: usize = 1;
+            if (upgrade.subprotocol) |protocol| {
+                headers_buffer[1] = .{
+                    .name = "Sec-WebSocket-Protocol",
+                    .value = protocol,
+                };
+                header_count = 2;
+            }
+
+            const tunnel = connection.acceptUpgrade(
+                request.*,
+                "websocket",
+                headers_buffer[0..header_count],
+            ) catch {
+                response.reset();
+                response.setStatus(400);
+                response.text("Bad Request") catch {};
+                return false;
+            };
+
+            const ws_limits = netz.websocket.runtime.Limits{
+                .max_frame_bytes = self.options.limits.max_body_bytes,
+                .max_message_bytes = self.options.limits.max_body_bytes,
+                .tcp_nodelay = self.options.limits.tcp_nodelay,
+            };
+            var ws = netz.websocket.runtime.Connection{
+                .io = self.io,
+                .allocator = self.allocator,
+                .stream = tunnel.stream,
+                .role = .server,
+                .limits = .{
+                    .max_frame_bytes = ws_limits.max_frame_bytes,
+                    .max_message_bytes = ws_limits.max_message_bytes,
+                },
+                .tls_server_conn = tunnel.tls_server_conn,
+            };
+
+            // Move any bytes already buffered past the HTTP request head into
+            // the WebSocket connection.
+            ws.inbuf = tunnel.inbuf.*;
+            tunnel.inbuf.* = .empty;
+
+            // Transport ownership moved to the WebSocket connection. Free the
+            // HTTP connection's write scratch without closing the shared
+            // transport.
+            connection.inbuf.deinit(self.allocator);
+            connection.write_scratch.deinit(self.allocator);
+
+            var session = websocket_mod.Session{ .connection = ws };
+            defer session.close();
+            upgrade.run(&session) catch |err| {
+                std.log.scoped(.weft).warn(
+                    "websocket session failed: {s}",
+                    .{@errorName(err)},
+                );
+            };
+            return true;
         }
 
         fn writeStreaming(
@@ -456,6 +555,48 @@ pub fn Server(comptime H: type) type {
             );
         }
     };
+}
+
+fn validWebSocketUpgrade(
+    request: *const netz.http1.Request,
+    subprotocol: ?[]const u8,
+) bool {
+    if (request.method != .GET or
+        request.version != .http_1_1 or
+        request.body.len != 0 or
+        request.trailers.len != 0)
+    {
+        return false;
+    }
+
+    const protocol = request.upgradeProtocol() orelse return false;
+    if (!std.ascii.eqlIgnoreCase(protocol, "websocket")) return false;
+
+    const client_key = request.header("sec-websocket-key") orelse return false;
+    netz.websocket.validateClientKey(client_key) catch return false;
+
+    const version = request.header("sec-websocket-version") orelse return false;
+    if (!std.mem.eql(u8, version, "13")) return false;
+
+    if (subprotocol) |selected| {
+        if (!netz.websocket.validSubprotocolToken(selected)) return false;
+        if (!offeredSubprotocol(request, selected)) return false;
+    }
+    return true;
+}
+
+fn offeredSubprotocol(
+    request: *const netz.http1.Request,
+    selected: []const u8,
+) bool {
+    const header = request.header("sec-websocket-protocol") orelse return false;
+    var parts = std.mem.splitScalar(u8, header, ',');
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, std.mem.trim(u8, part, " \t"), selected)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn internalErrorResponse(

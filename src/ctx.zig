@@ -6,6 +6,7 @@ const query_mod = @import("query.zig");
 const cookie_mod = @import("cookie.zig");
 const stream_mod = @import("stream.zig");
 const multipart_mod = @import("multipart.zig");
+const websocket_mod = @import("websocket.zig");
 
 pub const Response = response_mod.Response;
 pub const Header = netz.http1.Header;
@@ -14,6 +15,8 @@ pub const QueryPair = query_mod.Pair;
 pub const SetCookie = cookie_mod.SetCookie;
 pub const StreamBody = stream_mod.Body;
 pub const StreamWriter = stream_mod.Writer;
+pub const WebSocketSession = websocket_mod.Session;
+pub const WebSocketUpgrade = websocket_mod.Upgrade;
 
 pub const Param = struct {
     name: []const u8,
@@ -384,6 +387,7 @@ pub const Ctx = struct {
     /// handler returns and may write at most `Limits.max_response_bytes`.
     pub fn stream(self: *Ctx, stream_body: StreamBody) !void {
         if (self.response.stream != null) return error.StreamAlreadySet;
+        if (self.response.upgrade != null) return error.UpgradeAlreadySet;
         if (self.response.body.len != 0 or self.response.body_owned) {
             return error.BodyAlreadySet;
         }
@@ -393,6 +397,20 @@ pub const Ctx = struct {
             }
         }
         self.response.stream = stream_body;
+        self.response.committed = true;
+    }
+
+    /// Select an HTTP/1 WebSocket upgrade. The HTTP/1 server validates the
+    /// opening handshake, writes `101`, and runs `upgrade.run_fn` synchronously
+    /// on the connection worker.
+    pub fn upgradeWebSocket(self: *Ctx, upgrade: WebSocketUpgrade) !void {
+        if (self.response.stream != null) return error.StreamAlreadySet;
+        if (self.response.upgrade != null) return error.UpgradeAlreadySet;
+        if (self.response.body.len != 0 or self.response.body_owned) {
+            return error.BodyAlreadySet;
+        }
+        self.response.upgrade = upgrade;
+        self.response.setStatus(101);
         self.response.committed = true;
     }
 

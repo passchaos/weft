@@ -66,6 +66,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   fixed storage, and evict least-recently-seen clients.
 - HTTP/3 TLS is verified with a real certificate identity and a pinned client
   public key, in addition to the synthetic QUIC handshake test.
+- HTTP/1 WebSocket upgrades validate the RFC 6455 handshake, transfer transport
+  ownership, and run a concrete session; HTTP/2 and HTTP/3 reject upgrades.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -95,14 +97,14 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 70/70 tests passed (44 unit, 26 package/integration).
-- ReleaseFast: 70/70 tests passed.
+- Debug: 71/71 tests passed (44 unit, 27 package/integration).
+- ReleaseFast: 71/71 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 84.0 ns/lookup 11897809 lookups/s
-router param:  routes=256  lookups=1000000 89.7 ns/lookup 11150344 lookups/s
+router static: routes=1024 lookups=2000000 97.0 ns/lookup 10306879 lookups/s
+router param:  routes=256  lookups=1000000 111.8 ns/lookup 8941462 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -112,7 +114,7 @@ guarantee.
 HTTP/1 keep-alive server throughput on the same host:
 
 ```text
-server http1: requests=200000 8765.9 ns/request 114078 requests/s
+server http1: requests=200000 16399.2 ns/request 60979 requests/s
 ```
 
 ## Remaining gaps
