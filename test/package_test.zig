@@ -86,6 +86,18 @@ fn serveHttp2Server(
     };
 }
 
+fn serveHttp3Server(
+    server: *weft.Http3Server(App),
+) std.Io.Cancelable!void {
+    server.serve() catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            std.log.scoped(.weft).warn("http3 server failed: {s}", .{@errorName(err)});
+            return;
+        },
+    };
+}
+
 fn h2Header(
     response: *const netz.http2.runtime.OwnedResponse,
     name: []const u8,
@@ -1623,6 +1635,144 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     try std.testing.expectEqualStrings(
         "12",
         h2Header(&head_response, "content-length").?,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: HTTP/3 adapter serves routes, POST, and streams" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server_cid = [_]u8{ 0xec, 0xed, 0xee, 0xef };
+    const original_dcid = [_]u8{ 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7 };
+    const client_cid = [_]u8{ 0xe8, 0xe9, 0xea, 0xeb };
+
+    var server = try weft.Http3Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .accept_timeout = .fromMilliseconds(500),
+            .idle_timeout = .fromMilliseconds(100),
+            .quic_limits = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+            .handshake = .{
+                .local_connection_id = &server_cid,
+                .random = [_]u8{0xe2} ** 32,
+                .x25519_secret_key = [_]u8{0xe4} ** 32,
+            },
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/hello/:name", hello, .{});
+    try router.get("/info", clientInfo, .{});
+    try router.post("/echo", echoJson, .{});
+    try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp3Server, .{&server});
+
+    var client = try netz.http3.runtime.HandshakeClient.connect(
+        allocator,
+        io,
+        .{ .ip4 = .loopback(0) },
+        server.address(),
+        .{
+            .quic = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+        },
+        .{
+            .handshake = .{
+                .original_destination_connection_id = &original_dcid,
+                .local_connection_id = &client_cid,
+                .server_name = "localhost",
+                .random = [_]u8{0xe1} ** 32,
+                .x25519_secret_key = [_]u8{0xe3} ** 32,
+            },
+        },
+    );
+    defer client.deinit();
+
+    var hello_response = try client.request(.{
+        .method = "GET",
+        .path = "/hello/weft?lang=zh",
+        .authority = "localhost",
+    });
+    defer hello_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        hello_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"hello\",\"name\":\"weft\"}",
+        hello_response.response.body,
+    );
+
+    var info_response = try client.request(.{
+        .method = "GET",
+        .path = "/info",
+        .authority = "localhost",
+    });
+    defer info_response.deinit(allocator);
+    try std.testing.expectEqualStrings(
+        "{\"protocol\":\"http_3\",\"has_address\":true,\"tls\":true}",
+        info_response.response.body,
+    );
+
+    var echo_headers = [_]netz.http3.Qpack.HeaderField{.{
+        .name = "content-type",
+        .value = "application/json",
+    }};
+    var echo_response = try client.request(.{
+        .method = "POST",
+        .path = "/echo",
+        .authority = "localhost",
+        .headers = &echo_headers,
+        .body = "{\"message\":\"weft\"}",
+    });
+    defer echo_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        echo_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"weft\"}",
+        echo_response.response.body,
+    );
+
+    var stream_response = try client.request(.{
+        .method = "GET",
+        .path = "/stream/fixed",
+        .authority = "localhost",
+    });
+    defer stream_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        stream_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "hello stream",
+        stream_response.response.body,
     );
 
     server.stop();

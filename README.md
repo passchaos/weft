@@ -187,6 +187,39 @@ request decoding, and timeout budgets behave the same as HTTP/1.
 Current HTTP/2 limitation: each worker serves one request at a time per
 connection even though the transport multiplexes streams.
 
+## HTTP/3
+
+`weft.Http3Server(H)` serves HTTP/3 over QUIC/TLS with ALPN `h3`. It reuses the
+same `Router`, `Ctx`, middleware, limits, decoded inputs, and streaming
+response contract:
+
+```zig
+var server = try weft.Http3Server(App).init(
+    io,
+    gpa,
+    .{
+        .address = .{ .ip4 = .loopback(8443) },
+        .handshake = .{
+            .identity = identity,
+            .local_connection_id = "weft-h3",
+        },
+    },
+    .{},
+);
+defer server.deinit();
+
+try server.router().get("/hello/:name", hello, .{});
+try server.serve();
+```
+
+Netz owns QUIC handshake, TLS, stream parsing, QPACK, flow control, and
+recovery. Weft maps each completed request into `Ctx` and maps responses back
+to lowercase HTTP/3 fields. `quic_limits`, `max_concurrent_streams`, and
+`accept_timeout` bound transport and admission behavior.
+
+Current HTTP/3 limitation: one accept loop owns the UDP endpoint, and each
+session serves one request at a time even though QUIC multiplexes streams.
+
 ## Static files
 
 `weft.StaticFiles` is a route handler that streams files below a directory. It
@@ -340,7 +373,7 @@ including capture allocation from a fixed arena.
 
 HTTP/1.1 is served through `netz.http1.runtime` with cleartext and TLS
 listeners, and mirrors HTTP/1.0 request versions with appropriate connection
-semantics. `Http2Server` provides h2c and TLS/ALPN h2 adapters over the same
-application surface. Remaining slices include concurrent HTTP/2 stream
-dispatch, HTTP/3, streaming request bodies, and Brotli/zstd response
-compression.
+semantics. `Http2Server` and `Http3Server` provide h2c, TLS/ALPN h2, and
+QUIC/TLS HTTP/3 adapters over the same application surface. Remaining slices
+include concurrent HTTP/2 and HTTP/3 stream dispatch, streaming request bodies,
+and Brotli/zstd response compression.

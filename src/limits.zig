@@ -73,4 +73,15 @@ pub const Limits = struct {
             .tcp_nodelay = self.tcp_nodelay,
         };
     }
+
+    pub fn toHttp3Netz(self: Limits) netz.http3.runtime.Limits {
+        return .{
+            .max_stream_buffer = std.math.add(
+                usize,
+                self.max_body_bytes,
+                self.max_head_bytes,
+            ) catch std.math.maxInt(usize),
+            .auto_date_header = self.auto_date_header,
+        };
+    }
 };

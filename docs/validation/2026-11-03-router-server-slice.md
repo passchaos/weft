@@ -60,6 +60,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   adapters.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part
   count, header count, and header-byte limits.
+- `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
+  buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
+  with semaphore-bounded sessions.
 
 ## Verification
 
@@ -75,14 +78,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 60/60 tests passed (38 unit, 22 package/integration).
-- ReleaseFast: 60/60 tests passed.
+- Debug: 61/61 tests passed (38 unit, 23 package/integration).
+- ReleaseFast: 61/61 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 89.0 ns/lookup 11236190 lookups/s
-router param:  routes=256  lookups=1000000 118.9 ns/lookup 8412830 lookups/s
+router static: routes=1024 lookups=2000000 84.5 ns/lookup 11839158 lookups/s
+router param:  routes=256  lookups=1000000 91.3 ns/lookup 10957531 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -94,4 +97,4 @@ guarantee.
 - Streaming request bodies and streaming multipart/file uploads.
 - Brotli and zstd response compression.
 - CPU-bound handler preemption without cancellation points.
-- Concurrent HTTP/2 stream dispatch and HTTP/3.
+- Concurrent HTTP/2 and HTTP/3 stream dispatch.
