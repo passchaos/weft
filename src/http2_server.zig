@@ -276,8 +276,15 @@ pub fn Http2Server(comptime H: type) type {
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
 
+                const client_info = ctx_mod.ClientInfo{
+                    .address = connection.stream.socket.address,
+                    .protocol = .http_2,
+                    .tls = self.options.tls != null,
+                };
+
                 var response = self.dispatch(
                     &request,
+                    client_info,
                     arena.allocator(),
                 ) catch |err| blk: {
                     if (err == error.Canceled) return error.Canceled;
@@ -320,6 +327,7 @@ pub fn Http2Server(comptime H: type) type {
         fn dispatch(
             self: *@This(),
             owned: *const netz.http2.runtime.OwnedRequest,
+            client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
         ) !Response {
             const method = netz.http1.Method.parse(owned.method) catch
@@ -365,6 +373,7 @@ pub fn Http2Server(comptime H: type) type {
                 self.options.limits,
                 self.options.middleware,
                 &request,
+                client_info,
                 arena,
             );
         }

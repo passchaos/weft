@@ -85,6 +85,8 @@ pub fn main(init: std.process.Init) !void {
   `+` is decoded as a space. `ctx.queryPairs()` exposes all pairs in wire order.
 - `ctx.header(name)`, `ctx.body()`, `ctx.method()`, and `ctx.target()` expose the
   parsed request.
+- `ctx.protocol()`, `ctx.clientAddress()`, and `ctx.isTls()` expose adapter
+  metadata such as HTTP version, peer address, and transport security.
 - `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,
   deflate, br, zstd) with `Limits.max_body_bytes` as the decoded bound.
 - `ctx.bodyJson(T)` parses decoded JSON with the request arena. Invalid JSON
@@ -327,9 +329,9 @@ zig build bench -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
-On the reference development host, a ReleaseFast run reports roughly 80 ns per
-static lookup and 90 ns per parameter lookup (about 12.5M and 11.2M lookups per
-second), including capture allocation from a fixed arena.
+On the reference development host, a ReleaseFast run reports roughly 80–100 ns
+per lookup (about 10M–12M lookups per second) depending on host load,
+including capture allocation from a fixed arena.
 
 ## Status
 

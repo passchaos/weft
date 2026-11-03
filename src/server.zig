@@ -286,8 +286,19 @@ pub fn Server(comptime H: type) type {
                 );
                 const arena = fixed_buffer.allocator();
 
+                const client_info = ctx_mod.ClientInfo{
+                    .address = connection.stream.socket.address,
+                    .protocol = switch (request.request.version) {
+                        .http_1_0 => .http_1_0,
+                        .http_1_1 => .http_1_1,
+                        else => .http_1_1,
+                    },
+                    .tls = connection.tls_server_conn != null,
+                };
+
                 var response = self.dispatch(
                     &request.request,
+                    client_info,
                     arena,
                 ) catch |err| blk: {
                     if (err == error.Canceled) return error.Canceled;
@@ -408,6 +419,7 @@ pub fn Server(comptime H: type) type {
         fn dispatch(
             self: *@This(),
             request: *const netz.http1.Request,
+            client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
         ) !Response {
             return dispatch_mod.dispatch(
@@ -418,6 +430,7 @@ pub fn Server(comptime H: type) type {
                 self.options.limits,
                 self.options.middleware,
                 request,
+                client_info,
                 arena,
             );
         }

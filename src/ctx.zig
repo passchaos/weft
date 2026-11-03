@@ -18,6 +18,21 @@ pub const Param = struct {
     value: []const u8,
 };
 
+/// Transport/version metadata for the current request.
+pub const Protocol = enum {
+    http_1_0,
+    http_1_1,
+    http_2,
+    http_3,
+};
+
+pub const ClientInfo = struct {
+    /// Peer address when the adapter can expose one.
+    address: ?std.Io.net.IpAddress = null,
+    protocol: Protocol = .http_1_1,
+    tls: bool = false,
+};
+
 /// Maximum path parameters captured for one route. The bound keeps the matcher
 /// allocation-free until a route actually matches.
 pub const max_params = 16;
@@ -69,6 +84,7 @@ pub const Ctx = struct {
     arena: std.mem.Allocator,
     limits: Limits,
     request: *const netz.http1.Request,
+    client_info: ClientInfo = .{},
     query: []const u8 = "",
     /// Decoded query pairs, bounded by `limits.max_query_params`.
     query_params: []const QueryPair = &.{},
@@ -115,6 +131,18 @@ pub const Ctx = struct {
 
     pub fn method(self: *const Ctx) netz.http1.Method {
         return self.request.method;
+    }
+
+    pub fn protocol(self: *const Ctx) Protocol {
+        return self.client_info.protocol;
+    }
+
+    pub fn clientAddress(self: *const Ctx) ?std.Io.net.IpAddress {
+        return self.client_info.address;
+    }
+
+    pub fn isTls(self: *const Ctx) bool {
+        return self.client_info.tls;
     }
 
     pub fn target(self: *const Ctx) []const u8 {

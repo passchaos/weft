@@ -9,6 +9,15 @@ fn home(app: *App, ctx: *weft.Ctx) anyerror!void {
     try ctx.text("hello from weft");
 }
 
+fn clientInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.json(.{
+        .protocol = @tagName(ctx.protocol()),
+        .has_address = ctx.clientAddress() != null,
+        .tls = ctx.isTls(),
+    });
+}
+
 fn hello(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     const name = ctx.param("name") orelse "stranger";
@@ -213,6 +222,7 @@ test "package: end-to-end HTTP/1 request" {
     var router = server.router();
     try router.get("/", home, .{});
     try router.get("/hello/:name", hello, .{});
+    try router.get("/info", clientInfo, .{});
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -238,6 +248,26 @@ test "package: end-to-end HTTP/1 request" {
     try std.testing.expectEqualStrings(
         "{\"message\":\"hello\",\"name\":\"weft\"}",
         response.response.body,
+    );
+
+    const info_uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/info",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(info_uri);
+    var info_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        info_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer info_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), info_response.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"protocol\":\"http_1_1\",\"has_address\":true,\"tls\":false}",
+        info_response.response.body,
     );
 
     server.stop();
@@ -1445,6 +1475,7 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
 
     var router = server.router();
     try router.get("/hello/:name", hello, .{});
+    try router.get("/info", clientInfo, .{});
     try router.post("/echo", echoJson, .{});
     try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
 
@@ -1477,6 +1508,26 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     try std.testing.expectEqualStrings(
         "{\"message\":\"hello\",\"name\":\"weft\"}",
         hello_response.body,
+    );
+
+    const info_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/info",
+        .{base},
+    );
+    defer allocator.free(info_uri);
+    var info_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        info_uri,
+        .{},
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer info_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), info_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"protocol\":\"http_2\",\"has_address\":true,\"tls\":false}",
+        info_response.body,
     );
 
     const missing_uri = try std.fmt.allocPrint(
@@ -1626,7 +1677,9 @@ test "package: HTTP/2 TLS serves HTTPS with ALPN h2" {
     );
     defer server.deinit();
 
-    try server.router().get("/", home, .{});
+    var router = server.router();
+    try router.get("/", home, .{});
+    try router.get("/info", clientInfo, .{});
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -1656,6 +1709,33 @@ test "package: HTTP/2 TLS serves HTTPS with ALPN h2" {
     defer response.deinit(allocator);
     try std.testing.expectEqual(@as(u16, 200), response.status);
     try std.testing.expectEqualStrings("hello from weft", response.body);
+
+    const info_uri = try std.fmt.allocPrint(
+        allocator,
+        "https://127.0.0.1:{d}/info",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(info_uri);
+    var info_response = try netz.http2.runtime.Client.requestUriTls(
+        allocator,
+        io,
+        info_uri,
+        .{},
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+        .{
+            .verify_host = false,
+            .ca_bundle = .{
+                .bundle = &ca_bundle,
+                .lock = &ca_lock,
+            },
+        },
+    );
+    defer info_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), info_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"protocol\":\"http_2\",\"has_address\":true,\"tls\":true}",
+        info_response.body,
+    );
 
     server.stop();
     try group.await(io);

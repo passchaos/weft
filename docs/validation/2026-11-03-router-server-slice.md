@@ -56,6 +56,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `Http2Server(H)` serves cleartext h2c and TLS/ALPN `h2` through the same
   router, middleware, timeout, streaming, and error semantics, including
   lowercase response field mapping and graceful GOAWAY.
+- `Ctx` exposes protocol, peer address, and TLS metadata populated by both
+  adapters.
 
 ## Verification
 
@@ -77,8 +79,8 @@ Results:
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 84.0 ns/lookup 11903130 lookups/s
-router param:  routes=256  lookups=1000000 90.2 ns/lookup 11085408 lookups/s
+router static: routes=1024 lookups=2000000 91.7 ns/lookup 10900287 lookups/s
+router param:  routes=256  lookups=1000000 99.7 ns/lookup 10028127 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the

@@ -44,6 +44,7 @@ pub fn dispatch(
     limits: limits_mod.Limits,
     app_middleware: []const ctx_mod.Handler,
     request: *const netz.http1.Request,
+    client_info: ctx_mod.ClientInfo,
     arena: std.mem.Allocator,
 ) !response_mod.Response {
     const target = request.target;
@@ -109,6 +110,7 @@ pub fn dispatch(
         .arena = arena,
         .limits = limits,
         .request = request,
+        .client_info = client_info,
         .query = query,
         .query_params = query_params,
         .params = params,
