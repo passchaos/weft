@@ -1852,6 +1852,100 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try group.await(io);
 }
 
+test "package: HTTP/3 TLS serves HTTPS with real identity" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var certificate_der: [netz.tls.testing.certificate_der_len]u8 = undefined;
+    try std.base64.standard.Decoder.decode(
+        &certificate_der,
+        netz.tls.testing.certificate_base64,
+    );
+    const key_pair = try netz.tls.testing.serverKeyPair();
+    const public_key = key_pair.public_key.toUncompressedSec1();
+
+    const server_cid = [_]u8{ 0xec, 0xed, 0xee, 0xef };
+    const original_dcid = [_]u8{ 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7 };
+    const client_cid = [_]u8{ 0xe8, 0xe9, 0xea, 0xeb };
+
+    var server = try weft.Http3Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .accept_timeout = .fromMilliseconds(500),
+            .idle_timeout = .fromMilliseconds(100),
+            .quic_limits = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+            .handshake = .{
+                .local_connection_id = &server_cid,
+                .identity = .{
+                    .certificate_chain = &.{&certificate_der},
+                    .signer = .{ .ecdsa_p256_sha256 = .{
+                        .key_pair = key_pair,
+                    } },
+                },
+            },
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp3Server, .{&server});
+
+    var client = try netz.http3.runtime.HandshakeClient.connect(
+        allocator,
+        io,
+        .{ .ip4 = .loopback(0) },
+        server.address(),
+        .{
+            .quic = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+        },
+        .{
+            .handshake = .{
+                .original_destination_connection_id = &original_dcid,
+                .local_connection_id = &client_cid,
+                .server_name = "localhost",
+                .server_auth = .{
+                    .pinned_ecdsa_p256_public_key = public_key,
+                },
+            },
+        },
+    );
+    defer client.deinit();
+
+    var response = try client.request(.{
+        .method = "GET",
+        .path = "/",
+        .authority = "localhost",
+    });
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings("hello from weft", response.response.body);
+
+    server.stop();
+    try group.await(io);
+}
+
 test "package: HTTP/2 TLS serves HTTPS with ALPN h2" {
     const allocator = std.testing.allocator;
 

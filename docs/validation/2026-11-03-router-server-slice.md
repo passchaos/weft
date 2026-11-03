@@ -64,6 +64,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   cooperative handlers; access logs include protocol and remote address.
 - Bounded per-client `RateLimit` token buckets return `429`/`Retry-After`, use
   fixed storage, and evict least-recently-seen clients.
+- HTTP/3 TLS is verified with a real certificate identity and a pinned client
+  public key, in addition to the synthetic QUIC handshake test.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -92,14 +94,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 69/69 tests passed (44 unit, 25 package/integration).
-- ReleaseFast: 69/69 tests passed.
+- Debug: 70/70 tests passed (44 unit, 26 package/integration).
+- ReleaseFast: 70/70 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 83.9 ns/lookup 11916992 lookups/s
-router param:  routes=256  lookups=1000000 90.8 ns/lookup 11012943 lookups/s
+router static: routes=1024 lookups=2000000 84.0 ns/lookup 11897809 lookups/s
+router param:  routes=256  lookups=1000000 89.7 ns/lookup 11150344 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
