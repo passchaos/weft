@@ -86,7 +86,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - HTTP/1 WebSocket upgrades validate the RFC 6455 handshake, transfer transport
   ownership, and run a concrete session; HTTP/2 and HTTP/3 reject upgrades.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
-  latency counters through a snapshot API.
+  latency counters through a snapshot API; handler errors use the dispatcher's
+  status mapping and canceled requests are excluded from status classes.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
 - `Http2Server(H)` serves cleartext h2c and TLS/ALPN `h2` through the same
   router, middleware, timeout, streaming, and error semantics, including
@@ -116,8 +117,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 84/84 tests passed (55 unit, 29 package/integration).
-- ReleaseFast: 84/84 tests passed.
+- Debug: 86/86 tests passed (57 unit, 29 package/integration).
+- ReleaseFast: 86/86 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

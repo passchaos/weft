@@ -81,6 +81,7 @@ comptime {
     _ = @import("server.zig");
     _ = @import("drain.zig");
     _ = @import("dispatch.zig");
+    _ = @import("errors.zig");
     _ = @import("http2_server.zig");
     _ = @import("http3_server.zig");
     _ = middleware;

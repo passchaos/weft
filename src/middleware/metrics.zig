@@ -1,5 +1,6 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const errors_mod = @import("../errors.zig");
 
 /// Lock-free request counters and latency totals.
 ///
@@ -49,7 +50,7 @@ pub const Metrics = struct {
     fn call(self: *Metrics, ctx: *ctx_mod.Ctx) anyerror!void {
         const started = std.Io.Timestamp.now(ctx.io, .awake);
         _ = self.active.fetchAdd(1, .monotonic);
-        var failed = false;
+        var failure: ?anyerror = null;
         defer {
             _ = self.active.fetchSub(1, .monotonic);
             _ = self.total.fetchAdd(1, .monotonic);
@@ -62,19 +63,25 @@ pub const Metrics = struct {
                 );
             }
 
-            if (failed) {
-                _ = self.status_5xx.fetchAdd(1, .monotonic);
-            } else switch (ctx.response.status) {
+            // Classify handler errors the same way dispatch will, so a
+            // malformed JSON body counts as 4xx rather than 5xx. Canceled
+            // requests never reach the wire and are excluded from status
+            // classes.
+            const status: ?u16 = if (failure) |err| blk: {
+                if (err == error.Canceled) break :blk null;
+                break :blk errors_mod.statusForHandlerError(err);
+            } else ctx.response.status;
+            if (status) |value| switch (value) {
                 200...299 => _ = self.status_2xx.fetchAdd(1, .monotonic),
                 300...399 => _ = self.status_3xx.fetchAdd(1, .monotonic),
                 400...499 => _ = self.status_4xx.fetchAdd(1, .monotonic),
                 500...599 => _ = self.status_5xx.fetchAdd(1, .monotonic),
                 else => {},
-            }
+            };
         }
 
         ctx.next() catch |err| {
-            failed = true;
+            failure = err;
             return err;
         };
     }
@@ -138,6 +145,59 @@ test "metrics counts active, total, and status classes" {
     try std.testing.expectEqual(@as(u64, 2), snapshot.total);
     try std.testing.expectEqual(@as(u64, 0), snapshot.active);
     try std.testing.expectEqual(@as(u64, 1), snapshot.status_2xx);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.status_4xx);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.status_5xx);
+}
+
+test "metrics classify handler errors like dispatch" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var counters = Metrics{};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+
+    var bad_context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{counters.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(_: *ctx_mod.Ctx) anyerror!void {
+                return error.InvalidJson;
+            }
+        }.handle),
+    };
+    bad_context.run() catch {};
+
+    var canceled_context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{counters.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(_: *ctx_mod.Ctx) anyerror!void {
+                return error.Canceled;
+            }
+        }.handle),
+    };
+    canceled_context.run() catch {};
+
+    const snapshot = counters.snapshot();
+    try std.testing.expectEqual(@as(u64, 2), snapshot.total);
     try std.testing.expectEqual(@as(u64, 1), snapshot.status_4xx);
     try std.testing.expectEqual(@as(u64, 0), snapshot.status_5xx);
 }

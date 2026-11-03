@@ -1,6 +1,7 @@
 const std = @import("std");
 const netz = @import("netz");
 const ctx_mod = @import("ctx.zig");
+const errors_mod = @import("errors.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
@@ -272,22 +273,8 @@ fn applyHandlerError(context: *ctx_mod.Ctx, err: anyerror) void {
     );
     // Nothing has reached the wire yet, so a failed handler can always be
     // replaced with a clean response.
-    const status = statusForHandlerError(err);
+    const status = errors_mod.statusForHandlerError(err);
     context.response.reset();
     context.response.setStatus(status);
     context.response.text(response_mod.reasonFor(status)) catch {};
-}
-
-fn statusForHandlerError(err: anyerror) u16 {
-    if (err == error.UnsupportedMediaType or err == error.NotMultipart) return 415;
-    if (err == error.PayloadTooLarge) return 413;
-    if (err == error.BadRequest or
-        err == error.InvalidJson or
-        err == error.MissingBoundary or
-        err == error.InvalidMultipart or
-        err == error.TooManyParts)
-    {
-        return 400;
-    }
-    return 500;
 }
