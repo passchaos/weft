@@ -469,6 +469,26 @@ const StreamHandlers = struct {
         _ = app;
         try ctx.sse(.{ .write_fn = sse });
     }
+
+    fn uploadRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        const reader = ctx.bodyReader().?;
+        var total: usize = 0;
+        while (try reader.next()) |chunk| total += chunk.len;
+        try ctx.json(.{ .bytes = total });
+    }
+
+    fn readBodyRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        const body = try ctx.readBody();
+        try ctx.json(.{ .bytes = body.len });
+    }
+
+    fn rejectUpload(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        ctx.setStatus(413);
+        try ctx.text("too large");
+    }
 };
 
 const MethodHandlers = struct {
@@ -1018,6 +1038,120 @@ test "package: server-sent events set stream headers and format fields" {
         "id: 1\nevent: tick\ndata: first\ndata: second\n\n: keep-alive\n\n",
         response.response.body,
     );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: streaming request bodies reach handlers incrementally" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 64 * 1024,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .max_streaming_window_bytes = 32 * 1024,
+            },
+            .max_connections = 2,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.post("/upload", StreamHandlers.uploadRoute, .{ .streaming = true });
+    try router.post(
+        "/upload-buffered",
+        StreamHandlers.readBodyRoute,
+        .{ .streaming = true },
+    );
+    try router.post(
+        "/upload-reject",
+        StreamHandlers.rejectUpload,
+        .{ .streaming = true },
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+
+    const body = try allocator.alloc(u8, 40 * 1024);
+    defer allocator.free(body);
+    @memset(body, 'x');
+
+    const upload_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload",
+        .{base},
+    );
+    defer allocator.free(upload_uri);
+    var upload_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        upload_uri,
+        .{ .method = .POST, .body = body },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer upload_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), upload_response.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":40960}",
+        upload_response.response.body,
+    );
+
+    const buffered_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload-buffered",
+        .{base},
+    );
+    defer allocator.free(buffered_uri);
+    var buffered_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        buffered_uri,
+        .{ .method = .POST, .body = body },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer buffered_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), buffered_response.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":40960}",
+        buffered_response.response.body,
+    );
+
+    const reject_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload-reject",
+        .{base},
+    );
+    defer allocator.free(reject_uri);
+    var reject_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        reject_uri,
+        .{ .method = .POST, .body = body },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer reject_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 413), reject_response.response.status);
+    try std.testing.expectEqualStrings("too large", reject_response.response.body);
 
     server.stop();
     try group.await(io);
@@ -1965,6 +2099,11 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     try router.get("/hello/:name", hello, .{});
     try router.get("/info", clientInfo, .{});
     try router.post("/echo", echoJson, .{});
+    try router.post(
+        "/upload",
+        StreamHandlers.uploadRoute,
+        .{ .streaming = true },
+    );
     try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
 
     var group: std.Io.Group = .init;
@@ -2061,6 +2200,32 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     try std.testing.expectEqualStrings(
         "{\"message\":\"weft\"}",
         echo_response.body,
+    );
+
+    const upload_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload",
+        .{base},
+    );
+    defer allocator.free(upload_uri);
+    const upload_body = try allocator.alloc(u8, 2048);
+    defer allocator.free(upload_body);
+    @memset(upload_body, 'x');
+    var upload_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        upload_uri,
+        .{
+            .method = "POST",
+            .body = upload_body,
+        },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer upload_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), upload_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":2048}",
+        upload_response.body,
     );
 
     const stream_uri = try std.fmt.allocPrint(

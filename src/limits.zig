@@ -33,6 +33,9 @@ pub const Limits = struct {
     max_query_params: usize = 64,
     /// Maximum parts accepted from one multipart/form-data body.
     max_multipart_parts: usize = 64,
+    /// Bounded copy window used to stream request bodies to a handler task.
+    /// The protocol layer still enforces `max_body_bytes` on the total body.
+    max_streaming_window_bytes: usize = 256 * 1024,
     /// Optional wall-clock budget for handler and middleware execution. When
     /// set, weft races the chain against a timer and cancels it at the next
     /// cancellation point, returning `503`.

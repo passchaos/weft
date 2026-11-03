@@ -1,5 +1,6 @@
 const std = @import("std");
 const netz = @import("netz");
+const body_stream_mod = @import("body_stream.zig");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -122,6 +123,7 @@ pub fn Http2Server(comptime H: type) type {
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
                 options.limits.max_request_arena_bytes == 0 or
+                options.limits.max_streaming_window_bytes == 0 or
                 options.limits.max_response_bytes == 0 or
                 options.limits.max_response_headers <
                     response_mod.head_fields_overhead + 1 or
@@ -388,6 +390,11 @@ pub fn Http2Server(comptime H: type) type {
                 .consumed = 0,
             };
 
+            var replay: ?body_stream_mod.Reader = null;
+            if (self.app_router.isStreaming(method, target)) {
+                replay = body_stream_mod.Reader.initReplay(owned.body);
+            }
+
             return dispatch_mod.dispatch(
                 H,
                 &self.app,
@@ -403,6 +410,7 @@ pub fn Http2Server(comptime H: type) type {
                 &request,
                 client_info,
                 arena,
+                if (replay) |*reader| reader else null,
             );
         }
 

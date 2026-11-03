@@ -17,6 +17,11 @@ pub const max_allowed_methods = 16;
 pub const RouteOptions = struct {
     /// Middleware runs in order before the route handler.
     middleware: []const Handler = &.{},
+    /// Read the request body incrementally and deliver it through
+    /// `Ctx.bodyReader()` on an HTTP/1 connection. Handlers on streaming
+    /// routes must consume or ignore the reader; the server drains any
+    /// remainder before writing the response.
+    streaming: bool = false,
 };
 
 pub const GroupOptions = struct {
@@ -30,6 +35,8 @@ pub const Route = struct {
     pattern: []const u8,
     handler: Handler,
     middleware: []const Handler,
+    /// True when the server should stream the request body to the handler.
+    streaming: bool = false,
     /// Segment weights used for diagnostics and tie-breaking documentation.
     /// Matching itself walks the trie, where precedence is structural.
     specificity: u32,
@@ -194,7 +201,10 @@ pub fn Router(comptime H: type) type {
                     method,
                     combined_pattern,
                     handler,
-                    .{ .middleware = combined_middleware },
+                    .{
+                        .middleware = combined_middleware,
+                        .streaming = route_options.streaming,
+                    },
                 );
             }
 
@@ -430,6 +440,7 @@ pub fn Router(comptime H: type) type {
                 .pattern = pattern_copy,
                 .handler = handler,
                 .middleware = middleware_copy,
+                .streaming = route_options.streaming,
                 .specificity = computeSpecificity(pattern),
                 .capture_count = info.captures,
             };
@@ -575,6 +586,49 @@ pub fn Router(comptime H: type) type {
 
             if (allowed.len > 0) return .{ .method_not_allowed = allowed };
             return .not_found;
+        }
+
+        /// Cheap check for whether the matched route opted into streaming.
+        /// Performs no allocation; adapters use it to decide whether to expose
+        /// a body reader.
+        pub fn isStreaming(
+            self: *@This(),
+            method: netz.http1.Method,
+            path: []const u8,
+        ) bool {
+            const source = if (std.mem.eql(u8, path, "*"))
+                ""
+            else if (path.len > 0 and path[0] == '/')
+                std.mem.trim(u8, path, "/")
+            else
+                return false;
+
+            var captures = Captures{};
+            var allowed = AllowedMethods{};
+            if (self.matchNode(
+                &self.root,
+                source,
+                0,
+                0,
+                method,
+                &captures,
+                &allowed,
+            )) |route| return route.streaming;
+
+            if (method == .HEAD) {
+                var head_captures = Captures{};
+                var head_allowed = AllowedMethods{};
+                if (self.matchNode(
+                    &self.root,
+                    source,
+                    0,
+                    0,
+                    .GET,
+                    &head_captures,
+                    &head_allowed,
+                )) |route| return route.streaming;
+            }
+            return false;
         }
 
         /// Methods supported somewhere in the router, used for `OPTIONS *`.

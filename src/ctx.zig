@@ -1,5 +1,6 @@
 const std = @import("std");
 const netz = @import("netz");
+const body_stream_mod = @import("body_stream.zig");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
@@ -17,6 +18,7 @@ pub const SetCookie = cookie_mod.SetCookie;
 pub const StreamBody = stream_mod.Body;
 pub const StreamWriter = stream_mod.Writer;
 pub const SseEvent = sse_mod.Event;
+pub const BodyReader = body_stream_mod.Reader;
 pub const WebSocketSession = websocket_mod.Session;
 pub const WebSocketUpgrade = websocket_mod.Upgrade;
 
@@ -91,6 +93,11 @@ pub const Ctx = struct {
     arena: std.mem.Allocator,
     limits: Limits,
     request: *const netz.http1.Request,
+    /// Bounded incremental body reader for routes registered with
+    /// `RouteOptions.streaming`. Null for buffered requests.
+    body_reader: ?*BodyReader = null,
+    /// Body cached by `readBody` after a streaming read.
+    cached_body: ?[]const u8 = null,
     client_info: ClientInfo = .{},
     /// Absolute handler deadline when `Limits.request_timeout` is configured.
     request_deadline: ?std.Io.Clock.Timestamp = null,
@@ -205,6 +212,38 @@ pub const Ctx = struct {
         return self.request.body;
     }
 
+    /// Incremental request-body reader for streaming routes. Null on buffered
+    /// routes; use `readBody` when the whole body is needed.
+    pub fn bodyReader(self: *const Ctx) ?*BodyReader {
+        return self.body_reader;
+    }
+
+    /// Read the complete request body. Streaming routes drain the bounded
+    /// reader into the request arena; buffered routes return the parsed body.
+    /// Repeated calls return the cached result.
+    pub fn readBody(self: *Ctx) ![]const u8 {
+        if (self.cached_body) |cached| return cached;
+
+        const reader = self.body_reader orelse {
+            self.cached_body = self.request.body;
+            return self.request.body;
+        };
+
+        var output = std.ArrayListUnmanaged(u8).empty;
+        var total: usize = 0;
+        while (try reader.next()) |chunk| {
+            const next_total = std.math.add(usize, total, chunk.len) catch
+                return error.PayloadTooLarge;
+            if (next_total > self.limits.max_body_bytes) {
+                return error.PayloadTooLarge;
+            }
+            try output.appendSlice(self.arena, chunk);
+            total = next_total;
+        }
+        self.cached_body = output.items;
+        return output.items;
+    }
+
     /// Request trailer fields. HTTP/1 chunked requests may populate these;
     /// adapters without trailer support expose an empty slice.
     pub fn trailers(self: *const Ctx) []const Header {
@@ -226,8 +265,10 @@ pub const Ctx = struct {
     /// The decoded output is bounded by `Limits.max_body_bytes`. An absent or
     /// `identity` encoding borrows the original body without allocating.
     pub fn decodedBody(self: *Ctx) ![]const u8 {
-        const decoded = self.request.decodeContentAlloc(
+        const decoded = netz.http1.content_coding.decodeHeadersAlloc(
             self.arena,
+            self.request.headers,
+            try self.readBody(),
             self.limits.max_body_bytes,
         ) catch |err| switch (err) {
             error.UnsupportedContentEncoding => return error.UnsupportedMediaType,

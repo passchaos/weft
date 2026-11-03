@@ -1,5 +1,6 @@
 const std = @import("std");
 const netz = @import("netz");
+const body_stream_mod = @import("body_stream.zig");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -131,6 +132,7 @@ pub fn Server(comptime H: type) type {
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
                 options.limits.max_request_arena_bytes == 0 or
+                options.limits.max_streaming_window_bytes == 0 or
                 options.limits.max_response_bytes == 0 or
                 options.limits.max_response_headers <
                     response_mod.head_fields_overhead + 1 or
@@ -282,10 +284,39 @@ pub fn Server(comptime H: type) type {
             while (served < self.options.max_requests_per_connection) : (served += 1) {
                 if (self.shutdown.isSet()) return false;
 
-                var request = connection.readRequest(.{
-                    .max_headers = self.options.limits.max_request_headers,
-                    .max_request_target_bytes = self.options.limits.max_request_target_bytes,
-                }) catch |err| {
+                var fixed_buffer = std.heap.FixedBufferAllocator.init(
+                    arena_buffer,
+                );
+                const arena = fixed_buffer.allocator();
+
+                var state = StreamingRead(H){
+                    .server = self,
+                    .allocator = self.allocator,
+                    .arena = arena,
+                    .client_info = .{
+                        .address = connection.stream.socket.address,
+                        .protocol = .http_1_1,
+                        .tls = connection.tls_server_conn != null,
+                    },
+                };
+                defer state.body.deinit(self.allocator);
+                defer state.clearStreaming();
+
+                var request = connection.readRequestStreamingWithOptionsAndHead(
+                    .{
+                        .max_headers = self.options.limits.max_request_headers,
+                        .max_request_target_bytes = self.options.limits.max_request_target_bytes,
+                    },
+                    &state,
+                    StreamingRead(H).onHead,
+                    StreamingRead(H).onChunk,
+                ) catch |err| {
+                    if (state.streaming) {
+                        state.reader.?.finish();
+                        if (state.future) |*future| {
+                            _ = future.await(self.io) catch {};
+                        }
+                    }
                     if (err == error.ConnectionClosed) return false;
                     if (err == error.Canceled) return error.Canceled;
                     const status = statusForReadError(err) orelse return false;
@@ -301,36 +332,68 @@ pub fn Server(comptime H: type) type {
                 };
                 defer request.deinit(self.allocator);
 
-                var fixed_buffer = std.heap.FixedBufferAllocator.init(
-                    arena_buffer,
-                );
-                const arena = fixed_buffer.allocator();
-
-                const client_info = ctx_mod.ClientInfo{
-                    .address = connection.stream.socket.address,
-                    .protocol = switch (request.request.version) {
-                        .http_1_0 => .http_1_0,
-                        .http_1_1 => .http_1_1,
-                        else => .http_1_1,
-                    },
-                    .tls = connection.tls_server_conn != null,
+                var handler_request: netz.http1.Request = .{
+                    .method = request.method,
+                    .target = request.target,
+                    .version = request.version,
+                    .headers = request.headers,
+                    .body = if (state.streaming) "" else state.body.items,
+                    .trailers = request.trailers,
+                    .consumed = 0,
+                    .must_close = request.must_close,
                 };
 
-                var response = self.dispatch(
-                    &request.request,
-                    client_info,
-                    arena,
-                ) catch |err| blk: {
-                    if (err == error.Canceled) return error.Canceled;
-                    std.log.scoped(.weft).warn(
-                        "dispatch failed: {s}",
-                        .{@errorName(err)},
-                    );
-                    break :blk internalErrorResponse(
+                var response: Response = undefined;
+                if (state.streaming) {
+                    state.reader.?.finish();
+                    response = state.future.?.await(self.io) catch |err| blk: {
+                        if (err == error.Canceled) return error.Canceled;
+                        std.log.scoped(.weft).warn(
+                            "dispatch failed: {s}",
+                            .{@errorName(err)},
+                        );
+                        break :blk internalErrorResponse(
+                            arena,
+                            self.options.limits,
+                        );
+                    };
+                } else if (state.fallback_streaming) {
+                    response = dispatchWithReplay(
+                        self,
+                        &handler_request,
+                        state.client_info,
                         arena,
+                        state.body.items,
                         self.options.limits,
-                    );
-                };
+                    ) catch |err| blk: {
+                        if (err == error.Canceled) return error.Canceled;
+                        std.log.scoped(.weft).warn(
+                            "dispatch failed: {s}",
+                            .{@errorName(err)},
+                        );
+                        break :blk internalErrorResponse(
+                            arena,
+                            self.options.limits,
+                        );
+                    };
+                } else {
+                    response = self.dispatch(
+                        &handler_request,
+                        state.client_info,
+                        arena,
+                        null,
+                    ) catch |err| blk: {
+                        if (err == error.Canceled) return error.Canceled;
+                        std.log.scoped(.weft).warn(
+                            "dispatch failed: {s}",
+                            .{@errorName(err)},
+                        );
+                        break :blk internalErrorResponse(
+                            arena,
+                            self.options.limits,
+                        );
+                    };
+                }
 
                 if (response.body.len > self.options.limits.max_response_bytes) {
                     response.reset();
@@ -343,11 +406,11 @@ pub fn Server(comptime H: type) type {
                     response.text("Internal Server Error") catch {};
                 };
 
-                const keep_alive = request.request.keepAlive() and
+                const keep_alive = request.keepAlive() and
                     !self.shutdown.isSet();
                 if (!keep_alive) {
                     response.setHeader("Connection", "close") catch {};
-                } else if (request.request.version == .http_1_0) {
+                } else if (request.version == .http_1_0) {
                     response.setHeader("Connection", "keep-alive") catch {};
                 }
                 if (self.shutdown.isSet()) connection.gracefulShutdown();
@@ -355,7 +418,7 @@ pub fn Server(comptime H: type) type {
                 if (response.upgrade) |upgrade_body| {
                     if (try self.handleUpgrade(
                         connection,
-                        &request.request,
+                        &handler_request,
                         &response,
                         upgrade_body,
                         arena,
@@ -365,14 +428,14 @@ pub fn Server(comptime H: type) type {
                 }
 
                 if (response.stream) |body| {
-                    const body_forbidden = request.request.method == .HEAD or
+                    const body_forbidden = handler_request.method == .HEAD or
                         response.status == 204 or
                         response.status == 304 or
                         (response.status >= 100 and response.status < 200);
                     if (body_forbidden) {
                         body.cancel();
                         response.stream = null;
-                        if (request.request.method == .HEAD) {
+                        if (handler_request.method == .HEAD) {
                             if (body.length) |length| {
                                 response.setHeader(
                                     "Content-Length",
@@ -385,21 +448,21 @@ pub fn Server(comptime H: type) type {
                             }
                         }
                         try connection.writeResponse(response.toOptionsFor(
-                            request.request.method,
-                            request.request.version,
+                            handler_request.method,
+                            handler_request.version,
                         ));
                     } else {
                         try self.writeStreaming(
                             connection,
-                            &request.request,
+                            &handler_request,
                             &response,
                             body,
                         );
                     }
                 } else {
                     try connection.writeResponse(response.toOptionsFor(
-                        request.request.method,
-                        request.request.version,
+                        handler_request.method,
+                        handler_request.version,
                     ));
                 }
 
@@ -536,6 +599,7 @@ pub fn Server(comptime H: type) type {
             request: *const netz.http1.Request,
             client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
+            body_reader: ?*ctx_mod.BodyReader,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -552,7 +616,178 @@ pub fn Server(comptime H: type) type {
                 request,
                 client_info,
                 arena,
+                body_reader,
             );
+        }
+    };
+}
+
+fn dispatchWithReplay(
+    server: anytype,
+    request: *const netz.http1.Request,
+    client_info: ctx_mod.ClientInfo,
+    arena: std.mem.Allocator,
+    body: []const u8,
+    limits: Limits,
+) !Response {
+    var replay = try body_stream_mod.Reader.init(
+        server.allocator,
+        server.io,
+        limits.max_streaming_window_bytes,
+    );
+    defer replay.deinit();
+    try replay.push(body);
+    replay.finish();
+    return server.dispatch(request, client_info, arena, &replay);
+}
+
+fn StreamingRead(comptime H: type) type {
+    return struct {
+        const Self = @This();
+
+        server: *Server(H),
+        allocator: std.mem.Allocator,
+        arena: std.mem.Allocator,
+        client_info: ctx_mod.ClientInfo,
+        body: std.ArrayListUnmanaged(u8) = .empty,
+        reader: ?*body_stream_mod.Reader = null,
+        headers: ?[]netz.http1.Header = null,
+        target: ?[]u8 = null,
+        request: ?netz.http1.Request = null,
+        future: ?std.Io.Future(anyerror!Response) = null,
+        streaming: bool = false,
+        /// Route asked for streaming but the Io backend could not run the
+        /// handler concurrently; the body is buffered and replayed through a
+        /// reader after the read completes.
+        fallback_streaming: bool = false,
+        method: netz.http1.Method = .GET,
+        version: netz.http1.Version = .http_1_1,
+        must_close: bool = false,
+
+        fn onHead(self: *Self, head: netz.streaming.http1.RequestHead) !void {
+            self.method = head.method;
+            self.version = head.version;
+            self.must_close = head.must_close;
+            self.client_info.protocol = switch (head.version) {
+                .http_1_0 => .http_1_0,
+                .http_1_1 => .http_1_1,
+                else => .http_1_1,
+            };
+
+            const target = head.target;
+            const query_index = std.mem.indexOfScalar(u8, target, '?');
+            const path = if (query_index) |index| target[0..index] else target;
+            const resolution = try self.server.app_router.resolve(
+                head.method,
+                path,
+                self.allocator,
+            );
+            switch (resolution) {
+                .matched => |matched| {
+                    defer matched.deinit(self.allocator);
+                    if (!matched.route.streaming) return;
+                },
+                else => return,
+            }
+
+            var reader: ?*body_stream_mod.Reader = null;
+            var reader_initialized = false;
+            var headers: ?[]netz.http1.Header = null;
+            var target_copy: ?[]u8 = null;
+            var committed = false;
+            defer if (!committed) {
+                if (reader) |value| {
+                    if (reader_initialized) value.deinit();
+                    self.allocator.destroy(value);
+                }
+                if (headers) |value| self.allocator.free(value);
+                if (target_copy) |value| self.allocator.free(value);
+            };
+
+            reader = try self.allocator.create(body_stream_mod.Reader);
+            reader.?.* = try body_stream_mod.Reader.init(
+                self.allocator,
+                self.server.io,
+                self.server.options.limits.max_streaming_window_bytes,
+            );
+            reader_initialized = true;
+
+            headers = try self.allocator.dupe(
+                netz.http1.Header,
+                head.headers,
+            );
+            target_copy = try self.allocator.dupe(u8, target);
+
+            self.reader = reader.?;
+            self.headers = headers.?;
+            self.target = target_copy.?;
+            self.request = .{
+                .method = head.method,
+                .target = target_copy.?,
+                .version = head.version,
+                .headers = headers.?,
+                .body = "",
+                .consumed = 0,
+                .must_close = head.must_close,
+            };
+            self.streaming = true;
+            committed = true;
+
+            self.future = std.Io.concurrent(
+                self.server.io,
+                Self.run,
+                .{self},
+            ) catch {
+                self.fallback_streaming = true;
+                self.clearStreaming();
+                return;
+            };
+        }
+
+        fn onChunk(self: *Self, chunk: []const u8) !void {
+            if (self.streaming) {
+                try self.reader.?.push(chunk);
+                return;
+            }
+            const next = std.math.add(
+                usize,
+                self.body.items.len,
+                chunk.len,
+            ) catch return error.BodyTooLarge;
+            if (next > self.server.options.limits.max_body_bytes) {
+                return error.BodyTooLarge;
+            }
+            try self.body.appendSlice(self.allocator, chunk);
+        }
+
+        fn run(self: *Self) anyerror!Response {
+            const reader = self.reader orelse
+                return error.InvalidStreamingState;
+            defer reader.drain();
+            return self.server.dispatch(
+                &self.request.?,
+                self.client_info,
+                self.arena,
+                reader,
+            );
+        }
+
+        fn clearStreaming(self: *Self) void {
+            self.streaming = false;
+            if (self.reader) |reader| {
+                reader.deinit();
+                self.allocator.destroy(reader);
+                self.reader = null;
+            }
+            if (self.headers) |headers| {
+                self.allocator.free(headers);
+                self.headers = null;
+            }
+            if (self.target) |target| {
+                self.allocator.free(target);
+                self.target = null;
+            }
+            self.request = null;
         }
     };
 }

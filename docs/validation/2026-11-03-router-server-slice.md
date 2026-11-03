@@ -41,6 +41,14 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Streaming response bodies through a concrete `StreamBody`/`StreamWriter` seam,
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
+- Streaming request bodies for HTTP/1 through `RouteOptions.streaming` and
+  `Ctx.bodyReader()`, using a bounded `max_streaming_window_bytes` producer/
+  consumer window between the connection task and a handler task. Unread bytes
+  are drained before the response is written, `Ctx.readBody()` buffers into the
+  request arena, and a buffered replay path covers runtimes without concurrent
+  tasks.
+- HTTP/2 and HTTP/3 expose a one-chunk replay reader for streaming routes over
+  their already-buffered DATA bodies.
 - `Ctx.sse` plus `sse.write`/`sse.comment` helpers for `text/event-stream`
   responses, with multiline `data:` framing, `id`/`event`/`retry` fields,
   injection rejection, and compression opt-out.
@@ -129,8 +137,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 93/93 tests passed (64 unit, 29 package/integration).
-- ReleaseFast: 93/93 tests passed.
+- Debug: 97/97 tests passed (67 unit, 30 package/integration).
+- ReleaseFast: 97/97 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
@@ -151,7 +159,7 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 
 ## Remaining gaps
 
-- Streaming request bodies and concurrent HTTP/2/HTTP/3 stream dispatch need
-  protocol-level support; the concrete requests are filed in
-  `../netz/docs/weft-integration-requests.md`.
+- Concurrent HTTP/2/HTTP/3 stream dispatch and native step-driven DATA
+  delivery for HTTP/2/HTTP/3 request bodies; netz now exposes the primitives
+  and weft currently replays buffered bodies on those adapters.
 - CPU-bound handler preemption without cancellation points.

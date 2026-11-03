@@ -59,6 +59,7 @@ pub fn dispatch(
     request: *const netz.http1.Request,
     client_info: ctx_mod.ClientInfo,
     arena: std.mem.Allocator,
+    body_reader: ?*ctx_mod.BodyReader,
 ) !response_mod.Response {
     const target = request.target;
     const query_index = std.mem.indexOfScalar(u8, target, '?');
@@ -139,6 +140,7 @@ pub fn dispatch(
         .arena = arena,
         .limits = limits,
         .request = request,
+        .body_reader = body_reader,
         .client_info = client_info,
         .request_deadline = request_deadline,
         .query = query,

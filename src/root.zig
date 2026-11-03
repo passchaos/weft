@@ -15,6 +15,7 @@ pub const validateHeaderName = @import("response.zig").validateHeaderName;
 pub const validateHeaderValue = @import("response.zig").validateHeaderValue;
 
 pub const Ctx = @import("ctx.zig").Ctx;
+pub const BodyReader = @import("body_stream.zig").Reader;
 pub const StreamBody = @import("stream.zig").Body;
 pub const StreamWriter = @import("stream.zig").Writer;
 pub const stream = @import("stream.zig");
@@ -68,6 +69,7 @@ comptime {
     _ = @import("limits.zig");
     _ = @import("response.zig");
     _ = @import("ctx.zig");
+    _ = @import("body_stream.zig");
     _ = @import("stream.zig");
     _ = @import("sse.zig");
     _ = @import("websocket.zig");
