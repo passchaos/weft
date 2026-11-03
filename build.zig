@@ -23,6 +23,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const netz_mod = netz_dep.module("netz");
+    const vort_dep = b.dependency("vort", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const vort_mod = vort_dep.module("vort");
 
     const weft_mod = b.addModule("weft", .{
         .root_source_file = b.path("src/root.zig"),
@@ -30,6 +35,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "netz", .module = netz_mod },
+            .{ .name = "vort", .module = vort_mod },
         },
     });
 

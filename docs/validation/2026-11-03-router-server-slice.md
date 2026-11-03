@@ -47,9 +47,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   applying weft HTTP limits and a bounded accept/handshake budget.
 - Optional `Limits.request_timeout` races the middleware/handler chain against a
   timer, cancels at the next cancellation point, and returns `503`.
-- Response compression negotiates gzip or deflate from `Accept-Encoding`
-  quality values, honors `no-transform`, and returns `406` when identity is
-  explicitly refused.
+- Response compression negotiates gzip, deflate, Brotli, or zstd from
+  `Accept-Encoding` quality values, honors `no-transform`, and returns `406`
+  when identity is explicitly refused.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -78,14 +78,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 61/61 tests passed (38 unit, 23 package/integration).
-- ReleaseFast: 61/61 tests passed.
+- Debug: 63/63 tests passed (40 unit, 23 package/integration).
+- ReleaseFast: 63/63 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 84.5 ns/lookup 11839158 lookups/s
-router param:  routes=256  lookups=1000000 91.3 ns/lookup 10957531 lookups/s
+router static: routes=1024 lookups=2000000 79.6 ns/lookup 12567224 lookups/s
+router param:  routes=256  lookups=1000000 90.8 ns/lookup 11015615 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -95,6 +95,5 @@ guarantee.
 ## Remaining gaps
 
 - Streaming request bodies and streaming multipart/file uploads.
-- Brotli and zstd response compression.
 - CPU-bound handler preemption without cancellation points.
 - Concurrent HTTP/2 and HTTP/3 stream dispatch.

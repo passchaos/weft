@@ -1,18 +1,24 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const vort = @import("vort");
 
 const flate = std.compress.flate;
 
 /// Response compression with bounded, content-type-aware negotiation.
 ///
-/// The middleware compresses only responses that already have a complete body
-/// and are larger than `min_bytes`. It never compresses a response that
-/// already selected a `Content-Encoding` or asked for `no-transform`.
+/// The middleware negotiates gzip, deflate, Brotli, and zstd from
+/// `Accept-Encoding` quality values. It compresses only responses that already
+/// have a complete body and are larger than `min_bytes`, and never compresses a
+/// response that already selected a `Content-Encoding` or asked for
+/// `no-transform`.
 pub const Compress = struct {
     min_bytes: usize = 1024,
     level: flate.Compress.Options = .default,
     enable_gzip: bool = true,
     enable_deflate: bool = true,
+    enable_br: bool = true,
+    enable_zstd: bool = true,
+    zstd_level: c_int = 3,
 
     pub fn handler(self: *Compress) ctx_mod.Handler {
         return ctx_mod.withContext(Compress, self, call);
@@ -45,6 +51,7 @@ pub const Compress = struct {
                     response.body,
                     coding,
                     self.level,
+                    self.zstd_level,
                 ) catch return;
                 response.setHeader(
                     "Content-Encoding",
@@ -67,6 +74,8 @@ pub const Compress = struct {
 
         var gzip_quality: ?f64 = null;
         var deflate_quality: ?f64 = null;
+        var br_quality: ?f64 = null;
+        var zstd_quality: ?f64 = null;
         var identity_quality: ?f64 = null;
         var wildcard_quality: ?f64 = null;
         var saw_known = false;
@@ -92,6 +101,10 @@ pub const Compress = struct {
                 gzip_quality = q;
             } else if (std.ascii.eqlIgnoreCase(coding, "deflate")) {
                 deflate_quality = q;
+            } else if (std.ascii.eqlIgnoreCase(coding, "br")) {
+                br_quality = q;
+            } else if (std.ascii.eqlIgnoreCase(coding, "zstd")) {
+                zstd_quality = q;
             } else if (std.ascii.eqlIgnoreCase(coding, "identity")) {
                 identity_quality = q;
             } else if (std.mem.eql(u8, coding, "*")) {
@@ -113,6 +126,14 @@ pub const Compress = struct {
             deflate_quality orelse wildcard
         else
             0.0;
+        const br_q = if (self.enable_br)
+            br_quality orelse wildcard
+        else
+            0.0;
+        const zstd_q = if (self.enable_zstd)
+            zstd_quality orelse wildcard
+        else
+            0.0;
         const identity_q = identity_quality orelse
             (if (wildcard_quality != null and wildcard == 0)
                 @as(f64, 0.0)
@@ -121,6 +142,14 @@ pub const Compress = struct {
 
         var best: ?Coding = null;
         var best_quality: f64 = 0;
+        if (br_q > 0 and br_q > best_quality) {
+            best = .br;
+            best_quality = br_q;
+        }
+        if (zstd_q > 0 and zstd_q > best_quality) {
+            best = .zstd;
+            best_quality = zstd_q;
+        }
         if (gzip_q > 0 and gzip_q > best_quality) {
             best = .gzip;
             best_quality = gzip_q;
@@ -138,11 +167,15 @@ pub const Compress = struct {
 const Coding = enum {
     gzip,
     deflate,
+    br,
+    zstd,
 
     fn headerValue(self: Coding) []const u8 {
         return switch (self) {
             .gzip => "gzip",
             .deflate => "deflate",
+            .br => "br",
+            .zstd => "zstd",
         };
     }
 
@@ -150,6 +183,7 @@ const Coding = enum {
         return switch (self) {
             .gzip => .gzip,
             .deflate => .zlib,
+            .br, .zstd => unreachable,
         };
     }
 };
@@ -160,7 +194,7 @@ const Negotiation = union(enum) {
     coding: Coding,
 };
 
-/// Apply default gzip/deflate negotiation.
+/// Apply default gzip/deflate/Brotli/zstd negotiation.
 pub fn compress(ctx: *ctx_mod.Ctx) anyerror!void {
     var defaults = Compress{};
     return defaults.call(ctx);
@@ -171,21 +205,38 @@ fn compressBody(
     body: []const u8,
     coding: Coding,
     level: flate.Compress.Options,
+    zstd_level: c_int,
 ) ![]const u8 {
-    var output = try std.Io.Writer.Allocating.initCapacity(allocator, 64);
-    defer output.deinit();
+    switch (coding) {
+        .gzip, .deflate => {
+            var output = try std.Io.Writer.Allocating.initCapacity(
+                allocator,
+                64,
+            );
+            defer output.deinit();
 
-    var window: [flate.max_window_len]u8 = undefined;
-    var encoder = try flate.Compress.init(
-        &output.writer,
-        &window,
-        coding.container(),
-        level,
-    );
-    try encoder.writer.writeAll(body);
-    try encoder.finish();
+            var window: [flate.max_window_len]u8 = undefined;
+            var encoder = try flate.Compress.init(
+                &output.writer,
+                &window,
+                coding.container(),
+                level,
+            );
+            try encoder.writer.writeAll(body);
+            try encoder.finish();
 
-    return output.toOwnedSlice();
+            return output.toOwnedSlice();
+        },
+        .br => return vort.br.encodePlannedStreamChunksAlloc(
+            allocator,
+            &.{body},
+        ),
+        .zstd => return vort.zstd.encodeFrameWithLevelAlloc(
+            allocator,
+            body,
+            zstd_level,
+        ),
+    }
 }
 
 fn noTransform(cache_control: ?[]const u8) bool {
@@ -428,6 +479,132 @@ test "compress middleware returns 406 when identity is refused" {
     try std.testing.expect(
         context.response.header("content-encoding") == null,
     );
+}
+
+fn decodeBody(
+    allocator: std.mem.Allocator,
+    encoding: []const u8,
+    body: []const u8,
+    max_output_len: usize,
+) ![]const u8 {
+    const headers = [_]@import("netz").http1.Header{.{
+        .name = "Content-Encoding",
+        .value = encoding,
+    }};
+    const decoded = try @import("netz").http1.content_coding.decodeHeadersAlloc(
+        allocator,
+        &headers,
+        body,
+        max_output_len,
+    );
+    return decoded.bytes;
+}
+
+fn expectRoundTrip(
+    encoding: []const u8,
+    compressed: []const u8,
+    original: []const u8,
+) !void {
+    const decoded = try decodeBody(
+        std.testing.allocator,
+        encoding,
+        compressed,
+        original.len,
+    );
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings(original, decoded);
+}
+
+test "compress middleware supports brotli" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "br",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 64 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 64 * 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                const body = try ctx.arena.alloc(u8, 4096);
+                @memset(body, 'a');
+                try ctx.text(body);
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqualStrings(
+        "br",
+        context.response.header("content-encoding").?,
+    );
+    const original = try allocator.alloc(u8, 4096);
+    defer allocator.free(original);
+    @memset(original, 'a');
+    try expectRoundTrip("br", context.response.body, original);
+}
+
+test "compress middleware supports zstd" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "zstd",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 64 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 64 * 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                const body = try ctx.arena.alloc(u8, 4096);
+                @memset(body, 'a');
+                try ctx.text(body);
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqualStrings(
+        "zstd",
+        context.response.header("content-encoding").?,
+    );
+    const original = try allocator.alloc(u8, 4096);
+    defer allocator.free(original);
+    @memset(original, 'a');
+    try expectRoundTrip("zstd", context.response.body, original);
 }
 
 test "compress middleware honors no-transform" {

@@ -5,6 +5,7 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .netz = .{ .path = "../netz" },
+        .vort = .{ .path = "../vort" },
     },
     .paths = .{
         "build.zig",

@@ -275,9 +275,10 @@ Built-ins:
 - `BasicAuth` — constant-time Basic credential check with a challenge response.
 - `Cors` — exact-origin allow list, credential support, preflight handling,
   configured request-header validation, and `Vary` maintenance.
-- `Compress` — gzip/deflate negotiation from `Accept-Encoding` quality values,
-  compressible content types, and bodies above `min_bytes`; existing
-  `Content-Encoding`, `no-transform`, and refused identity are respected.
+- `Compress` — gzip, deflate, Brotli, and zstd negotiation from
+  `Accept-Encoding` quality values, compressible content types, and bodies
+  above `min_bytes`; existing `Content-Encoding`, `no-transform`, and refused
+  identity are respected.
 - `recover` — converts an uncommitted handler failure into `500`, or marks a
   committed partial response `Connection: close`.
 - `Metrics` — lock-free total, active, status-class, and latency counters with a
@@ -375,5 +376,5 @@ HTTP/1.1 is served through `netz.http1.runtime` with cleartext and TLS
 listeners, and mirrors HTTP/1.0 request versions with appropriate connection
 semantics. `Http2Server` and `Http3Server` provide h2c, TLS/ALPN h2, and
 QUIC/TLS HTTP/3 adapters over the same application surface. Remaining slices
-include concurrent HTTP/2 and HTTP/3 stream dispatch, streaming request bodies,
-and Brotli/zstd response compression.
+include concurrent HTTP/2 and HTTP/3 stream dispatch and streaming request
+bodies.
