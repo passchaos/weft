@@ -2651,6 +2651,11 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try router.post("/echo", echoJson, .{});
     try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
     try router.get("/trailers", trailerRoute, .{});
+    try router.post(
+        "/upload",
+        StreamHandlers.uploadRoute,
+        .{ .streaming = true },
+    );
     try router.get("/trailers-stream", streamingTrailerRoute, .{});
 
     var group: std.Io.Group = .init;
@@ -2693,6 +2698,25 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try std.testing.expectEqualStrings(
         "{\"message\":\"hello\",\"name\":\"weft\"}",
         hello_response.response.body,
+    );
+
+    const upload_body = try allocator.alloc(u8, 2048);
+    defer allocator.free(upload_body);
+    @memset(upload_body, 'x');
+    var upload_response = try client.request(.{
+        .method = "POST",
+        .path = "/upload",
+        .authority = "localhost",
+        .body = upload_body,
+    });
+    defer upload_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        upload_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":2048}",
+        upload_response.response.body,
     );
 
     var trailer_response = try client.request(.{
