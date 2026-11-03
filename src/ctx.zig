@@ -87,6 +87,8 @@ pub const Ctx = struct {
     limits: Limits,
     request: *const netz.http1.Request,
     client_info: ClientInfo = .{},
+    /// Absolute handler deadline when `Limits.request_timeout` is configured.
+    request_deadline: ?std.Io.Clock.Timestamp = null,
     query: []const u8 = "",
     /// Decoded query pairs, bounded by `limits.max_query_params`.
     query_params: []const QueryPair = &.{},
@@ -145,6 +147,20 @@ pub const Ctx = struct {
 
     pub fn isTls(self: *const Ctx) bool {
         return self.client_info.tls;
+    }
+
+    pub fn deadline(self: *const Ctx) ?std.Io.Clock.Timestamp {
+        return self.request_deadline;
+    }
+
+    pub fn remaining(self: *const Ctx) ?std.Io.Duration {
+        const absolute = self.request_deadline orelse return null;
+        return absolute.durationFromNow(self.io).raw;
+    }
+
+    pub fn expired(self: *const Ctx) bool {
+        const left = self.remaining() orelse return false;
+        return left.nanoseconds <= 0;
     }
 
     pub fn target(self: *const Ctx) []const u8 {

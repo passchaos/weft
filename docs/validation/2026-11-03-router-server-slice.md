@@ -60,6 +60,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Streamed response bodies are gzip-compressed as concatenated gzip members
   when gzip is negotiated, with cancellation forwarded to the original
   producer.
+- `Ctx` exposes the request timeout deadline, remaining budget, and expiry for
+  cooperative handlers; access logs include protocol and remote address.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -94,8 +96,8 @@ Results:
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 84.0 ns/lookup 11910934 lookups/s
-router param:  routes=256  lookups=1000000 90.5 ns/lookup 11047493 lookups/s
+router static: routes=1024 lookups=2000000 91.0 ns/lookup 10987414 lookups/s
+router param:  routes=256  lookups=1000000 96.8 ns/lookup 10333295 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the

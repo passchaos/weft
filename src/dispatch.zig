@@ -124,6 +124,14 @@ pub fn dispatch(
         middleware = combined;
     }
 
+    const request_deadline = if (limits.request_timeout) |duration|
+        std.Io.Clock.Timestamp.fromNow(io, .{
+            .raw = duration,
+            .clock = .awake,
+        })
+    else
+        null;
+
     var context = ctx_mod.Ctx{
         .app = @ptrCast(app),
         .io = io,
@@ -131,6 +139,7 @@ pub fn dispatch(
         .limits = limits,
         .request = request,
         .client_info = client_info,
+        .request_deadline = request_deadline,
         .query = query,
         .query_params = query_params,
         .params = params,

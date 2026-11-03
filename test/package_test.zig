@@ -27,6 +27,14 @@ fn upload(app: *App, ctx: *weft.Ctx) anyerror!void {
     });
 }
 
+fn deadlineInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.json(.{
+        .has_deadline = ctx.deadline() != null,
+        .expired = ctx.expired(),
+    });
+}
+
 fn customNotFound(ctx: *weft.Ctx) anyerror!void {
     const failure = ctx.get(weft.RouteFailure) orelse
         return ctx.internalError();
@@ -1471,6 +1479,7 @@ test "package: request timeout cancels slow handlers and allows fast ones" {
     var router = server.router();
     try router.get("/slow", slowHandler, .{});
     try router.get("/fast", home, .{});
+    try router.get("/deadline", deadlineInfo, .{});
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -1512,6 +1521,29 @@ test "package: request timeout cancels slow handlers and allows fast ones" {
     try std.testing.expectEqualStrings(
         "hello from weft",
         fast_response.response.body,
+    );
+
+    const deadline_uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/deadline",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(deadline_uri);
+    var deadline_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        deadline_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer deadline_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        deadline_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"has_deadline\":true,\"expired\":false}",
+        deadline_response.response.body,
     );
 
     server.stop();

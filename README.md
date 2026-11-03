@@ -88,6 +88,8 @@ pub fn main(init: std.process.Init) !void {
   fields.
 - `ctx.protocol()`, `ctx.clientAddress()`, and `ctx.isTls()` expose adapter
   metadata such as HTTP version, peer address, and transport security.
+- `ctx.deadline()`, `ctx.remaining()`, and `ctx.expired()` expose the
+  `Limits.request_timeout` budget for cooperative handlers.
 - `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,
   deflate, br, zstd) with `Limits.max_body_bytes` as the decoded bound.
 - `ctx.bodyJson(T)` parses decoded JSON with the request arena. Invalid JSON
@@ -271,7 +273,8 @@ Built-ins:
 - `requestId` — preserves a validated incoming `X-Request-Id` or generates a
   128-bit hex id, and always echoes it in the response.
 - `serverHeader` — adds `Server` unless already set.
-- `log` — logs method, target, request id, status, and elapsed nanoseconds.
+- `log` — logs method, target, protocol, remote address, request id, status,
+  and elapsed nanoseconds.
 - `securityHeaders` / `SecurityHeaders` — configurable browser hardening fields.
 - `BasicAuth` — constant-time Basic credential check with a challenge response.
 - `Cors` — exact-origin allow list, credential support, preflight handling,
