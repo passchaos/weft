@@ -45,6 +45,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - CORS preflight validates requested headers against a configured allow list.
 - Optional TLS listener through `Options.tls`, reusing Netz's TLS transport while
   applying weft HTTP limits and a bounded accept/handshake budget.
+- Optional `Limits.request_timeout` races the middleware/handler chain against a
+  timer, cancels at the next cancellation point, and returns `503`.
 
 ## Verification
 
@@ -60,14 +62,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 50/50 tests passed (32 unit, 18 package/integration).
-- ReleaseFast: 50/50 tests passed.
+- Debug: 51/51 tests passed (32 unit, 19 package/integration).
+- ReleaseFast: 51/51 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 79.7 ns/lookup 12540843 lookups/s
-router param:  routes=256  lookups=1000000 89.6 ns/lookup 11162969 lookups/s
+router static: routes=1024 lookups=2000000 80.6 ns/lookup 12404657 lookups/s
+router param:  routes=256  lookups=1000000 90.3 ns/lookup 11072771 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -78,6 +80,6 @@ guarantee.
 
 - Streaming request bodies (responses are streamed).
 - Multi-encoding responses.
-- Preemptive per-request deadlines for handlers.
+- CPU-bound handler preemption without cancellation points.
 - HTTP/2 and HTTP/3 adapters.
 - Compression currently supports gzip only.

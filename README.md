@@ -254,6 +254,10 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
   copied into the response arena; CR/LF injection is rejected.
 - `max_middleware` bounds the combined server/group/route middleware chain.
 - `max_query_params` bounds decoded query pairs.
+- `request_timeout` optionally races the handler/middleware chain against a
+  timer. On expiry the chain is canceled at its next cancellation point and the
+  request returns `503`. CPU-bound handlers with no cancellation point cannot be
+  preempted.
 - `max_connections` bounds concurrent connections through the worker count.
 - `max_requests_per_connection` bounds persistent HTTP/1 reuse.
 
@@ -297,4 +301,4 @@ cleartext and TLS listeners, and mirrors HTTP/1.0 request versions with
 appropriate connection semantics. The public `Ctx`/`Handler`/`Router` surface
 is protocol-version agnostic so HTTP/2 and HTTP/3 adapters can be added without
 changing application handlers. Remaining slices include multi-encoding
-responses, preemptive request deadlines, and HTTP/2/HTTP/3 adapters.
+responses and HTTP/2/HTTP/3 adapters.

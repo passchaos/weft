@@ -295,6 +295,12 @@ test "package: query parameters are parsed" {
     try std.testing.expectEqualStrings("weft", context.response.body);
 }
 
+fn slowHandler(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try std.Io.sleep(ctx.io, .fromMilliseconds(200), .awake);
+    try ctx.text("slow");
+}
+
 const StreamHandlers = struct {
     fn fixed(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
         try writer.write("hello ");
@@ -1308,6 +1314,81 @@ test "package: TLS server serves HTTPS requests" {
     try std.testing.expectEqualStrings(
         "hello from weft",
         response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: request timeout cancels slow handlers and allows fast ones" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .request_timeout = .fromMilliseconds(50),
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/slow", slowHandler, .{});
+    try router.get("/fast", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const slow_uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/slow",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(slow_uri);
+
+    var slow_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        slow_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer slow_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 503), slow_response.response.status);
+
+    const fast_uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/fast",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(fast_uri);
+
+    var fast_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        fast_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer fast_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), fast_response.response.status);
+    try std.testing.expectEqualStrings(
+        "hello from weft",
+        fast_response.response.body,
     );
 
     server.stop();

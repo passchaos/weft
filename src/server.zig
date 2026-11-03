@@ -76,6 +76,26 @@ const Disposition = union(enum) {
     method_not_allowed: router_mod.AllowedMethods,
 };
 
+const HandlerRace = union(enum) {
+    handler: void,
+    timeout: void,
+};
+
+const HandlerRun = struct {
+    context: *Ctx,
+    err: ?anyerror = null,
+};
+
+fn runHandler(run: *HandlerRun) void {
+    run.context.run() catch |err| {
+        run.err = err;
+    };
+}
+
+fn sleepTask(io: std.Io, duration: std.Io.Duration) void {
+    std.Io.sleep(io, duration, .awake) catch {};
+}
+
 const StreamState = struct {
     writer: *netz.http1.runtime.ResponseWriter,
     remaining: usize,
@@ -495,19 +515,42 @@ pub fn Server(comptime H: type) type {
                 try context.set(Disposition, value);
             }
 
-            context.run() catch |err| {
-                if (err == error.Canceled) return error.Canceled;
-                std.log.scoped(.weft).warn(
-                    "handler failed: {s}",
-                    .{@errorName(err)},
+            if (self.options.limits.request_timeout) |duration| {
+                var run = HandlerRun{ .context = &context };
+                var race_buffer: [2]HandlerRace = undefined;
+                var select = std.Io.Select(HandlerRace).init(
+                    self.io,
+                    &race_buffer,
                 );
-                // Nothing has reached the wire yet, so a failed handler can
-                // always be replaced with a clean response.
-                const status = statusForHandlerError(err);
-                context.response.reset();
-                context.response.setStatus(status);
-                context.response.text(response_mod.reasonFor(status)) catch {};
-            };
+                defer select.cancelDiscard();
+
+                try select.concurrent(.handler, runHandler, .{&run});
+                try select.concurrent(.timeout, sleepTask, .{
+                    self.io,
+                    duration,
+                });
+
+                const winner = select.await() catch |err| return err;
+                switch (winner) {
+                    .handler => if (run.err) |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        applyHandlerError(&context, err);
+                    },
+                    .timeout => {
+                        // The handler task may still be mutating the response;
+                        // wait for cancellation before replacing it.
+                        select.cancelDiscard();
+                        context.response.reset();
+                        context.response.setStatus(503);
+                        context.response.text("Service Unavailable") catch {};
+                    },
+                }
+            } else {
+                context.run() catch |err| {
+                    if (err == error.Canceled) return error.Canceled;
+                    applyHandlerError(&context, err);
+                };
+            }
 
             return context.response;
         }
@@ -564,6 +607,19 @@ fn internalErrorResponse(
     response.setStatus(500);
     response.text("Internal Server Error") catch {};
     return response;
+}
+
+fn applyHandlerError(context: *Ctx, err: anyerror) void {
+    std.log.scoped(.weft).warn(
+        "handler failed: {s}",
+        .{@errorName(err)},
+    );
+    // Nothing has reached the wire yet, so a failed handler can always be
+    // replaced with a clean response.
+    const status = statusForHandlerError(err);
+    context.response.reset();
+    context.response.setStatus(status);
+    context.response.text(response_mod.reasonFor(status)) catch {};
 }
 
 fn statusForHandlerError(err: anyerror) u16 {
