@@ -110,7 +110,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
 - `Http2Server(H)` serves cleartext h2c and TLS/ALPN `h2` through the same
   router, middleware, timeout, streaming, and error semantics, including
-  lowercase response field mapping and graceful GOAWAY.
+  lowercase response field mapping, graceful GOAWAY, and a bounded
+  `max_http2_concurrent_streams` setting.
 - All three server adapters bound per-request allocations with the same
   `max_request_arena_bytes` fixed budget.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both

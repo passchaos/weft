@@ -36,6 +36,9 @@ pub const Limits = struct {
     /// Bounded copy window used to stream request bodies to a handler task.
     /// The protocol layer still enforces `max_body_bytes` on the total body.
     max_streaming_window_bytes: usize = 256 * 1024,
+    /// Maximum simultaneously open HTTP/2 request streams per connection.
+    /// Bounds buffered DATA while a connection is processed serially.
+    max_http2_concurrent_streams: ?u32 = 16,
     /// Optional wall-clock budget for handler and middleware execution. When
     /// set, weft races the chain against a timer and cancels it at the next
     /// cancellation point, returning `503`.
@@ -74,6 +77,7 @@ pub const Limits = struct {
             .handshake_timeout = self.request_head_timeout,
             .auto_date_header = self.auto_date_header,
             .tcp_nodelay = self.tcp_nodelay,
+            .max_concurrent_streams = self.max_http2_concurrent_streams,
         };
     }
 
