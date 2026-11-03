@@ -117,9 +117,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   router, middleware, timeout, streaming, and error semantics, including
   lowercase response field mapping, graceful GOAWAY, and bounded
   `max_http2_concurrent_streams`/`max_http2_frame_payload` settings.
-  Buffered requests run in up to `max_concurrent_handlers` tasks; streaming
-  routes remain serial and completed responses are submitted by the
-  connection owner.
+  All requests run in up to `max_concurrent_handlers` tasks; handlers pull
+  DATA from bounded per-stream buffers while the connection owner serializes
+  frame, HPACK, write, and response state.
 - All three server adapters bound per-request allocations with the same
   `max_request_arena_bytes` fixed budget.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both
@@ -172,7 +172,6 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 
 ## Remaining gaps
 
-- Concurrent HTTP/2 streaming-body routes and native step-driven DATA delivery
-  for HTTP/3 request bodies; buffered HTTP/2 and HTTP/3 handlers are already
-  concurrent.
+- Native step-driven DATA delivery for HTTP/3 request bodies; HTTP/2 uses
+  netz's concurrent engine and HTTP/3 handlers are already concurrent.
 - CPU-bound handler preemption without cancellation points.
