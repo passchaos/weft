@@ -5,6 +5,7 @@ const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
+const stream_mod = @import("stream.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -36,6 +37,19 @@ const Disposition = union(enum) {
     bad_request,
     method_not_allowed: router_mod.AllowedMethods,
 };
+
+const StreamState = struct {
+    writer: *netz.http1.runtime.ResponseWriter,
+    remaining: usize,
+};
+
+fn writeWithBudget(raw: ?*anyopaque, data: []const u8) anyerror!void {
+    const state: *StreamState = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    if (data.len > state.remaining) return error.ResponseTooLarge;
+    state.remaining -= data.len;
+    try state.writer.write(data);
+}
 
 /// A bounded HTTP/1 application server on top of Netz.
 ///
@@ -259,13 +273,89 @@ pub fn Server(comptime H: type) type {
                     response.setHeader("Connection", "keep-alive") catch {};
                 }
                 if (self.shutdown.isSet()) connection.gracefulShutdown();
-                try connection.writeResponse(response.toOptionsFor(
-                    request.request.method,
-                    request.request.version,
-                ));
+
+                if (response.stream) |body| {
+                    const body_forbidden = request.request.method == .HEAD or
+                        response.status == 204 or
+                        response.status == 304 or
+                        (response.status >= 100 and response.status < 200);
+                    if (body_forbidden) {
+                        body.cancel();
+                        response.stream = null;
+                        if (request.request.method == .HEAD) {
+                            if (body.length) |length| {
+                                response.setHeader(
+                                    "Content-Length",
+                                    try std.fmt.allocPrint(
+                                        arena,
+                                        "{d}",
+                                        .{length},
+                                    ),
+                                ) catch {};
+                            }
+                        }
+                        try connection.writeResponse(response.toOptionsFor(
+                            request.request.method,
+                            request.request.version,
+                        ));
+                    } else {
+                        try self.writeStreaming(
+                            connection,
+                            &request.request,
+                            &response,
+                            body,
+                        );
+                    }
+                } else {
+                    try connection.writeResponse(response.toOptionsFor(
+                        request.request.method,
+                        request.request.version,
+                    ));
+                }
 
                 if (!keep_alive) return;
             }
+        }
+
+        fn writeStreaming(
+            self: *@This(),
+            connection: *netz.http1.runtime.Connection,
+            request: *const netz.http1.Request,
+            response: *Response,
+            body: stream_mod.Body,
+        ) !void {
+            if (body.length) |length| {
+                if (length > self.options.limits.max_response_bytes) {
+                    body.cancel();
+                    return error.ResponseTooLarge;
+                }
+            }
+
+            var writer = connection.startResponse(.{
+                .version = request.version,
+                .status = response.status,
+                .reason = response.reason,
+                .headers = response.headers.items,
+                .body_length = body.length,
+                .request_method = request.method,
+            }) catch |err| {
+                body.cancel();
+                return err;
+            };
+            defer writer.deinit();
+
+            var state = StreamState{
+                .writer = &writer,
+                .remaining = body.length orelse
+                    self.options.limits.max_response_bytes,
+            };
+            var stream_writer = stream_mod.Writer{
+                .context = &state,
+                .write_fn = writeWithBudget,
+            };
+            try body.run(&stream_writer);
+            try writer.finish();
+            response.stream = null;
         }
 
         fn dispatch(

@@ -15,6 +15,9 @@ pub const validateHeaderName = @import("response.zig").validateHeaderName;
 pub const validateHeaderValue = @import("response.zig").validateHeaderValue;
 
 pub const Ctx = @import("ctx.zig").Ctx;
+pub const StreamBody = @import("stream.zig").Body;
+pub const StreamWriter = @import("stream.zig").Writer;
+pub const stream = @import("stream.zig");
 pub const Handler = @import("ctx.zig").Handler;
 pub const Locals = @import("ctx.zig").Locals;
 pub const Param = @import("ctx.zig").Param;
@@ -26,6 +29,9 @@ pub const withContext = @import("ctx.zig").withContext;
 
 pub const query = @import("query.zig");
 pub const cookie = @import("cookie.zig");
+pub const StaticFiles = @import("static_files.zig").StaticFiles;
+pub const MimeType = @import("static_files.zig").MimeType;
+pub const default_mime_types = @import("static_files.zig").default_mime_types;
 pub const SetCookie = @import("cookie.zig").SetCookie;
 pub const SameSite = @import("cookie.zig").SameSite;
 pub const Route = @import("router.zig").Route;
@@ -47,8 +53,10 @@ comptime {
     _ = @import("limits.zig");
     _ = @import("response.zig");
     _ = @import("ctx.zig");
+    _ = @import("stream.zig");
     _ = @import("query.zig");
     _ = @import("cookie.zig");
+    _ = @import("static_files.zig");
     _ = @import("router.zig");
     _ = @import("server.zig");
     _ = middleware;

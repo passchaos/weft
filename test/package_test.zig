@@ -266,6 +266,35 @@ test "package: query parameters are parsed" {
     try std.testing.expectEqualStrings("weft", context.response.body);
 }
 
+const StreamHandlers = struct {
+    fn fixed(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
+        try writer.write("hello ");
+        try writer.write("stream");
+    }
+
+    fn chunked(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
+        try writer.write("chunked ");
+        try writer.write("body");
+    }
+
+    fn fixedRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        try ctx.setHeader("Content-Type", "text/plain; charset=utf-8");
+        try ctx.stream(.{ .write_fn = fixed, .length = 12 });
+    }
+
+    fn chunkedRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        try ctx.setHeader("Content-Type", "text/plain; charset=utf-8");
+        try ctx.stream(.{ .write_fn = chunked });
+    }
+
+    fn oversizedRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        try ctx.stream(.{ .write_fn = fixed, .length = 512 });
+    }
+};
+
 const MethodHandlers = struct {
     fn resource(ctx: *weft.Ctx) anyerror!void {
         try ctx.text("resource");
@@ -649,6 +678,356 @@ test "package: stop drains an idle keep-alive connection" {
     try std.Io.sleep(io, .fromMilliseconds(50), .awake);
     server.stop();
     try group.await(io);
+}
+
+test "package: streaming responses support fixed, chunked, and HEAD" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
+    try router.get("/stream/chunked", StreamHandlers.chunkedRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+
+    const fixed_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/stream/fixed",
+        .{base},
+    );
+    defer allocator.free(fixed_uri);
+
+    var fixed_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        fixed_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer fixed_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), fixed_response.response.status);
+    try std.testing.expectEqualStrings(
+        "hello stream",
+        fixed_response.response.body,
+    );
+
+    var head_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        fixed_uri,
+        .{ .method = .HEAD },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer head_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), head_response.response.status);
+    try std.testing.expectEqualStrings("", head_response.response.body);
+    try std.testing.expectEqualStrings(
+        "12",
+        head_response.response.header("content-length").?,
+    );
+
+    const chunked_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/stream/chunked",
+        .{base},
+    );
+    defer allocator.free(chunked_uri);
+
+    var chunked_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        chunked_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer chunked_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), chunked_response.response.status);
+    try std.testing.expectEqualStrings(
+        "chunked body",
+        chunked_response.response.body,
+    );
+    try std.testing.expectEqualStrings(
+        "chunked",
+        chunked_response.response.header("transfer-encoding").?,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: streaming byte budget failure becomes 500" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 128,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/stream/oversized", StreamHandlers.oversizedRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/stream/oversized",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 500), response.response.status);
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: static files serve 200, 304, 206, and HEAD" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "index.html",
+        .data = "<h1>static</h1>",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "app.js",
+        .data = "console.log('static');",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".env",
+        .data = "SECRET=1",
+    });
+
+    var static = weft.StaticFiles{ .dir = tmp.dir };
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const runtime_io = backend.io();
+
+    var server = try weft.Server(App).init(
+        runtime_io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().addRaw(
+        .GET,
+        "/assets/*",
+        static.handler(),
+        .{},
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(runtime_io);
+    try group.concurrent(runtime_io, serveServer, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/assets",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+
+    const index_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/index.html",
+        .{base},
+    );
+    defer allocator.free(index_uri);
+
+    var index_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer index_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), index_response.response.status);
+    try std.testing.expectEqualStrings(
+        "<h1>static</h1>",
+        index_response.response.body,
+    );
+    try std.testing.expectEqualStrings(
+        "text/html; charset=utf-8",
+        index_response.response.header("content-type").?,
+    );
+    const etag = index_response.response.header("etag").?;
+
+    var conditional_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{.{
+            .name = "If-None-Match",
+            .value = etag,
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer conditional_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 304),
+        conditional_response.response.status,
+    );
+    try std.testing.expectEqualStrings("", conditional_response.response.body);
+
+    var range_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{.{
+            .name = "Range",
+            .value = "bytes=0-3",
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer range_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 206), range_response.response.status);
+    try std.testing.expectEqualStrings(
+        "<h1>",
+        range_response.response.body,
+    );
+    try std.testing.expectEqualStrings(
+        "bytes 0-3/15",
+        range_response.response.header("content-range").?,
+    );
+
+    var head_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .method = .HEAD },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer head_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), head_response.response.status);
+    try std.testing.expectEqualStrings("", head_response.response.body);
+    try std.testing.expectEqualStrings(
+        "15",
+        head_response.response.header("content-length").?,
+    );
+
+    const js_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/app.js",
+        .{base},
+    );
+    defer allocator.free(js_uri);
+    var js_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        js_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer js_response.deinit(allocator);
+    try std.testing.expectEqualStrings(
+        "text/javascript; charset=utf-8",
+        js_response.response.header("content-type").?,
+    );
+
+    const missing_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/missing.txt",
+        .{base},
+    );
+    defer allocator.free(missing_uri);
+    var missing_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        missing_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer missing_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 404), missing_response.response.status);
+
+    const hidden_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/.env",
+        .{base},
+    );
+    defer allocator.free(hidden_uri);
+    var hidden_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        hidden_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer hidden_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 404), hidden_response.response.status);
+    try std.testing.expectEqualStrings("Not Found", hidden_response.response.body);
+
+    server.stop();
+    try group.await(runtime_io);
 }
 
 test "package: response header budget failure becomes 500" {

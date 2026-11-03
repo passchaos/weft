@@ -95,6 +95,54 @@ pub fn main(init: std.process.Init) !void {
 Malformed percent escapes and decoded control bytes are rejected with `400`
 before a handler runs.
 
+## Streaming
+
+`ctx.stream(...)` selects an incremental body producer. The producer runs after
+the handler returns and sees only a concrete `StreamWriter`:
+
+```zig
+fn producer(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
+    try writer.write("hello ");
+    try writer.write("stream");
+}
+
+fn streamed(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.setHeader("Content-Type", "text/plain; charset=utf-8");
+    try ctx.stream(.{ .write_fn = producer, .length = 12 });
+}
+```
+
+- A known `length` uses fixed framing; `null` uses chunked framing on HTTP/1.1.
+- `Limits.max_response_bytes` bounds the producer even when the length is
+  unknown.
+- `HEAD`, `204`, `304`, and `1xx` responses discard the producer without running
+  it.
+- `cancel_fn` releases producer resources if the response is discarded before
+  the producer starts.
+- A producer that starts owns its resources and must release them on success or
+  error.
+
+## Static files
+
+`weft.StaticFiles` is a route handler that streams files below a directory. It
+supports ETag/`If-None-Match`, single `Range` requests (`206`/`416`), `HEAD`,
+index files, MIME detection, dotfile rejection, and traversal-safe path
+normalization.
+
+```zig
+var files = weft.StaticFiles{
+    .dir = try std.Io.Dir.cwd().openDir(io, "public", .{}),
+    .max_file_bytes = 8 * 1024 * 1024,
+};
+
+try router.addRaw(.GET, "/assets/*", files.handler(), .{});
+```
+
+`follow_symlinks` defaults to `false`; the handler checks the path with
+`statFile(.follow_symlinks = false)` and rejects non-regular entries. Files
+larger than `max_file_bytes` or `Limits.max_response_bytes` return `413`.
+
 ## Middleware
 
 A middleware is a plain function that calls `ctx.next()` to continue:
@@ -171,8 +219,8 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 
 - `max_request_arena_bytes` bounds per-request headers, bodies, params,
   decoded query values, response headers, and middleware locals.
-- `max_response_bytes` rejects oversized response bodies before they are
-  written.
+- `max_response_bytes` rejects oversized buffered bodies before they are
+  written and bounds the bytes produced by streaming bodies.
 - `max_response_headers` and `max_response_head_bytes` bound the response head
   independently of the body. Weft reserves head room for `Content-Length`,
   `Date`, and `Connection` fields that Netz may add, so the configured budget
@@ -222,5 +270,5 @@ The first slice targets HTTP/1.1 through `netz.http1.runtime`, and mirrors
 HTTP/1.0 request versions with appropriate connection semantics. The public
 `Ctx`/`Handler`/`Router` surface is protocol-version agnostic so an HTTP/2,
 HTTP/3, or TLS adapter can be added without changing application handlers.
-Streaming responses, static-file serving, and preemptive request deadlines
-remain future slices.
+Remaining slices include multi-range and multi-encoding responses, preemptive
+request deadlines, and TLS/HTTP2/HTTP3 adapters.

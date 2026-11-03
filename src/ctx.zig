@@ -4,11 +4,14 @@ const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
 const cookie_mod = @import("cookie.zig");
+const stream_mod = @import("stream.zig");
 
 pub const Response = response_mod.Response;
 pub const Limits = limits_mod.Limits;
 pub const QueryPair = query_mod.Pair;
 pub const SetCookie = cookie_mod.SetCookie;
+pub const StreamBody = stream_mod.Body;
+pub const StreamWriter = stream_mod.Writer;
 
 pub const Param = struct {
     name: []const u8,
@@ -257,6 +260,22 @@ pub const Ctx = struct {
 
     pub fn json(self: *Ctx, value: anytype) !void {
         try self.response.json(value);
+    }
+
+    /// Select an incremental body producer. The producer runs after the
+    /// handler returns and may write at most `Limits.max_response_bytes`.
+    pub fn stream(self: *Ctx, stream_body: StreamBody) !void {
+        if (self.response.stream != null) return error.StreamAlreadySet;
+        if (self.response.body.len != 0 or self.response.body_owned) {
+            return error.BodyAlreadySet;
+        }
+        if (stream_body.length) |length| {
+            if (length > self.limits.max_response_bytes) {
+                return error.ResponseTooLarge;
+            }
+        }
+        self.response.stream = stream_body;
+        self.response.committed = true;
     }
 
     pub fn notFound(self: *Ctx) !void {

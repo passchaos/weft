@@ -1,8 +1,10 @@
 const std = @import("std");
 const netz = @import("netz");
 const limits_mod = @import("limits.zig");
+const stream_mod = @import("stream.zig");
 
 pub const Header = netz.http1.Header;
+pub const StreamBody = stream_mod.Body;
 
 /// Head room reserved for fields the HTTP/1 writer may add itself:
 /// `Content-Length`, `Date`, and an optional `Connection`/`Trailer` field.
@@ -25,6 +27,9 @@ pub const Response = struct {
     reason: []const u8 = "OK",
     headers: std.ArrayListUnmanaged(Header) = .empty,
     body: []const u8 = "",
+    /// Incremental body selected by a handler. Mutually exclusive with a
+    /// buffered `body`.
+    stream: ?stream_mod.Body = null,
     /// True when `body` was allocated by this response and must be released
     /// by `deinit` or `reset`.
     body_owned: bool = false,
@@ -55,6 +60,7 @@ pub const Response = struct {
     }
 
     pub fn deinit(self: *Response) void {
+        self.cancelStream();
         self.clearHeaders();
         self.headers.deinit(self.allocator);
         if (self.body_owned) self.allocator.free(self.body);
@@ -64,6 +70,7 @@ pub const Response = struct {
     /// Clear status, headers, and body while retaining the header list
     /// capacity. Used by recovery middleware before a response is committed.
     pub fn reset(self: *Response) void {
+        self.cancelStream();
         self.clearHeaders();
         self.headers.clearRetainingCapacity();
         if (self.body_owned) self.allocator.free(self.body);
@@ -141,6 +148,7 @@ pub const Response = struct {
     /// Set the body directly. The slice must remain valid until the response
     /// has been written; the request arena is the normal owner.
     pub fn setBody(self: *Response, body: []const u8) !void {
+        if (self.stream != null) return error.StreamAlreadySet;
         if (body.len > self.max_body_bytes) return error.ResponseTooLarge;
         if (self.body_owned) self.allocator.free(self.body);
         self.body = body;
@@ -149,6 +157,7 @@ pub const Response = struct {
     }
 
     pub fn text(self: *Response, body: []const u8) !void {
+        if (self.stream != null) return error.StreamAlreadySet;
         if (!self.hasHeader("content-type")) {
             try self.setHeader("Content-Type", "text/plain; charset=utf-8");
         }
@@ -156,6 +165,7 @@ pub const Response = struct {
     }
 
     pub fn json(self: *Response, value: anytype) !void {
+        if (self.stream != null) return error.StreamAlreadySet;
         const body = try std.json.Stringify.valueAlloc(
             self.allocator,
             value,
@@ -239,6 +249,11 @@ pub const Response = struct {
             self.allocator.free(field.name);
             self.allocator.free(field.value);
         }
+    }
+
+    fn cancelStream(self: *Response) void {
+        if (self.stream) |body| body.cancel();
+        self.stream = null;
     }
 };
 
@@ -382,6 +397,27 @@ test "response header limits and replacement" {
         error.InvalidHeaderValue,
         response.setHeader("X-Inject", "a\r\nb"),
     );
+}
+
+test "response reset cancels a pending stream" {
+    const State = struct {
+        var cancelled: bool = false;
+
+        fn cancel(_: ?*anyopaque) void {
+            cancelled = true;
+        }
+
+        fn write(_: ?*anyopaque, _: *@import("stream.zig").Writer) anyerror!void {}
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var response = Response.init(arena.allocator(), 1024);
+    response.stream = .{ .write_fn = State.write, .cancel_fn = State.cancel };
+    State.cancelled = false;
+    response.reset();
+    try std.testing.expect(State.cancelled);
+    try std.testing.expect(response.stream == null);
 }
 
 test "response reset releases committed state" {
