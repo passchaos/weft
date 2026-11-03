@@ -619,17 +619,54 @@ fn attachmentValue(
     allocator: std.mem.Allocator,
     filename: []const u8,
 ) ![]const u8 {
+    var ascii = std.ArrayListUnmanaged(u8).empty;
+    defer ascii.deinit(allocator);
+    var encoded = std.ArrayListUnmanaged(u8).empty;
+    defer encoded.deinit(allocator);
+    var needs_extended = false;
+
+    for (filename) |char| {
+        if (char >= 0x20 and char <= 0x7e) {
+            try ascii.append(allocator, char);
+        } else {
+            needs_extended = true;
+            try ascii.append(allocator, '_');
+        }
+
+        if (attrChar(char)) {
+            try encoded.append(allocator, char);
+        } else {
+            var hex: [3]u8 = undefined;
+            try encoded.appendSlice(
+                allocator,
+                try std.fmt.bufPrint(&hex, "%{X:0>2}", .{char}),
+            );
+        }
+    }
+
     var output = std.ArrayListUnmanaged(u8).empty;
     errdefer output.deinit(allocator);
     try output.appendSlice(allocator, "attachment; filename=\"");
-    for (filename) |char| {
+    for (ascii.items) |char| {
         if (char == '"' or char == '\\') {
             try output.append(allocator, '\\');
         }
         try output.append(allocator, char);
     }
     try output.append(allocator, '"');
+    if (needs_extended) {
+        try output.appendSlice(allocator, "; filename*=UTF-8''");
+        try output.appendSlice(allocator, encoded.items);
+    }
     return output.toOwnedSlice(allocator);
+}
+
+fn attrChar(char: u8) bool {
+    return switch (char) {
+        'a'...'z', 'A'...'Z', '0'...'9' => true,
+        '!', '#', '$', '&', '+', '-', '.', '^', '_', '`', '|', '~' => true,
+        else => false,
+    };
 }
 
 fn sidecarIsFresh(
@@ -924,5 +961,12 @@ test "static download disposition escapes filenames" {
     try std.testing.expectEqualStrings(
         "attachment; filename=\"a\\\"b.txt\"",
         value,
+    );
+
+    const utf8 = try attachmentValue(allocator, "caf\xc3\xa9.txt");
+    defer allocator.free(utf8);
+    try std.testing.expectEqualStrings(
+        "attachment; filename=\"caf__.txt\"; filename*=UTF-8''caf%C3%A9.txt",
+        utf8,
     );
 }
