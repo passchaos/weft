@@ -90,6 +90,7 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 zig build examples
 zig build bench -Doptimize=ReleaseFast
+zig build bench-server -Doptimize=ReleaseFast
 ```
 
 Results:
@@ -107,6 +108,12 @@ router param:  routes=256  lookups=1000000 89.7 ns/lookup 11150344 lookups/s
 The benchmark includes capture-array allocation from a fixed arena for the
 parameter case. Numbers are indicative of this host, not a cross-machine
 guarantee.
+
+HTTP/1 keep-alive server throughput on the same host:
+
+```text
+server http1: requests=200000 8765.9 ns/request 114078 requests/s
+```
 
 ## Remaining gaps
 

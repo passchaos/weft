@@ -379,12 +379,18 @@ zig build
 zig build test
 zig build run-hello
 zig build bench -Doptimize=ReleaseFast
+zig build bench-server -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
 On the reference development host, ReleaseFast runs range from roughly 80–140
 ns per lookup (about 7M–12M lookups per second) depending on host load,
 including capture allocation from a fixed arena.
+
+`bench-server` measures one keep-alive HTTP/1 client against a one-worker
+server. On the reference host it currently reports roughly 8.8 µs per request
+(about 114k requests/s); this includes Netz HTTP/1 framing and runtime task
+wakeups, not just application dispatch.
 
 ## Status
 

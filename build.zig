@@ -107,4 +107,23 @@ pub fn build(b: *std.Build) void {
         "Run router microbenchmarks (use -Doptimize=ReleaseFast for real numbers)",
     );
     bench_step.dependOn(&run_benchmark.step);
+
+    const server_benchmark = b.addExecutable(.{
+        .name = "server-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    const run_server_benchmark = b.addRunArtifact(server_benchmark);
+    const bench_server_step = b.step(
+        "bench-server",
+        "Run the HTTP/1 server throughput benchmark",
+    );
+    bench_server_step.dependOn(&run_server_benchmark.step);
 }
