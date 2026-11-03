@@ -1,6 +1,5 @@
 const std = @import("std");
 const netz = @import("netz");
-const body_stream_mod = @import("body_stream.zig");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
@@ -18,15 +17,29 @@ pub const SetCookie = cookie_mod.SetCookie;
 pub const StreamBody = stream_mod.Body;
 pub const StreamWriter = stream_mod.Writer;
 pub const SseEvent = sse_mod.Event;
-/// Incremental request-body source. HTTP/1 uses netz's pull reader directly;
-/// HTTP/2 and HTTP/3 replay buffered or bridge-delivered chunks.
+/// One-chunk reader for adapters that already buffered the request body.
+pub const ReplayReader = struct {
+    body: []const u8,
+    consumed: bool = false,
+
+    pub fn next(self: *ReplayReader) !?[]const u8 {
+        if (self.consumed) return null;
+        self.consumed = true;
+        return self.body;
+    }
+};
+
+/// Incremental request-body source. HTTP/1 uses netz's pull reader, HTTP/2
+/// pulls from a duplex stream, and HTTP/3 replays its buffered body.
 pub const BodyReader = union(enum) {
     pull: *netz.http1.runtime.RequestBodyReader,
-    replay: *body_stream_mod.Reader,
+    duplex: *netz.http2.runtime.ServerDuplexStream,
+    replay: *ReplayReader,
 
     pub fn next(self: BodyReader) !?[]const u8 {
         return switch (self) {
             .pull => |reader| reader.next(),
+            .duplex => |stream| stream.nextBody(),
             .replay => |reader| reader.next(),
         };
     }

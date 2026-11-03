@@ -41,12 +41,10 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Streaming response bodies through a concrete `StreamBody`/`StreamWriter` seam,
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
-- Streaming request bodies for HTTP/1 through `RouteOptions.streaming` and
-  `Ctx.bodyReader()`, backed by netz's bounded pull reader; HTTP/2 uses a
-  bounded `max_streaming_window_bytes` producer/consumer window to a handler
-  task. Unread bytes are drained before the response is written,
-  `Ctx.readBody()` buffers into the request arena, and a buffered replay path
-  covers runtimes without concurrent tasks.
+- Streaming request bodies for HTTP/1 through netz's bounded pull reader and
+  for HTTP/2 through `ServerDuplexStream.nextBody()`, both exposed as
+  `Ctx.bodyReader()`. Unread bytes are drained before the response is written,
+  and `Ctx.readBody()` buffers into the request arena.
 - HTTP/3 exposes a one-chunk replay reader for streaming routes over its
   already-buffered DATA body.
 - `Ctx.sse` plus `sse.write`/`sse.comment` helpers for `text/event-stream`
@@ -139,8 +137,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 98/98 tests passed (68 unit, 30 package/integration).
-- ReleaseFast: 98/98 tests passed.
+- Debug: 95/95 tests passed (65 unit, 30 package/integration).
+- ReleaseFast: 95/95 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

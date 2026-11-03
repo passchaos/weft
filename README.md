@@ -176,18 +176,13 @@ fn upload(app: *App, ctx: *weft.Ctx) anyerror!void {
 try router.post("/upload", upload, .{ .streaming = true });
 ```
 
-- HTTP/1 handlers pull directly from netz's bounded `RequestBodyReader`; the
-  handler runs on the connection task and the reader copies chunks through
-  `Limits.max_streaming_window_bytes`.
-- HTTP/2 delivers DATA through a bounded producer/consumer window to a
-  separate handler task, so middleware and response post-processing run
-  normally.
+- HTTP/1 handlers pull directly from netz's bounded `RequestBodyReader`.
+- HTTP/2 handlers pull DATA through netz's `ServerDuplexStream.nextBody()`.
 - `ctx.bodyReader()` returns a concrete `weft.BodyReader`; `ctx.readBody()`
   drains the whole body into the request arena when incremental access is not
   needed.
 - Bytes the handler does not read are drained before the response is written,
-  keeping the connection reusable. If the runtime cannot spawn the HTTP/2
-  handler task, weft buffers the body and replays it through the same reader.
+  keeping the connection reusable.
 - HTTP/3 currently exposes a one-chunk replay reader over its buffered DATA.
 
 ## TLS

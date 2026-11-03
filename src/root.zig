@@ -69,7 +69,6 @@ comptime {
     _ = @import("limits.zig");
     _ = @import("response.zig");
     _ = @import("ctx.zig");
-    _ = @import("body_stream.zig");
     _ = @import("stream.zig");
     _ = @import("sse.zig");
     _ = @import("websocket.zig");

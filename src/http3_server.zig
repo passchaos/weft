@@ -1,6 +1,5 @@
 const std = @import("std");
 const netz = @import("netz");
-const body_stream_mod = @import("body_stream.zig");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -380,9 +379,9 @@ pub fn Http3Server(comptime H: type) type {
                 .consumed = 0,
             };
 
-            var replay: ?body_stream_mod.Reader = null;
+            var replay: ?ctx_mod.ReplayReader = null;
             if (self.app_router.isStreaming(method, target)) {
-                replay = body_stream_mod.Reader.initReplay(decoded.body);
+                replay = ctx_mod.ReplayReader{ .body = decoded.body };
             }
 
             return dispatch_mod.dispatch(
