@@ -498,28 +498,7 @@ pub fn Http3Server(comptime H: type) type {
                 decoded.method,
                 arena,
             );
-            const emit_trailers = response.trailers.items.len != 0 and
-                !responseBodyForbidden(decoded.method, response.status);
-            if (!emit_trailers) {
-                try session.sendResponsePaced(stream_id, h3_response);
-                return;
-            }
-            try session.startResponse(
-                stream_id,
-                h3_response,
-                response.body.len,
-            );
-            if (response.body.len > 0) {
-                try session.sendResponseBodyPaced(
-                    stream_id,
-                    response.body,
-                    false,
-                );
-            }
-            try session.finishResponseTrailers(
-                stream_id,
-                try trailerFields(response, arena),
-            );
+            try session.sendResponsePaced(stream_id, h3_response);
         }
 
         fn writeStreaming(
@@ -531,11 +510,14 @@ pub fn Http3Server(comptime H: type) type {
             body: stream_mod.Body,
             arena: std.mem.Allocator,
         ) !void {
-            const h3_response = try toHttp3Response(
+            var h3_response = try toHttp3Response(
                 response,
                 decoded.method,
                 arena,
             );
+            // Streaming heads must not retain trailers; they are sent after
+            // the producer finishes.
+            h3_response.trailers = &.{};
             session.startResponse(
                 stream_id,
                 h3_response,
@@ -559,7 +541,7 @@ pub fn Http3Server(comptime H: type) type {
             if (response.trailers.items.len != 0 and
                 !responseBodyForbidden(decoded.method, response.status))
             {
-                try session.finishResponseTrailers(
+                try session.finishResponseTrailersPaced(
                     stream_id,
                     try trailerFields(response, arena),
                 );
@@ -601,10 +583,16 @@ fn toHttp3Response(
     method: []const u8,
     arena: std.mem.Allocator,
 ) !netz.http3.Response {
+    const emit_trailers = response.trailers.items.len != 0 and
+        !responseBodyForbidden(method, response.status);
     return .{
         .status = response.status,
         .headers = try headerFields(response, arena),
         .body = response.body,
+        .trailers = if (emit_trailers)
+            try trailerFields(response, arena)
+        else
+            &.{},
         .request_method = method,
     };
 }
