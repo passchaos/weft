@@ -124,7 +124,10 @@ processing, decoded request data, and cooperative graceful shutdown.
   not treated as a delimiter.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
-  with semaphore-bounded sessions.
+  with semaphore-bounded sessions. Each session runs up to
+  `max_concurrent_handlers` handler tasks concurrently, serializes response
+  submission, and caps advertised request-stream concurrency to the same
+  bound.
 
 ## Verification
 
@@ -163,7 +166,7 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 
 ## Remaining gaps
 
-- Concurrent HTTP/2/HTTP/3 stream dispatch and native step-driven DATA
-  delivery for HTTP/3 request bodies; netz exposes the primitives and weft
-  currently replays the buffered HTTP/3 body.
+- Concurrent HTTP/2 stream dispatch and native step-driven DATA delivery for
+  HTTP/3 request bodies; HTTP/3 handlers are already concurrent but bodies are
+  still buffered by netz.
 - CPU-bound handler preemption without cancellation points.

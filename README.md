@@ -271,11 +271,15 @@ try server.serve();
 
 Netz owns QUIC handshake, TLS, stream parsing, QPACK, flow control, and
 recovery. Weft maps each completed request into `Ctx` and maps responses back
-to lowercase HTTP/3 fields. `quic_limits`, `max_concurrent_streams`, and
-`accept_timeout` bound transport and admission behavior.
+to lowercase HTTP/3 fields. `quic_limits`, `max_concurrent_streams`,
+`max_concurrent_handlers`, and `accept_timeout` bound transport, admission, and
+handler concurrency.
 
-Current HTTP/3 limitation: one accept loop owns the UDP endpoint, and each
-session serves one request at a time even though QUIC multiplexes streams.
+HTTP/3 request bodies are buffered by netz before dispatch; each session runs
+up to `max_concurrent_handlers` handler tasks concurrently and serializes
+response submission. The advertised request-stream concurrency is capped to
+`min(max_concurrent_streams, max_concurrent_handlers)` so buffered requests stay
+bounded.
 
 ## WebSockets
 
@@ -510,6 +514,7 @@ listeners, and mirrors HTTP/1.0 request versions with appropriate connection
 semantics. `Http2Server` and `Http3Server` provide h2c, TLS/ALPN h2, and
 QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1 and HTTP/2
 request bodies stream incrementally through a bounded window; HTTP/3 exposes
-the buffered body through a replay reader. Remaining slices include concurrent
-HTTP/2 and HTTP/3 stream dispatch and native step-driven DATA delivery for
+the buffered body through a replay reader and runs up to
+`max_concurrent_handlers` handler tasks concurrently. Remaining slices include
+concurrent HTTP/2 stream dispatch and native step-driven DATA delivery for
 HTTP/3 request bodies.

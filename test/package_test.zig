@@ -2564,6 +2564,45 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
         trailer_stream_response.response.trailers[0].value,
     );
 
+    const BatchCtx = struct {
+        allocator: std.mem.Allocator,
+        count: usize = 0,
+        ok: bool = true,
+
+        fn onResult(
+            raw: *anyopaque,
+            _: usize,
+            result: netz.http3.runtime.BatchOwnedHandshakeResponseResult,
+        ) void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            switch (result) {
+                .response => |value| {
+                    var response = value;
+                    defer response.deinit(self.allocator);
+                    self.count += 1;
+                    if (response.response.status != 200) self.ok = false;
+                },
+                .err => self.ok = false,
+            }
+        }
+    };
+    var batch_context = BatchCtx{ .allocator = allocator };
+    const batch_requests = [_]netz.http3.Request{
+        .{ .method = "GET", .path = "/hello/one", .authority = "localhost" },
+        .{ .method = "GET", .path = "/hello/two", .authority = "localhost" },
+    };
+    const batch_deadlines = [_]?std.Io.Clock.Timestamp{ null, null };
+    try client.requestBatchWithPerStreamDeadlines(
+        &batch_requests,
+        &batch_deadlines,
+        .{
+            .context = &batch_context,
+            .on_result = BatchCtx.onResult,
+        },
+    );
+    try std.testing.expectEqual(@as(usize, 2), batch_context.count);
+    try std.testing.expect(batch_context.ok);
+
     var info_response = try client.request(.{
         .method = "GET",
         .path = "/info",

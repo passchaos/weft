@@ -25,6 +25,13 @@ pub const Options = struct {
     max_connections: usize = 64,
     max_requests_per_connection: usize = 1000,
     max_concurrent_streams: usize = 128,
+    /// Maximum handler tasks running concurrently per connection. Also caps
+    /// the advertised request-stream concurrency so buffered requests stay
+    /// bounded.
+    max_concurrent_handlers: usize = 8,
+    /// Poll interval used while handlers are active and no new request is
+    /// immediately available.
+    handler_poll_interval: std.Io.Duration = .fromMilliseconds(5),
     accept_error_backoff: std.Io.Duration = .fromMilliseconds(10),
     accept_timeout: std.Io.Duration = .fromMilliseconds(500),
     idle_timeout: std.Io.Duration = .fromSeconds(5),
@@ -86,6 +93,8 @@ pub fn Http3Server(comptime H: type) type {
             if (options.max_connections == 0 or
                 options.max_requests_per_connection == 0 or
                 options.max_concurrent_streams == 0 or
+                options.max_concurrent_handlers == 0 or
+                options.handler_poll_interval.nanoseconds <= 0 or
                 options.accept_timeout.nanoseconds <= 0 or
                 options.idle_timeout.nanoseconds <= 0 or
                 (options.drain_timeout != null and
@@ -108,15 +117,19 @@ pub fn Http3Server(comptime H: type) type {
                 return error.TooMuchMiddleware;
             }
 
+            const effective_concurrency = @min(
+                options.max_concurrent_streams,
+                options.max_concurrent_handlers,
+            );
             var http3_limits = options.limits.toHttp3Netz();
             http3_limits.quic = options.quic_limits;
             http3_limits.max_concurrent_request_streams =
-                options.max_concurrent_streams;
+                effective_concurrency;
 
             var session = options.session;
             session.max_stream_buffer = http3_limits.max_stream_buffer;
             session.max_concurrent_request_streams =
-                options.max_concurrent_streams;
+                effective_concurrency;
             session.auto_date_header = options.limits.auto_date_header;
 
             var netz_server = try netz.http3.runtime.HandshakeServer.bind(
@@ -257,82 +270,140 @@ pub fn Http3Server(comptime H: type) type {
             self: *@This(),
             session: *netz.http3.runtime.HandshakeServerSession,
         ) !void {
-            var served: usize = 0;
-            // Bound per-request allocations by the same arena budget as the
-            // HTTP/1 and HTTP/2 adapters.
-            const arena_buffer = try self.allocator.alloc(
-                u8,
-                self.options.limits.max_request_arena_bytes,
+            const capacity = @min(
+                self.options.max_concurrent_streams,
+                self.options.max_concurrent_handlers,
             );
-            defer self.allocator.free(arena_buffer);
+            const active = try self.allocator.alloc(H3Active(H), capacity);
+            defer self.allocator.free(active);
+            for (active, 0..) |*item, index| {
+                item.* = .{ .server = self, .slot = index };
+            }
+            defer for (active) |*item| {
+                if (!item.used) continue;
+                if (item.future) |*future| {
+                    _ = future.cancel(self.io) catch {};
+                }
+                item.request.deinit(self.allocator);
+                if (item.arena_buffer.len > 0) {
+                    self.allocator.free(item.arena_buffer);
+                }
+            };
 
-            while (served < self.options.max_requests_per_connection) : (served += 1) {
-                if (self.shutdown.isSet()) {
-                    session.initiateShutdown() catch {};
-                    return;
+            const response_storage = try self.allocator.alloc(
+                H3ResponseMsg,
+                capacity,
+            );
+            defer self.allocator.free(response_storage);
+            var responses = std.Io.Queue(H3ResponseMsg).init(response_storage);
+
+            var served: usize = 0;
+            var active_count: usize = 0;
+            var stop_accepting = false;
+
+            while (true) {
+                if (!stop_accepting and
+                    (self.shutdown.isSet() or
+                        served + active_count >=
+                            self.options.max_requests_per_connection))
+                {
+                    stop_accepting = true;
                 }
 
-                var request = session.receiveRequestWithTimeout(
-                    self.options.idle_timeout,
-                ) catch |err| {
-                    if (err == error.Timeout) {
-                        if (self.shutdown.isSet()) {
-                            session.initiateShutdown() catch {};
-                            return;
-                        }
-                        continue;
+                var progressed = false;
+                while (true) {
+                    var buffer: [1]H3ResponseMsg = undefined;
+                    const count = responses.get(
+                        self.io,
+                        &buffer,
+                        0,
+                    ) catch |err| switch (err) {
+                        error.Closed => break,
+                        else => return err,
+                    };
+                    if (count == 0) break;
+
+                    var message = buffer[0];
+                    const item = &active[message.slot];
+                    if (item.future) |*future| {
+                        _ = future.await(self.io) catch {};
                     }
-                    if (err == error.Canceled) return error.Canceled;
-                    return;
-                };
-                defer request.deinit(self.allocator);
-
-                // Bound per-request allocations by the same arena budget as
-                // the HTTP/1 and HTTP/2 adapters.
-                var fixed_arena = std.heap.FixedBufferAllocator.init(
-                    arena_buffer,
-                );
-                const arena = fixed_arena.allocator();
-
-                const client_info = ctx_mod.ClientInfo{
-                    .address = request.from,
-                    .protocol = .http_3,
-                    .tls = true,
-                };
-                var response = self.dispatch(
-                    &request.request,
-                    client_info,
-                    arena,
-                ) catch |err| blk: {
-                    if (err == error.Canceled) return error.Canceled;
-                    std.log.scoped(.weft).warn(
-                        "http3 dispatch failed: {s}",
-                        .{@errorName(err)},
-                    );
-                    break :blk internalErrorResponse(
-                        arena,
-                        self.options.limits,
-                    );
-                };
-
-                if (response.body.len > self.options.limits.max_response_bytes) {
-                    response.reset();
-                    response.setStatus(500);
-                    response.text("Response Too Large") catch {};
+                    self.respond(
+                        session,
+                        item.request.stream_id,
+                        &item.request.request,
+                        &message.response,
+                        item.arena,
+                    ) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        std.log.scoped(.weft).warn(
+                            "http3 response failed: {s}",
+                            .{@errorName(err)},
+                        );
+                    };
+                    item.request.deinit(self.allocator);
+                    self.allocator.free(item.arena_buffer);
+                    item.* = .{ .server = self, .slot = message.slot };
+                    active_count -= 1;
+                    served += 1;
+                    progressed = true;
                 }
-                response.validateHead() catch {
-                    response.reset();
-                    response.setStatus(500);
-                    response.text("Internal Server Error") catch {};
-                };
 
-                try self.respond(
-                    session,
-                    request.stream_id,
-                    &request.request,
-                    &response,
-                    arena,
-                );
+                if (stop_accepting and active_count == 0) break;
+
+                var free_slot: ?usize = null;
+                if (!stop_accepting) {
+                    for (active, 0..) |*item, index| {
+                        if (!item.used) {
+                            free_slot = index;
+                            break;
+                        }
+                    }
+                }
+
+                if (free_slot) |slot| {
+                    const timeout = if (active_count == 0)
+                        self.options.idle_timeout
+                    else
+                        self.options.handler_poll_interval;
+                    var request = session.receiveRequestWithTimeout(
+                        timeout,
+                    ) catch |err| {
+                        if (err == error.Timeout) continue;
+                        if (err == error.Canceled) return error.Canceled;
+                        return err;
+                    };
+
+                    const item = &active[slot];
+                    const arena_buffer = self.allocator.alloc(
+                        u8,
+                        self.options.limits.max_request_arena_bytes,
+                    ) catch {
+                        request.deinit(self.allocator);
+                        return error.OutOfMemory;
+                    };
+                    item.request = request;
+                    item.arena_buffer = arena_buffer;
+                    item.fixed = std.heap.FixedBufferAllocator.init(
+                        arena_buffer,
+                    );
+                    item.arena = item.fixed.allocator();
+                    item.used = true;
+                    active_count += 1;
+                    item.future = self.io.async(
+                        H3Active(H).run,
+                        .{ item, &responses },
+                    );
+                    continue;
+                }
+
+                if (!progressed) {
+                    std.Io.sleep(
+                        self.io,
+                        self.options.handler_poll_interval,
+                        .awake,
+                    ) catch {};
+                }
             }
 
             session.initiateShutdown() catch {};
@@ -644,6 +715,68 @@ fn findHeader(
         if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
     }
     return null;
+}
+
+const H3ResponseMsg = struct {
+    slot: usize,
+    response: Response,
+};
+
+fn H3Active(comptime H: type) type {
+    return struct {
+        const Self = @This();
+
+        server: *Http3Server(H),
+        request: netz.http3.runtime.OwnedHandshakeRequest = undefined,
+        arena_buffer: []u8 = &.{},
+        fixed: std.heap.FixedBufferAllocator = undefined,
+        arena: std.mem.Allocator = undefined,
+        future: ?std.Io.Future(anyerror!void) = null,
+        used: bool = false,
+        slot: usize = 0,
+
+        fn run(
+            self: *Self,
+            responses: *std.Io.Queue(H3ResponseMsg),
+        ) anyerror!void {
+            const client_info = ctx_mod.ClientInfo{
+                .address = self.request.from,
+                .protocol = .http_3,
+                .tls = true,
+            };
+            var response = self.server.dispatch(
+                &self.request.request,
+                client_info,
+                self.arena,
+            ) catch |err| blk: {
+                if (err == error.Canceled) return err;
+                std.log.scoped(.weft).warn(
+                    "http3 dispatch failed: {s}",
+                    .{@errorName(err)},
+                );
+                break :blk internalErrorResponse(
+                    self.arena,
+                    self.server.options.limits,
+                );
+            };
+
+            if (response.body.len > self.server.options.limits.max_response_bytes) {
+                response.reset();
+                response.setStatus(500);
+                response.text("Response Too Large") catch {};
+            }
+            response.validateHead() catch {
+                response.reset();
+                response.setStatus(500);
+                response.text("Internal Server Error") catch {};
+            };
+
+            try responses.putOne(self.server.io, .{
+                .slot = self.slot,
+                .response = response,
+            });
+        }
+    };
 }
 
 fn convertH3Trailers(
