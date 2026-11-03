@@ -56,7 +56,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
   `bodyJson`/`bodyForm`; malformed JSON maps to `400`, unsupported codings to
   `415`, and oversized decoded bodies to `413`.
-- CORS preflight validates requested headers against a configured allow list.
+- CORS preflight validates requested headers against a configured allow list,
+  and every CORS response carries `Vary: Origin` so shared caches cannot reuse
+  a non-CORS response for an allowed origin.
 - Optional TLS listener through `Options.tls`, reusing Netz's TLS transport while
   applying weft HTTP limits and a bounded accept/handshake budget.
 - Optional `Limits.request_timeout` races the middleware/handler chain against a
@@ -113,8 +115,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 83/83 tests passed (54 unit, 29 package/integration).
-- ReleaseFast: 83/83 tests passed.
+- Debug: 84/84 tests passed (55 unit, 29 package/integration).
+- ReleaseFast: 84/84 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

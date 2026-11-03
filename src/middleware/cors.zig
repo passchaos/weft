@@ -26,6 +26,10 @@ pub const Cors = struct {
     }
 
     fn call(self: *Cors, ctx: *ctx_mod.Ctx) anyerror!void {
+        // The response depends on `Origin` even when the request omits it or
+        // the origin is rejected, so shared caches must key on it.
+        try vary.add(ctx, "Origin");
+
         const origin = ctx.header("origin") orelse {
             try ctx.next();
             return;
@@ -39,7 +43,6 @@ pub const Cors = struct {
             try ctx.setHeader("Access-Control-Allow-Origin", "*");
         } else {
             try ctx.setHeader("Access-Control-Allow-Origin", origin);
-            try vary.add(ctx, "Origin");
         }
         if (self.allow_credentials) {
             try ctx.setHeader("Access-Control-Allow-Credentials", "true");
@@ -61,6 +64,8 @@ pub const Cors = struct {
     }
 
     fn preflight(self: *Cors, ctx: *ctx_mod.Ctx) !void {
+        try vary.add(ctx, "Access-Control-Request-Method");
+
         const requested_method = ctx.header("access-control-request-method").?;
         if (!self.methodAllowed(requested_method)) {
             ctx.setStatus(403);
@@ -68,7 +73,6 @@ pub const Cors = struct {
             return;
         }
 
-        try vary.add(ctx, "Access-Control-Request-Method");
         try ctx.setHeader(
             "Access-Control-Allow-Methods",
             try std.mem.join(ctx.arena, ", ", self.allow_methods),
@@ -204,6 +208,13 @@ test "cors reflects allowed origins and answers preflight" {
     try std.testing.expect(
         context.response.header("access-control-allow-methods").?.len > 0,
     );
+    const preflight_vary = context.response.header("vary").?;
+    try std.testing.expect(std.mem.indexOf(u8, preflight_vary, "Origin") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        preflight_vary,
+        "Access-Control-Request-Method",
+    ) != null);
 }
 
 test "cors leaves disallowed origins without cors headers" {
@@ -244,6 +255,52 @@ test "cors leaves disallowed origins without cors headers" {
     try std.testing.expectEqualStrings("ok", context.response.body);
     try std.testing.expect(
         context.response.header("access-control-allow-origin") == null,
+    );
+    // Rejected origins still vary, so a shared cache cannot reuse a
+    // non-CORS response for an allowed origin.
+    try std.testing.expectEqualStrings(
+        "Origin",
+        context.response.header("vary").?,
+    );
+}
+
+test "cors varies on origin even without an Origin header" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const origins = [_][]const u8{"https://app.example"};
+    var cors = Cors{ .allowed_origins = &origins };
+
+    var headers = [_]netz.http1.Header{};
+    var request: netz.http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{cors.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.text("ok");
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqualStrings("ok", context.response.body);
+    try std.testing.expectEqualStrings(
+        "Origin",
+        context.response.header("vary").?,
     );
 }
 

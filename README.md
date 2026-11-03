@@ -337,7 +337,9 @@ Built-ins:
 - `securityHeaders` / `SecurityHeaders` — configurable browser hardening fields.
 - `BasicAuth` — constant-time Basic credential check with a challenge response.
 - `Cors` — exact-origin allow list, credential support, preflight handling,
-  configured request-header validation, and `Vary` maintenance.
+  configured request-header validation, and `Vary: Origin` on every response
+  (including rejected and origin-less requests); preflights also vary on
+  `Access-Control-Request-Method`/`-Headers`.
 - `Compress` — gzip, deflate, Brotli, and zstd negotiation from
   `Accept-Encoding` quality values, compressible content types, and bodies
   above `min_bytes`; streamed bodies are gzip-compressed as concatenated
