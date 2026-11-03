@@ -6,6 +6,7 @@ const query_mod = @import("query.zig");
 const cookie_mod = @import("cookie.zig");
 const stream_mod = @import("stream.zig");
 const multipart_mod = @import("multipart.zig");
+const sse_mod = @import("sse.zig");
 const websocket_mod = @import("websocket.zig");
 
 pub const Response = response_mod.Response;
@@ -15,6 +16,7 @@ pub const QueryPair = query_mod.Pair;
 pub const SetCookie = cookie_mod.SetCookie;
 pub const StreamBody = stream_mod.Body;
 pub const StreamWriter = stream_mod.Writer;
+pub const SseEvent = sse_mod.Event;
 pub const WebSocketSession = websocket_mod.Session;
 pub const WebSocketUpgrade = websocket_mod.Upgrade;
 
@@ -398,6 +400,21 @@ pub const Ctx = struct {
         }
         self.response.stream = stream_body;
         self.response.committed = true;
+    }
+
+    /// Select an incremental `text/event-stream` body. Defaults `Content-Type`
+    /// and `Cache-Control` only when the handler has not set them.
+    pub fn sse(self: *Ctx, stream_body: StreamBody) !void {
+        if (self.responseHeader("content-type") == null) {
+            try self.setHeader("Content-Type", "text/event-stream");
+        }
+        if (self.responseHeader("cache-control") == null) {
+            try self.setHeader("Cache-Control", "no-cache");
+        }
+        if (self.responseHeader("x-accel-buffering") == null) {
+            try self.setHeader("X-Accel-Buffering", "no");
+        }
+        try self.stream(stream_body);
     }
 
     /// Select an HTTP/1 WebSocket upgrade. The HTTP/1 server validates the

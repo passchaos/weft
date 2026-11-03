@@ -36,6 +36,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Streaming response bodies through a concrete `StreamBody`/`StreamWriter` seam,
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
+- `Ctx.sse` plus `sse.write`/`sse.comment` helpers for `text/event-stream`
+  responses, with multiline `data:` framing, `id`/`event`/`retry` fields,
+  injection rejection, and compression opt-out.
 - `StaticFiles` handler with traversal-safe normalization, dotfile/symlink
   policy, MIME detection, ETag/`Last-Modified`, single and multipart `Range`
   support (`206`/`416`), index files, and streamed file reads.
@@ -108,8 +111,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 80/80 tests passed (52 unit, 28 package/integration).
-- ReleaseFast: 80/80 tests passed.
+- Debug: 83/83 tests passed (54 unit, 29 package/integration).
+- ReleaseFast: 83/83 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

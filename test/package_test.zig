@@ -455,6 +455,20 @@ const StreamHandlers = struct {
         _ = app;
         try ctx.stream(.{ .write_fn = fixed, .length = 512 });
     }
+
+    fn sse(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
+        try weft.sse.write(writer, .{
+            .id = "1",
+            .event = "tick",
+            .data = "first\nsecond",
+        });
+        try weft.sse.comment(writer, "keep-alive");
+    }
+
+    fn sseRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        try ctx.sse(.{ .write_fn = sse });
+    }
 };
 
 const MethodHandlers = struct {
@@ -940,6 +954,69 @@ test "package: streaming responses support fixed, chunked, and HEAD" {
     try std.testing.expectEqualStrings(
         "chunked",
         chunked_response.response.header("transfer-encoding").?,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: server-sent events set stream headers and format fields" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/events", StreamHandlers.sseRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/events",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "text/event-stream",
+        response.response.header("content-type").?,
+    );
+    try std.testing.expectEqualStrings(
+        "no-cache",
+        response.response.header("cache-control").?,
+    );
+    try std.testing.expectEqualStrings(
+        "id: 1\nevent: tick\ndata: first\ndata: second\n\n: keep-alive\n\n",
+        response.response.body,
     );
 
     server.stop();

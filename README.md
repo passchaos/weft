@@ -134,6 +134,29 @@ fn streamed(app: *App, ctx: *weft.Ctx) anyerror!void {
 - A producer that starts owns its resources and must release them on success or
   error.
 
+`ctx.sse(...)` selects a `text/event-stream` body. It defaults `Content-Type`,
+`Cache-Control: no-cache`, and `X-Accel-Buffering: no` when the handler has not
+set them, and the compression middleware leaves event streams uncompressed:
+
+```zig
+fn events(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
+    try weft.sse.write(writer, .{
+        .id = "1",
+        .event = "tick",
+        .data = "first\nsecond",
+    });
+}
+
+fn eventsRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.sse(.{ .write_fn = events });
+}
+```
+
+`sse.write` emits `id`, `event`, `retry`, and one `data:` line per payload
+line; `sse.comment` writes a heartbeat comment. Field values containing CR, LF,
+or NUL are rejected.
+
 ## TLS
 
 Set `Options.tls` to a `netz.http1.runtime.TlsListenOptions` to serve HTTPS.
