@@ -331,9 +331,11 @@ With `precompressed` enabled (the default), sibling `.br`, `.zst`, and `.gz`
 sidecars are served according to `Accept-Encoding` (`br` preferred, then
 `zstd`, then `gzip`, honouring `q` weights and `*`). The response keeps the
 original `Content-Type`, adds `Content-Encoding` and `Vary: Accept-Encoding`,
-and reports the sidecar's `Content-Length`/`ETag`. Encoded representations are
-not range-addressable: a request carrying `Range` always receives the raw file
-with `Accept-Ranges: bytes`. Set `.precompressed = false` to disable sidecars.
+and reports the sidecar's `Content-Length`/`ETag`. Sidecars older than the
+source file are ignored by default; set `.check_sidecar_freshness = false` to
+serve them anyway. Encoded representations are not range-addressable: a
+request carrying `Range` always receives the raw file with
+`Accept-Ranges: bytes`. Set `.precompressed = false` to disable sidecars.
 
 ## Middleware
 

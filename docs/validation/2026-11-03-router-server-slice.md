@@ -66,6 +66,7 @@ processing, decoded request data, and cooperative graceful shutdown.
   `Accept-Encoding` (q-weighted, `br > zstd > gzip` on ties), preserves the
   original MIME type, emits `Content-Encoding`/`Vary: Accept-Encoding`, and
   falls back to the raw file for `Range` requests so byte offsets stay valid.
+  Sidecars older than the source file are ignored by default.
 - Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
   `bodyJson`/`bodyForm`; malformed JSON maps to `400`, unsupported codings to
   `415`, and oversized decoded bodies to `413`.
@@ -137,8 +138,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 97/97 tests passed (67 unit, 30 package/integration).
-- ReleaseFast: 97/97 tests passed.
+- Debug: 98/98 tests passed (68 unit, 30 package/integration).
+- ReleaseFast: 98/98 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

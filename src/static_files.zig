@@ -80,6 +80,10 @@ pub const StaticFiles = struct {
     allow_dotfiles: bool = false,
     follow_symlinks: bool = false,
     precompressed: bool = true,
+    /// Serve a compressed sidecar only when its modification time is not older
+    /// than the source file. Disable when a build pipeline intentionally
+    /// preserves older sidecar timestamps.
+    check_sidecar_freshness: bool = true,
     /// Redirect directory requests that lack a trailing slash so relative URLs
     /// in the served index document resolve against the directory.
     redirect_directories: bool = true,
@@ -170,7 +174,12 @@ pub const StaticFiles = struct {
                     }) catch null) |sidecar_stat| {
                         if (sidecar_stat.kind == .file and
                             sidecar_stat.size <= self.max_file_bytes and
-                            sidecar_stat.size <= ctx.limits.max_response_bytes)
+                            sidecar_stat.size <= ctx.limits.max_response_bytes and
+                            sidecarIsFresh(
+                                stat.mtime,
+                                sidecar_stat.mtime,
+                                self.check_sidecar_freshness,
+                            ))
                         {
                             served_relative = sidecar;
                             served_stat = sidecar_stat;
@@ -592,6 +601,15 @@ fn parseQuality(text: []const u8) ?u16 {
     return whole * 1000 + fraction;
 }
 
+fn sidecarIsFresh(
+    source: std.Io.Timestamp,
+    sidecar: std.Io.Timestamp,
+    check: bool,
+) bool {
+    if (!check) return true;
+    return sidecar.nanoseconds >= source.nanoseconds;
+}
+
 fn targetEndsWithSlash(target: []const u8) bool {
     const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
     return path_end > 0 and target[path_end - 1] == '/';
@@ -780,6 +798,16 @@ test "static range parsing handles single, suffix, and multiple ranges" {
     try std.testing.expectEqual(@as(usize, 1), mixed.count);
     try std.testing.expect(parseRange("bytes=20-", 10) == .unsatisfiable);
     try std.testing.expect(parseRange("bytes=", 10) == .ignore);
+}
+
+test "static sidecar freshness rejects older compressed files" {
+    const source: std.Io.Timestamp = .{ .nanoseconds = 100 };
+    const fresh: std.Io.Timestamp = .{ .nanoseconds = 100 };
+    const stale: std.Io.Timestamp = .{ .nanoseconds = 99 };
+
+    try std.testing.expect(sidecarIsFresh(source, fresh, true));
+    try std.testing.expect(!sidecarIsFresh(source, stale, true));
+    try std.testing.expect(sidecarIsFresh(source, stale, false));
 }
 
 test "static directory redirects preserve the query string" {
