@@ -234,7 +234,9 @@ pub const Ctx = struct {
         while (try reader.next()) |chunk| {
             const next_total = std.math.add(usize, total, chunk.len) catch
                 return error.PayloadTooLarge;
-            if (next_total > self.limits.max_body_bytes) {
+            if (next_total > self.limits.max_body_bytes or
+                next_total > self.limits.max_request_arena_bytes)
+            {
                 return error.PayloadTooLarge;
             }
             try output.appendSlice(self.arena, chunk);
