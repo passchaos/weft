@@ -346,10 +346,11 @@ Built-ins:
   (including rejected and origin-less requests); preflights also vary on
   `Access-Control-Request-Method`/`-Headers`.
 - `Compress` — gzip, deflate, Brotli, and zstd negotiation from
-  `Accept-Encoding` quality values, compressible content types, and bodies
-  above `min_bytes`; streamed bodies are gzip-compressed as concatenated
-  members. Existing `Content-Encoding`, `no-transform`, and refused identity
-  are respected.
+  `Accept-Encoding` quality values (malformed or out-of-range `q` values are
+  treated as unacceptable), compressible content types, and bodies above
+  `min_bytes`; streamed bodies are gzip-compressed as concatenated members.
+  Existing `Content-Encoding`, `no-transform`, and refused identity are
+  respected.
 - `recover` — converts an uncommitted handler failure into the status dispatch
   would emit (`400`/`413`/`415`/`500`), or marks a committed partial response
   `Connection: close`.

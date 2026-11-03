@@ -337,11 +337,28 @@ fn quality(params: []const u8) ?f64 {
     var parts = std.mem.splitScalar(u8, params, ';');
     while (parts.next()) |part| {
         const trimmed = std.mem.trim(u8, part, " \t");
-        if (!std.ascii.startsWithIgnoreCase(trimmed, "q=")) continue;
-        const value = std.mem.trim(u8, trimmed[2..], " \t");
-        return std.fmt.parseFloat(f64, value) catch null;
+        const equals = std.mem.indexOfScalar(u8, trimmed, '=') orelse
+            continue;
+        const name = std.mem.trim(u8, trimmed[0..equals], " \t");
+        if (!std.ascii.eqlIgnoreCase(name, "q")) continue;
+        const value = std.mem.trim(u8, trimmed[equals + 1 ..], " \t");
+        const parsed = std.fmt.parseFloat(f64, value) catch return 0.0;
+        if (!std.math.isFinite(parsed) or parsed < 0 or parsed > 1) {
+            return 0.0;
+        }
+        return parsed;
     }
     return null;
+}
+
+test "compress quality parsing accepts OWS and rejects invalid values" {
+    try std.testing.expectEqual(@as(?f64, 0.5), quality("q=0.5"));
+    try std.testing.expectEqual(@as(?f64, 0.5), quality(" q = 0.5 "));
+    try std.testing.expectEqual(@as(?f64, 0.0), quality("q=2"));
+    try std.testing.expectEqual(@as(?f64, 0.0), quality("q=abc"));
+    try std.testing.expectEqual(@as(?f64, 0.0), quality("q=-1"));
+    try std.testing.expect(quality("foo=bar") == null);
+    try std.testing.expect(quality("") == null);
 }
 
 fn compressible(content_type: ?[]const u8) bool {

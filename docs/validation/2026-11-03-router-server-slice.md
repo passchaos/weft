@@ -70,7 +70,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   timer, cancels at the next cancellation point, and returns `503`.
 - Response compression negotiates gzip, deflate, Brotli, or zstd from
   `Accept-Encoding` quality values, honors `no-transform`, and returns `406`
-  when identity is explicitly refused.
+  when identity is explicitly refused. Malformed or out-of-range `q` values
+  are treated as unacceptable.
 - Optional `Options.drain_timeout` bounds graceful worker drain and cancels the
   group cooperatively when the budget expires.
 - `OPTIONS *` advertises router-wide methods, `Ctx` exposes repeated header
@@ -128,8 +129,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 92/92 tests passed (63 unit, 29 package/integration).
-- ReleaseFast: 92/92 tests passed.
+- Debug: 93/93 tests passed (64 unit, 29 package/integration).
+- ReleaseFast: 93/93 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
