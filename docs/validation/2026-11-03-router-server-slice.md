@@ -22,8 +22,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   validated `Set-Cookie`
   serialization.
 - `Ctx.trailers()` and `Ctx.trailer(name)` expose HTTP/1 chunked request
-  trailers and buffered HTTP/2 request trailers; streaming and HTTP/3 routes
-  report an empty slice.
+  trailers and buffered HTTP/2/HTTP/3 request trailers; streaming routes report
+  an empty slice.
 - Response header count/byte budgets, header-name/value validation, copying
   into the response arena, replace/append semantics, and head room reserved for
   Netz-added `Content-Length`, `Date`, and `Connection` fields.
@@ -138,8 +138,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 96/96 tests passed (66 unit, 30 package/integration).
-- ReleaseFast: 96/96 tests passed.
+- Debug: 97/97 tests passed (67 unit, 30 package/integration).
+- ReleaseFast: 97/97 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

@@ -370,12 +370,17 @@ pub fn Http3Server(comptime H: type) type {
                 };
             }
 
+            var trailers = try arena.alloc(netz.http1.Header, 0);
+            if (decoded.trailers.len > 0) {
+                trailers = convertH3Trailers(arena, decoded.trailers) catch trailers;
+            }
             var request = netz.http1.Request{
                 .method = method,
                 .target = target,
                 .version = .http_1_1,
                 .headers = headers,
                 .body = decoded.body,
+                .trailers = trailers,
                 .consumed = 0,
             };
 
@@ -598,6 +603,17 @@ fn findHeader(
     return null;
 }
 
+fn convertH3Trailers(
+    allocator: std.mem.Allocator,
+    fields: []const netz.http3.Qpack.HeaderField,
+) ![]netz.http1.Header {
+    const headers = try allocator.alloc(netz.http1.Header, fields.len);
+    for (fields, headers) |field, *header| {
+        header.* = .{ .name = field.name, .value = field.value };
+    }
+    return headers;
+}
+
 fn internalErrorResponse(
     arena: std.mem.Allocator,
     limits: Limits,
@@ -606,4 +622,19 @@ fn internalErrorResponse(
     response.setStatus(500);
     response.text("Internal Server Error") catch {};
     return response;
+}
+
+test "h3 request trailers convert to the http1 header view" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const fields = [_]netz.http3.Qpack.HeaderField{
+        .{ .name = "x-checksum", .value = "abc" },
+        .{ .name = "x-trace", .value = "one" },
+    };
+    const headers = try convertH3Trailers(arena.allocator(), &fields);
+    try std.testing.expectEqual(@as(usize, 2), headers.len);
+    try std.testing.expectEqualStrings("x-checksum", headers[0].name);
+    try std.testing.expectEqualStrings("abc", headers[0].value);
+    try std.testing.expectEqualStrings("one", headers[1].value);
 }
