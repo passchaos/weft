@@ -6,6 +6,7 @@ const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
+const drain_mod = @import("drain.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -34,6 +35,8 @@ pub const Options = struct {
     tls: ?netz.http2.runtime.TlsListenOptions = null,
     /// TCP accept plus TLS/HTTP/2 bootstrap budget for TLS workers.
     tls_accept_timeout: std.Io.Duration = .fromMilliseconds(500),
+    /// Optional budget for workers to drain after `stop`.
+    drain_timeout: ?std.Io.Duration = .fromSeconds(5),
 };
 
 const Listener = union(enum) {
@@ -110,6 +113,8 @@ pub fn Http2Server(comptime H: type) type {
                 options.accept_timeout.nanoseconds <= 0 or
                 options.idle_timeout.nanoseconds <= 0 or
                 options.tls_accept_timeout.nanoseconds <= 0 or
+                (options.drain_timeout != null and
+                    options.drain_timeout.?.nanoseconds <= 0) or
                 options.limits.max_head_bytes == 0 or
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
@@ -191,7 +196,11 @@ pub fn Http2Server(comptime H: type) type {
                 return err;
             };
 
-            group.await(self.io) catch |err| {
+            drain_mod.awaitGroup(
+                self.io,
+                &group,
+                self.options.drain_timeout,
+            ) catch |err| {
                 group.cancel(self.io);
                 group_finished = true;
                 return err;

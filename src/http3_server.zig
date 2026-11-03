@@ -6,6 +6,7 @@ const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
+const drain_mod = @import("drain.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -31,6 +32,8 @@ pub const Options = struct {
     session: netz.http3.runtime.HandshakeSessionOptions = .{},
     serve_connection_recovery_drain_timeout: std.Io.Duration =
         .fromSeconds(5),
+    /// Optional budget for the accept loop and sessions to drain after `stop`.
+    drain_timeout: ?std.Io.Duration = .fromSeconds(5),
 };
 
 const H3StreamState = struct {
@@ -82,6 +85,8 @@ pub fn Http3Server(comptime H: type) type {
                 options.max_concurrent_streams == 0 or
                 options.accept_timeout.nanoseconds <= 0 or
                 options.idle_timeout.nanoseconds <= 0 or
+                (options.drain_timeout != null and
+                    options.drain_timeout.?.nanoseconds <= 0) or
                 options.limits.max_head_bytes == 0 or
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
@@ -174,7 +179,11 @@ pub fn Http3Server(comptime H: type) type {
                 return err;
             };
 
-            group.await(self.io) catch |err| {
+            drain_mod.awaitGroup(
+                self.io,
+                &group,
+                self.options.drain_timeout,
+            ) catch |err| {
                 group.cancel(self.io);
                 group_finished = true;
                 return err;

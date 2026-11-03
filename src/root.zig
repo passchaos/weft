@@ -69,6 +69,7 @@ comptime {
     _ = @import("static_files.zig");
     _ = @import("router.zig");
     _ = @import("server.zig");
+    _ = @import("drain.zig");
     _ = @import("dispatch.zig");
     _ = @import("http2_server.zig");
     _ = @import("http3_server.zig");

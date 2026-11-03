@@ -349,9 +349,11 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 `stop()` is cooperative: idle workers stop accepting within
 `accept_poll_interval`, in-flight requests finish, and subsequent responses
 carry `Connection: close`. `serve` waits for workers to drain before returning.
-A connection blocked waiting for a subsequent keep-alive request is bounded by
-`request_head_timeout` (30 seconds by default). A handler that never returns
-still holds its worker; fully preemptive cancellation is not part of this slice.
+`Options.drain_timeout` bounds that wait; on expiry the worker group is
+cancelled at its next cancellation point. A connection blocked waiting for a
+subsequent keep-alive request is bounded by `request_head_timeout` (30 seconds
+by default). A handler that never reaches a cancellation point still holds its
+worker; fully preemptive cancellation is not part of this slice.
 
 Register routes before calling `serve`. Matching is read-only, but registration
 itself is not synchronized with in-flight requests.

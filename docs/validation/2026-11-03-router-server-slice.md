@@ -50,6 +50,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Response compression negotiates gzip, deflate, Brotli, or zstd from
   `Accept-Encoding` quality values, honors `no-transform`, and returns `406`
   when identity is explicitly refused.
+- Optional `Options.drain_timeout` bounds graceful worker drain and cancels the
+  group cooperatively when the budget expires.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -78,14 +80,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 63/63 tests passed (40 unit, 23 package/integration).
-- ReleaseFast: 63/63 tests passed.
+- Debug: 64/64 tests passed (41 unit, 23 package/integration).
+- ReleaseFast: 64/64 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 79.6 ns/lookup 12567224 lookups/s
-router param:  routes=256  lookups=1000000 90.8 ns/lookup 11015615 lookups/s
+router static: routes=1024 lookups=2000000 84.0 ns/lookup 11906712 lookups/s
+router param:  routes=256  lookups=1000000 92.0 ns/lookup 10870859 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
