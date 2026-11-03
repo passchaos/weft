@@ -1076,6 +1076,24 @@ test "package: static files serve 200, 304, 206, and HEAD" {
         range_response.response.header("content-range").?,
     );
 
+    var stale_range = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{
+            .{ .name = "Range", .value = "bytes=0-3" },
+            .{ .name = "If-Range", .value = "\"different\"" },
+        } },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer stale_range.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), stale_range.response.status);
+    try std.testing.expectEqualStrings(
+        "<h1>static</h1>",
+        stale_range.response.body,
+    );
+    try std.testing.expect(stale_range.response.header("content-range") == null);
+
     var multi_range = try netz.http1.runtime.Client.requestUri(
         allocator,
         runtime_io,
@@ -1997,6 +2015,63 @@ test "package: multipart upload parsing" {
     );
     defer missing_boundary.deinit(allocator);
     try std.testing.expectEqual(@as(u16, 400), missing_boundary.response.status);
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: OPTIONS star advertises router methods" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/", home, .{});
+    try router.post("/echo", echoJson, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    var client = try netz.http1.runtime.Client.connect(
+        allocator,
+        io,
+        server.address(),
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer client.close();
+
+    var response = try client.request(.{
+        .method = .OPTIONS,
+        .target = "*",
+        .host = "localhost",
+    });
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 204), response.response.status);
+    const allow = response.response.header("allow").?;
+    try std.testing.expect(std.mem.indexOf(u8, allow, "GET") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allow, "HEAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allow, "POST") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allow, "OPTIONS") != null);
 
     server.stop();
     try group.await(io);

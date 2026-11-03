@@ -52,6 +52,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   when identity is explicitly refused.
 - Optional `Options.drain_timeout` bounds graceful worker drain and cancels the
   group cooperatively when the budget expires.
+- `OPTIONS *` advertises router-wide methods, `Ctx` exposes repeated header
+  iteration, and static `If-Range` falls back to a full response when the ETag
+  no longer matches.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -80,14 +83,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 64/64 tests passed (41 unit, 23 package/integration).
-- ReleaseFast: 64/64 tests passed.
+- Debug: 66/66 tests passed (42 unit, 24 package/integration).
+- ReleaseFast: 66/66 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 84.0 ns/lookup 11906712 lookups/s
-router param:  routes=256  lookups=1000000 92.0 ns/lookup 10870859 lookups/s
+router static: routes=1024 lookups=2000000 85.0 ns/lookup 11761270 lookups/s
+router param:  routes=256  lookups=1000000 133.2 ns/lookup 7507096 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the

@@ -129,22 +129,28 @@ pub const StaticFiles = struct {
         const mime = self.contentType(relative);
 
         var ranges: ?RangeSet = null;
-        if (ctx.header("range")) |range_header| {
-            switch (parseRange(range_header, size)) {
-                .ignore => {},
-                .unsatisfiable => {
-                    ctx.setStatus(416);
-                    try ctx.setHeader(
-                        "Content-Range",
-                        try std.fmt.allocPrint(
-                            ctx.arena,
-                            "bytes */{d}",
-                            .{size},
-                        ),
-                    );
-                    return ctx.text("Range Not Satisfiable");
-                },
-                .ranges => |set| ranges = set,
+        const range_allowed = if (ctx.header("if-range")) |if_range|
+            etagMatches(if_range, etag)
+        else
+            true;
+        if (range_allowed) {
+            if (ctx.header("range")) |range_header| {
+                switch (parseRange(range_header, size)) {
+                    .ignore => {},
+                    .unsatisfiable => {
+                        ctx.setStatus(416);
+                        try ctx.setHeader(
+                            "Content-Range",
+                            try std.fmt.allocPrint(
+                                ctx.arena,
+                                "bytes */{d}",
+                                .{size},
+                            ),
+                        );
+                        return ctx.text("Range Not Satisfiable");
+                    },
+                    .ranges => |set| ranges = set,
+                }
             }
         }
 

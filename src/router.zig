@@ -577,6 +577,27 @@ pub fn Router(comptime H: type) type {
             return .not_found;
         }
 
+        /// Methods supported somewhere in the router, used for `OPTIONS *`.
+        pub fn allowedMethods(self: *@This()) AllowedMethods {
+            var allowed = AllowedMethods{};
+            for (self.all_routes.items) |route| {
+                if (route.method) |method| {
+                    allowed.add(method);
+                } else {
+                    inline for (.{
+                        netz.http1.Method.GET,
+                        netz.http1.Method.POST,
+                        netz.http1.Method.PUT,
+                        netz.http1.Method.DELETE,
+                        netz.http1.Method.PATCH,
+                        netz.http1.Method.HEAD,
+                        netz.http1.Method.OPTIONS,
+                    }) |method| allowed.add(method);
+                }
+            }
+            return allowed;
+        }
+
         /// Match a method and path, returning null for both a missing path and
         /// a method mismatch. Use `resolve` when the distinction matters.
         pub fn match(

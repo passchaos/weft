@@ -10,6 +10,7 @@ pub const Disposition = union(enum) {
     not_found,
     bad_request,
     method_not_allowed: router_mod.AllowedMethods,
+    options_star: router_mod.AllowedMethods,
 };
 
 const HandlerRace = union(enum) {
@@ -52,9 +53,13 @@ pub fn dispatch(
     const path = if (query_index) |index| target[0..index] else target;
     const query = if (query_index) |index| target[index + 1 ..] else "";
 
-    const resolution = try router.resolve(request.method, path, arena);
-
     var disposition: ?Disposition = null;
+    const resolution = if (request.method == .OPTIONS and
+        std.mem.eql(u8, target, "*"))
+    blk: {
+        disposition = .{ .options_star = router.allowedMethods() };
+        break :blk router_mod.Resolution.not_found;
+    } else try router.resolve(request.method, path, arena);
     var query_params: []const query_mod.Pair = &.{};
     var params: []const ctx_mod.Param = &.{};
     var route_middleware: []const ctx_mod.Handler = &.{};
@@ -180,6 +185,10 @@ fn respondDisposition(ctx: *ctx_mod.Ctx) anyerror!void {
             }
             ctx.setStatus(405);
             try ctx.text("Method Not Allowed");
+        },
+        .options_star => |allowed| {
+            try ctx.setHeader("Allow", try allowed.value(ctx.arena));
+            ctx.setStatus(204);
         },
     }
 }

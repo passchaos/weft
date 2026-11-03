@@ -8,6 +8,7 @@ const stream_mod = @import("stream.zig");
 const multipart_mod = @import("multipart.zig");
 
 pub const Response = response_mod.Response;
+pub const Header = netz.http1.Header;
 pub const Limits = limits_mod.Limits;
 pub const QueryPair = query_mod.Pair;
 pub const SetCookie = cookie_mod.SetCookie;
@@ -152,6 +153,31 @@ pub const Ctx = struct {
 
     pub fn header(self: *const Ctx, name: []const u8) ?[]const u8 {
         return self.request.header(name);
+    }
+
+    pub fn headers(self: *const Ctx) []const Header {
+        return self.request.headers;
+    }
+
+    pub const HeaderIterator = struct {
+        headers: []const Header,
+        name: []const u8,
+        index: usize = 0,
+
+        pub fn next(self: *HeaderIterator) ?[]const u8 {
+            while (self.index < self.headers.len) : (self.index += 1) {
+                const field = self.headers[self.index];
+                if (std.ascii.eqlIgnoreCase(field.name, self.name)) {
+                    self.index += 1;
+                    return field.value;
+                }
+            }
+            return null;
+        }
+    };
+
+    pub fn headerValues(self: *const Ctx, name: []const u8) HeaderIterator {
+        return .{ .headers = self.request.headers, .name = name };
     }
 
     pub fn body(self: *const Ctx) []const u8 {
@@ -408,6 +434,43 @@ pub fn withContext(
             }
         }.call,
     };
+}
+
+test "headerValues iterates duplicate request fields" {
+    var headers = [_]netz.http1.Header{
+        .{ .name = "X-Test", .value = "one" },
+        .{ .name = "x-test", .value = "two" },
+        .{ .name = "Other", .value = "three" },
+    };
+    var request = netz.http1.Request{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = Response.init(arena.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    var values = context.headerValues("X-Test");
+    try std.testing.expectEqualStrings("one", values.next().?);
+    try std.testing.expectEqualStrings("two", values.next().?);
+    try std.testing.expect(values.next() == null);
+    try std.testing.expectEqual(@as(usize, 3), context.headers().len);
 }
 
 test "typed locals round-trip through the request arena" {

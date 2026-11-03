@@ -84,7 +84,8 @@ pub fn main(init: std.process.Init) !void {
 - `ctx.queryParam(name)` returns the first **percent-decoded** query value.
   `+` is decoded as a space. `ctx.queryPairs()` exposes all pairs in wire order.
 - `ctx.header(name)`, `ctx.body()`, `ctx.method()`, and `ctx.target()` expose the
-  parsed request.
+  parsed request. `ctx.headers()` and `ctx.headerValues(name)` expose repeated
+  fields.
 - `ctx.protocol()`, `ctx.clientAddress()`, and `ctx.isTls()` expose adapter
   metadata such as HTTP version, peer address, and transport security.
 - `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,
@@ -223,9 +224,9 @@ session serves one request at a time even though QUIC multiplexes streams.
 ## Static files
 
 `weft.StaticFiles` is a route handler that streams files below a directory. It
-supports ETag/`If-None-Match`, single and multipart `Range` requests
-(`206`/`416`), `HEAD`, index files, MIME detection, dotfile rejection, and
-traversal-safe path normalization.
+supports ETag/`If-None-Match`, `If-Range`, single and multipart `Range`
+requests (`206`/`416`), `HEAD`, index files, MIME detection, dotfile rejection,
+and traversal-safe path normalization.
 
 ```zig
 var files = weft.StaticFiles{
@@ -306,7 +307,8 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 - `HEAD` falls back to a `GET` route when no explicit `HEAD` route exists.
 - A path that exists for other methods returns `405` with an `Allow` field.
 - `OPTIONS` is answered automatically with `204` and `Allow` when no explicit
-  `OPTIONS` route exists.
+  `OPTIONS` route exists. `OPTIONS *` advertises methods supported across the
+  router.
 - `router.group(prefix, options)` shares a prefix and middleware; groups can
   nest.
 - Invalid patterns, duplicate method/path pairs, and wildcard/`any` conflicts
@@ -368,8 +370,8 @@ zig build bench -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
-On the reference development host, ReleaseFast runs range from roughly 80–120
-ns per lookup (about 8M–12M lookups per second) depending on host load,
+On the reference development host, ReleaseFast runs range from roughly 80–140
+ns per lookup (about 7M–12M lookups per second) depending on host load,
 including capture allocation from a fixed arena.
 
 ## Status
