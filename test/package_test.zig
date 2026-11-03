@@ -296,6 +296,105 @@ test "package: middleware order, short-circuit, and locals" {
     try std.testing.expectEqualStrings("stopped", stopped_context.response.body);
 }
 
+test "package: ETag and compression produce representation-specific validators" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var etag = weft.middleware.Etag{};
+    var compress = weft.middleware.Compress{ .min_bytes = 1 };
+    var middleware = [_]weft.Handler{
+        etag.handler(),
+        compress.handler(),
+    };
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .middleware = &middleware,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/etag", etagRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/etag",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    const gzip_headers = [_]netz.http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "gzip",
+    }};
+    var encoded = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .headers = &gzip_headers },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer encoded.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), encoded.response.status);
+    try std.testing.expectEqualStrings(
+        "gzip",
+        encoded.response.header("content-encoding").?,
+    );
+    try std.testing.expect(encoded.response.header("vary") != null);
+    const encoded_tag = encoded.response.header("etag").?;
+
+    const conditional_headers = [_]netz.http1.Header{
+        .{ .name = "Accept-Encoding", .value = "gzip" },
+        .{ .name = "If-None-Match", .value = encoded_tag },
+    };
+    var conditional = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .headers = &conditional_headers },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer conditional.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 304), conditional.response.status);
+    try std.testing.expectEqualStrings("", conditional.response.body);
+    try std.testing.expectEqualStrings(
+        encoded_tag,
+        conditional.response.header("etag").?,
+    );
+
+    var identity = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer identity.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), identity.response.status);
+    try std.testing.expect(identity.response.header("content-encoding") == null);
+    const identity_tag = identity.response.header("etag").?;
+    try std.testing.expect(!std.mem.eql(u8, encoded_tag, identity_tag));
+
+    server.stop();
+    try group.await(io);
+}
+
 test "package: ETag middleware answers conditional GET" {
     const allocator = std.testing.allocator;
 
