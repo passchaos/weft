@@ -151,8 +151,9 @@ certificate policy, and session handling remain owned by Netz.
 
 ## HTTP/2
 
-`weft.Http2Server(H)` serves cleartext HTTP/2 with prior-knowledge h2c. It reuses
-the same `Router`, `Ctx`, middleware, limits, and streaming response contract:
+`weft.Http2Server(H)` serves cleartext prior-knowledge h2c and optional TLS
+with mandatory ALPN `h2`. It reuses the same `Router`, `Ctx`, middleware,
+limits, and streaming response contract:
 
 ```zig
 var server = try weft.Http2Server(App).init(
@@ -170,13 +171,17 @@ try server.router().get("/hello/:name", hello, .{});
 try server.serve();
 ```
 
+For HTTPS, set `Options.tls` to a `netz.http2.runtime.TlsListenOptions`; Netz
+requires ALPN `h2`, and weft applies its own `Limits` and `tcp_nodelay`.
+`tls_accept_timeout` bounds accept, TLS setup, and the HTTP/2 bootstrap.
+
 Netz owns frame parsing, HPACK, flow control, and stream state. Weft maps each
 completed request into the concrete `Ctx` view and maps responses back to
 lowercase HTTP/2 header fields. Response streaming, `HEAD`, `404/405/OPTIONS`,
 request decoding, and timeout budgets behave the same as HTTP/1.
 
-Current HTTP/2 limitations: cleartext only, and each worker serves one request
-at a time per connection even though the transport multiplexes streams.
+Current HTTP/2 limitation: each worker serves one request at a time per
+connection even though the transport multiplexes streams.
 
 ## Static files
 
@@ -330,7 +335,7 @@ second), including capture allocation from a fixed arena.
 
 HTTP/1.1 is served through `netz.http1.runtime` with cleartext and TLS
 listeners, and mirrors HTTP/1.0 request versions with appropriate connection
-semantics. `Http2Server` provides a cleartext h2c adapter over the same
+semantics. `Http2Server` provides h2c and TLS/ALPN h2 adapters over the same
 application surface. Remaining slices include concurrent HTTP/2 stream
-dispatch, h2 TLS, HTTP/3, streaming request bodies, and Brotli/zstd response
+dispatch, HTTP/3, streaming request bodies, and Brotli/zstd response
 compression.

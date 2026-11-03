@@ -53,9 +53,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
-- `Http2Server(H)` serves cleartext h2c through the same router, middleware,
-  timeout, streaming, and error semantics, including lowercase response field
-  mapping and graceful GOAWAY.
+- `Http2Server(H)` serves cleartext h2c and TLS/ALPN `h2` through the same
+  router, middleware, timeout, streaming, and error semantics, including
+  lowercase response field mapping and graceful GOAWAY.
 
 ## Verification
 
@@ -71,14 +71,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 56/56 tests passed (36 unit, 20 package/integration).
-- ReleaseFast: 56/56 tests passed.
+- Debug: 57/57 tests passed (36 unit, 21 package/integration).
+- ReleaseFast: 57/57 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 80.4 ns/lookup 12438508 lookups/s
-router param:  routes=256  lookups=1000000 90.0 ns/lookup 11115127 lookups/s
+router static: routes=1024 lookups=2000000 84.0 ns/lookup 11903130 lookups/s
+router param:  routes=256  lookups=1000000 90.2 ns/lookup 11085408 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -90,4 +90,4 @@ guarantee.
 - Streaming request bodies (responses are streamed).
 - Brotli and zstd response compression.
 - CPU-bound handler preemption without cancellation points.
-- Concurrent HTTP/2 stream dispatch, h2 TLS, and HTTP/3.
+- Concurrent HTTP/2 stream dispatch and HTTP/3.

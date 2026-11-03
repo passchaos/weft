@@ -29,6 +29,40 @@ pub const Options = struct {
     /// Per-request read budget while a connection is otherwise idle. This also
     /// bounds shutdown latency for a connection waiting for a new stream.
     idle_timeout: std.Io.Duration = .fromSeconds(5),
+    /// Optional TLS configuration. Netz's HTTP/2 TLS listener requires ALPN
+    /// `h2`; weft overrides nested limits and `tcp_nodelay`.
+    tls: ?netz.http2.runtime.TlsListenOptions = null,
+    /// TCP accept plus TLS/HTTP/2 bootstrap budget for TLS workers.
+    tls_accept_timeout: std.Io.Duration = .fromMilliseconds(500),
+};
+
+const Listener = union(enum) {
+    plain: netz.http2.runtime.Server,
+    tls: netz.http2.runtime.TlsServer,
+
+    fn deinit(self: *Listener) void {
+        switch (self.*) {
+            .plain => |*server| server.deinit(),
+            .tls => |*server| server.deinit(),
+        }
+    }
+
+    fn address(self: *const Listener) std.Io.net.IpAddress {
+        return switch (self.*) {
+            .plain => |server| server.address(),
+            .tls => |server| server.address(),
+        };
+    }
+
+    fn acceptWithTimeout(
+        self: *Listener,
+        timeout: std.Io.Duration,
+    ) !netz.http2.runtime.Connection {
+        return switch (self.*) {
+            .plain => |*server| server.acceptWithTimeout(timeout),
+            .tls => |*server| server.acceptWithTimeout(timeout),
+        };
+    }
 };
 
 const Http2StreamState = struct {
@@ -61,7 +95,7 @@ pub fn Http2Server(comptime H: type) type {
         allocator: std.mem.Allocator,
         app: H,
         options: Options,
-        netz_server: netz.http2.runtime.Server,
+        netz_server: Listener,
         app_router: router_mod.Router(H),
         shutdown: std.Io.Event = .unset,
 
@@ -75,6 +109,7 @@ pub fn Http2Server(comptime H: type) type {
                 options.max_requests_per_connection == 0 or
                 options.accept_timeout.nanoseconds <= 0 or
                 options.idle_timeout.nanoseconds <= 0 or
+                options.tls_accept_timeout.nanoseconds <= 0 or
                 options.limits.max_head_bytes == 0 or
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
@@ -92,12 +127,22 @@ pub fn Http2Server(comptime H: type) type {
                 return error.TooMuchMiddleware;
             }
 
-            var netz_server = try netz.http2.runtime.Server.listen(
+            var netz_server: Listener = if (options.tls) |tls_options| blk: {
+                var tls = tls_options;
+                tls.limits = options.limits.toHttp2Netz();
+                tls.tcp_nodelay = options.limits.tcp_nodelay;
+                break :blk .{ .tls = try netz.http2.runtime.TlsServer.listen(
+                    allocator,
+                    io,
+                    options.address,
+                    tls,
+                ) };
+            } else .{ .plain = try netz.http2.runtime.Server.listen(
                 allocator,
                 io,
                 options.address,
                 options.limits.toHttp2Netz(),
-            );
+            ) };
             errdefer netz_server.deinit();
 
             return .{
@@ -158,8 +203,12 @@ pub fn Http2Server(comptime H: type) type {
             while (true) {
                 if (self.shutdown.isSet()) return;
 
+                const accept_timeout = if (self.options.tls != null)
+                    self.options.tls_accept_timeout
+                else
+                    self.options.accept_timeout;
                 var connection = self.netz_server.acceptWithTimeout(
-                    self.options.accept_timeout,
+                    accept_timeout,
                 ) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.Timeout) continue;
