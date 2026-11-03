@@ -43,6 +43,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   `bodyJson`/`bodyForm`; malformed JSON maps to `400`, unsupported codings to
   `415`, and oversized decoded bodies to `413`.
 - CORS preflight validates requested headers against a configured allow list.
+- Optional TLS listener through `Options.tls`, reusing Netz's TLS transport while
+  applying weft HTTP limits and a bounded accept/handshake budget.
 
 ## Verification
 
@@ -58,14 +60,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 49/49 tests passed (32 unit, 17 package/integration).
-- ReleaseFast: 49/49 tests passed.
+- Debug: 50/50 tests passed (32 unit, 18 package/integration).
+- ReleaseFast: 50/50 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 80.7 ns/lookup 12386547 lookups/s
-router param:  routes=256  lookups=1000000 90.9 ns/lookup 11006933 lookups/s
+router static: routes=1024 lookups=2000000 79.7 ns/lookup 12540843 lookups/s
+router param:  routes=256  lookups=1000000 89.6 ns/lookup 11162969 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -77,5 +79,5 @@ guarantee.
 - Streaming request bodies (responses are streamed).
 - Multi-encoding responses.
 - Preemptive per-request deadlines for handlers.
-- TLS and HTTP/2/HTTP/3 adapters.
+- HTTP/2 and HTTP/3 adapters.
 - Compression currently supports gzip only.

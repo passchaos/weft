@@ -127,6 +127,28 @@ fn streamed(app: *App, ctx: *weft.Ctx) anyerror!void {
 - A producer that starts owns its resources and must release them on success or
   error.
 
+## TLS
+
+Set `Options.tls` to a `netz.http1.runtime.TlsListenOptions` to serve HTTPS.
+Weft applies its own `Limits` and `tcp_nodelay` to the nested TLS options, so
+HTTP and TLS budgets stay consistent:
+
+```zig
+var server = try weft.Server(App).init(
+    io,
+    gpa,
+    .{
+        .address = .{ .ip4 = .loopback(443) },
+        .tls = .{ .identity = identity },
+    },
+    .{},
+);
+```
+
+TLS workers use `tls_accept_timeout` as the combined accept plus handshake
+budget, which also bounds idle shutdown polling. TLS transport, ciphers,
+certificate policy, and session handling remain owned by Netz.
+
 ## Static files
 
 `weft.StaticFiles` is a route handler that streams files below a directory. It
@@ -264,15 +286,15 @@ zig build bench -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
-On the reference development host, a ReleaseFast run reports roughly 81 ns per
-static lookup and 91 ns per parameter lookup (about 12.4M and 11.0M lookups per
+On the reference development host, a ReleaseFast run reports roughly 80 ns per
+static lookup and 90 ns per parameter lookup (about 12.5M and 11.2M lookups per
 second), including capture allocation from a fixed arena.
 
 ## Status
 
-The first slice targets HTTP/1.1 through `netz.http1.runtime`, and mirrors
-HTTP/1.0 request versions with appropriate connection semantics. The public
-`Ctx`/`Handler`/`Router` surface is protocol-version agnostic so an HTTP/2,
-HTTP/3, or TLS adapter can be added without changing application handlers.
-Remaining slices include multi-encoding responses, preemptive request
-deadlines, and TLS/HTTP2/HTTP3 adapters.
+The first slice targets HTTP/1.1 through `netz.http1.runtime`, including
+cleartext and TLS listeners, and mirrors HTTP/1.0 request versions with
+appropriate connection semantics. The public `Ctx`/`Handler`/`Router` surface
+is protocol-version agnostic so HTTP/2 and HTTP/3 adapters can be added without
+changing application handlers. Remaining slices include multi-encoding
+responses, preemptive request deadlines, and HTTP/2/HTTP/3 adapters.

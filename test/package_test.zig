@@ -1243,6 +1243,77 @@ test "package: invalid JSON and unsupported encodings map to 400 and 415" {
     try group.await(io);
 }
 
+test "package: TLS server serves HTTPS requests" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var certificate_der: [netz.tls.testing.certificate_der_len]u8 = undefined;
+    try std.base64.standard.Decoder.decode(
+        &certificate_der,
+        netz.tls.testing.certificate_base64,
+    );
+    const key_pair = try netz.tls.testing.serverKeyPair();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .tls = .{
+                .identity = .{
+                    .certificate_chain = &.{&certificate_der},
+                    .signer = .{ .ecdsa_p256_sha256 = .{
+                        .key_pair = key_pair,
+                    } },
+                },
+            },
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "https://127.0.0.1:{d}/",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUriTls(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+        .{ .verify_host = false },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "hello from weft",
+        response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
 test "package: response header budget failure becomes 500" {
     const allocator = std.testing.allocator;
 

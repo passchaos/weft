@@ -30,6 +30,44 @@ pub const Options = struct {
     /// How often idle workers re-check the shutdown flag while blocked on
     /// accept. This bounds shutdown latency without canceling in-flight work.
     accept_poll_interval: std.Io.Duration = .fromMilliseconds(25),
+    /// Optional TLS configuration. When set, the server uses Netz's TLS
+    /// transport; `limits` and `tcp_nodelay` from `Limits` override the nested
+    /// TLS limits. Certificate-chain, cipher-suite, and identity storage must
+    /// outlive the server.
+    tls: ?netz.http1.runtime.TlsListenOptions = null,
+    /// Accept and TLS-handshake budget used by TLS workers. Netz applies one
+    /// deadline to both steps, so this value is also the idle shutdown polling
+    /// interval for TLS connections.
+    tls_accept_timeout: std.Io.Duration = .fromMilliseconds(500),
+};
+
+const Listener = union(enum) {
+    plain: netz.http1.runtime.Server,
+    tls: netz.http1.runtime.TlsServer,
+
+    fn deinit(self: *Listener) void {
+        switch (self.*) {
+            .plain => |*server| server.deinit(),
+            .tls => |*server| server.deinit(),
+        }
+    }
+
+    fn address(self: *const Listener) std.Io.net.IpAddress {
+        return switch (self.*) {
+            .plain => |server| server.address(),
+            .tls => |server| server.address(),
+        };
+    }
+
+    fn acceptWithTimeout(
+        self: *Listener,
+        timeout: std.Io.Duration,
+    ) !netz.http1.runtime.Connection {
+        return switch (self.*) {
+            .plain => |*server| server.acceptWithTimeout(timeout),
+            .tls => |*server| server.acceptWithTimeout(timeout),
+        };
+    }
 };
 
 const Disposition = union(enum) {
@@ -68,7 +106,7 @@ pub fn Server(comptime H: type) type {
         allocator: std.mem.Allocator,
         app: H,
         options: Options,
-        netz_server: netz.http1.runtime.Server,
+        netz_server: Listener,
         app_router: router_mod.Router(H),
         shutdown: std.Io.Event = .unset,
 
@@ -81,6 +119,7 @@ pub fn Server(comptime H: type) type {
             if (options.max_connections == 0 or
                 options.max_requests_per_connection == 0 or
                 options.accept_poll_interval.nanoseconds <= 0 or
+                options.tls_accept_timeout.nanoseconds <= 0 or
                 options.limits.max_head_bytes == 0 or
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
@@ -98,12 +137,22 @@ pub fn Server(comptime H: type) type {
                 return error.TooMuchMiddleware;
             }
 
-            var netz_server = try netz.http1.runtime.Server.listen(
+            var netz_server: Listener = if (options.tls) |tls_options| blk: {
+                var tls = tls_options;
+                tls.limits = options.limits.toNetz();
+                tls.tcp_nodelay = options.limits.tcp_nodelay;
+                break :blk .{ .tls = try netz.http1.runtime.TlsServer.listen(
+                    allocator,
+                    io,
+                    options.address,
+                    tls,
+                ) };
+            } else .{ .plain = try netz.http1.runtime.Server.listen(
                 allocator,
                 io,
                 options.address,
                 options.limits.toNetz(),
-            );
+            ) };
             errdefer netz_server.deinit();
 
             return .{
@@ -172,8 +221,12 @@ pub fn Server(comptime H: type) type {
             while (true) {
                 if (self.shutdown.isSet()) return;
 
+                const accept_timeout = if (self.options.tls != null)
+                    self.options.tls_accept_timeout
+                else
+                    self.options.accept_poll_interval;
                 var connection = self.netz_server.acceptWithTimeout(
-                    self.options.accept_poll_interval,
+                    accept_timeout,
                 ) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.Timeout) continue;
