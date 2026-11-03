@@ -39,6 +39,8 @@ pub const Limits = struct {
     /// Maximum simultaneously open HTTP/2 request streams per connection.
     /// Bounds buffered DATA while a connection is processed serially.
     max_http2_concurrent_streams: ?u32 = 16,
+    /// Local HTTP/2 frame payload allocation ceiling.
+    max_http2_frame_payload: usize = 1024 * 1024,
     /// Optional wall-clock budget for handler and middleware execution. When
     /// set, weft races the chain against a timer and cancels it at the next
     /// cancellation point, returning `503`.
@@ -78,6 +80,7 @@ pub const Limits = struct {
             .auto_date_header = self.auto_date_header,
             .tcp_nodelay = self.tcp_nodelay,
             .max_concurrent_streams = self.max_http2_concurrent_streams,
+            .max_frame_payload = self.max_http2_frame_payload,
         };
     }
 

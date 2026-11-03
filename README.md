@@ -453,6 +453,8 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 - `max_http2_concurrent_streams` bounds simultaneously open HTTP/2 request
   streams per connection (default 16), limiting buffered DATA while a
   connection is processed serially.
+- `max_http2_frame_payload` bounds the local HTTP/2 frame payload allocation
+  ceiling (default 1 MiB).
 - `request_timeout` optionally races the handler/middleware chain against a
   timer. On expiry the chain is canceled at its next cancellation point and the
   request returns `503`. CPU-bound handlers with no cancellation point cannot be
