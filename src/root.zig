@@ -15,7 +15,7 @@ pub const validateHeaderName = @import("response.zig").validateHeaderName;
 pub const validateHeaderValue = @import("response.zig").validateHeaderValue;
 
 pub const Ctx = @import("ctx.zig").Ctx;
-pub const BodyReader = @import("body_stream.zig").Reader;
+pub const BodyReader = @import("ctx.zig").BodyReader;
 pub const StreamBody = @import("stream.zig").Body;
 pub const StreamWriter = @import("stream.zig").Writer;
 pub const stream = @import("stream.zig");
