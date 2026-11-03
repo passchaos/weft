@@ -349,8 +349,9 @@ Built-ins:
   committed partial response `Connection: close`.
 - `Metrics` — lock-free total, active, status-class, and latency counters with a
   `snapshot()` API for health or metrics endpoints.
-- `RateLimit` — bounded per-client token buckets keyed by `Ctx.clientAddress()`,
-  with `429` and `Retry-After`, fixed storage, and least-recently-seen eviction.
+- `RateLimit` — bounded per-client token buckets keyed by the peer IP address
+  without the ephemeral port (IPv4-mapped IPv6 shares the IPv4 key), with `429`
+  and `Retry-After`, fixed storage, and least-recently-seen eviction.
   Reverse-proxy deployments must apply their own trusted-forwarded-address
   policy.
 

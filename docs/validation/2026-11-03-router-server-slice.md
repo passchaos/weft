@@ -79,7 +79,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `Ctx` exposes the request timeout deadline, remaining budget, and expiry for
   cooperative handlers; access logs include protocol and remote address.
 - Bounded per-client `RateLimit` token buckets return `429`/`Retry-After`, use
-  fixed storage, and evict least-recently-seen clients.
+  fixed storage, evict least-recently-seen clients, and key on the peer IP
+  without the ephemeral port so reconnects share one bucket.
 - HTTP/3 TLS is verified with a real certificate identity and a pinned client
   public key, in addition to the synthetic QUIC handshake test.
 - HTTP/1 WebSocket upgrades validate the RFC 6455 handshake, transfer transport

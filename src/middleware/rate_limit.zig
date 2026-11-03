@@ -3,9 +3,11 @@ const ctx_mod = @import("../ctx.zig");
 
 /// Bounded per-client token bucket rate limiter.
 ///
-/// Clients are keyed by `Ctx.clientAddress()`. When an adapter cannot provide
-/// an address, all such requests share one bucket. Bucket storage is fixed at
-/// construction and evicts the least-recently-seen client when full.
+/// Clients are keyed by the peer IP address without the ephemeral source port,
+/// so reconnecting does not create a fresh bucket. IPv4-mapped IPv6 addresses
+/// share the IPv4 key. When an adapter cannot provide an address, all such
+/// requests share one bucket. Bucket storage is fixed at construction and
+/// evicts the least-recently-seen client when full.
 ///
 /// Rate limiting uses the direct peer address. Applications behind a reverse
 /// proxy must apply their own trusted-proxy policy before enabling this.
@@ -23,8 +25,14 @@ pub const RateLimit = struct {
         max_clients: usize = 4096,
     };
 
+    /// Client identity without the ephemeral port.
+    const Key = union(enum) {
+        ip4: [4]u8,
+        ip6: [16]u8,
+    };
+
     const Bucket = struct {
-        address: ?std.Io.net.IpAddress = null,
+        key: ?Key = null,
         used: bool = false,
         tokens: u64 = 0,
         last_refill_ns: i96 = 0,
@@ -101,7 +109,8 @@ pub const RateLimit = struct {
         address: ?std.Io.net.IpAddress,
         now: i96,
     ) *Bucket {
-        if (address == null) {
+        const key = if (address) |value| keyFor(value) else null;
+        if (key == null) {
             if (!self.global_bucket.used) {
                 self.global_bucket = .{
                     .used = true,
@@ -115,9 +124,7 @@ pub const RateLimit = struct {
 
         for (self.buckets) |*bucket| {
             if (!bucket.used) continue;
-            if (bucket.address != null and
-                std.meta.eql(bucket.address.?, address.?))
-            {
+            if (bucket.key != null and std.meta.eql(bucket.key.?, key.?)) {
                 return bucket;
             }
         }
@@ -131,7 +138,7 @@ pub const RateLimit = struct {
             if (bucket.last_seen_ns < victim.last_seen_ns) victim = bucket;
         }
         victim.* = .{
-            .address = address,
+            .key = key,
             .used = true,
             .tokens = self.max_requests,
             .last_refill_ns = now,
@@ -140,13 +147,28 @@ pub const RateLimit = struct {
         return victim;
     }
 
+    fn keyFor(address: std.Io.net.IpAddress) Key {
+        return switch (address) {
+            .ip4 => |value| .{ .ip4 = value.bytes },
+            .ip6 => |value| if (std.Io.net.Ip4Address.fromIp6(value)) |mapped|
+                .{ .ip4 = mapped.bytes }
+            else
+                .{ .ip6 = value.bytes },
+        };
+    }
+
     fn refill(self: *RateLimit, bucket: *Bucket, now: i96) void {
         const elapsed = now - bucket.last_refill_ns;
         if (elapsed <= 0) return;
 
         const elapsed_u64: u64 = @intCast(elapsed);
         const window_u64: u64 = @intCast(self.window_ns);
-        const tokens = elapsed_u64 * self.max_requests / window_u64;
+        const scaled = @as(u128, elapsed_u64) *
+            @as(u128, self.max_requests) / @as(u128, window_u64);
+        const tokens: u64 = @intCast(@min(
+            scaled,
+            @as(u128, self.max_requests),
+        ));
         if (tokens == 0) return;
 
         bucket.tokens = @min(self.max_requests, bucket.tokens + tokens);
@@ -246,7 +268,10 @@ test "rate limit allows then rejects the same client" {
         .limits = .{},
         .request = &request,
         .client_info = .{
-            .address = .{ .ip4 = .loopback(5678) },
+            .address = .{ .ip4 = .{
+                .bytes = .{ 127, 0, 0, 2 },
+                .port = 5678,
+            } },
         },
         .response = ctx_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{limiter.handler()},
@@ -258,4 +283,25 @@ test "rate limit allows then rejects the same client" {
     };
     try other.run();
     try std.testing.expectEqual(@as(u16, 200), other.response.status);
+
+    // A reconnect from the same IP with a new source port shares the bucket.
+    var reconnected = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .client_info = .{
+            .address = .{ .ip4 = .loopback(4321) },
+        },
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{limiter.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.text("ok");
+            }
+        }.handle),
+    };
+    try reconnected.run();
+    try std.testing.expectEqual(@as(u16, 429), reconnected.response.status);
 }
