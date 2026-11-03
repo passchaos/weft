@@ -209,6 +209,8 @@ Built-ins:
   `Content-Encoding`, `no-transform`, and refused identity are respected.
 - `recover` — converts an uncommitted handler failure into `500`, or marks a
   committed partial response `Connection: close`.
+- `Metrics` — lock-free total, active, status-class, and latency counters with a
+  `snapshot()` API for health or metrics endpoints.
 
 Parameterized middleware uses a user-owned context:
 

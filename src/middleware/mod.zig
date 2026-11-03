@@ -6,6 +6,7 @@ pub const security_headers = @import("security_headers.zig");
 pub const cors = @import("cors.zig");
 pub const recover = @import("recover.zig");
 pub const compress_mod = @import("compress.zig");
+pub const metrics_mod = @import("metrics.zig");
 
 pub const requestId = request_id.requestId;
 pub const serverHeader = server_header.serverHeader;
@@ -17,6 +18,8 @@ pub const Cors = cors.Cors;
 pub const recoverHandler = recover.recover;
 pub const Compress = compress_mod.Compress;
 pub const compress = compress_mod.compress;
+pub const Metrics = metrics_mod.Metrics;
+pub const metrics = metrics_mod.metrics;
 
 comptime {
     _ = request_id;
@@ -27,4 +30,5 @@ comptime {
     _ = cors;
     _ = recover;
     _ = compress_mod;
+    _ = metrics_mod;
 }

@@ -50,6 +50,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Response compression negotiates gzip or deflate from `Accept-Encoding`
   quality values, honors `no-transform`, and returns `406` when identity is
   explicitly refused.
+- Lock-free `Metrics` middleware exposes total, active, status-class, and
+  latency counters through a snapshot API.
 
 ## Verification
 
@@ -65,14 +67,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 54/54 tests passed (35 unit, 19 package/integration).
-- ReleaseFast: 54/54 tests passed.
+- Debug: 55/55 tests passed (36 unit, 19 package/integration).
+- ReleaseFast: 55/55 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 80.7 ns/lookup 12389537 lookups/s
-router param:  routes=256  lookups=1000000 91.1 ns/lookup 10972009 lookups/s
+router static: routes=1024 lookups=2000000 80.4 ns/lookup 12438508 lookups/s
+router param:  routes=256  lookups=1000000 90.0 ns/lookup 11115127 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
