@@ -73,6 +73,7 @@ comptime {
     _ = @import("multipart.zig");
     _ = @import("precondition.zig");
     _ = @import("static_files.zig");
+    _ = @import("vary.zig");
     _ = @import("router.zig");
     _ = @import("server.zig");
     _ = @import("drain.zig");

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const vary = @import("../vary.zig");
 const stream_mod = @import("../stream.zig");
 const vort = @import("vort");
 
@@ -27,7 +28,7 @@ pub const Compress = struct {
 
     fn call(self: *Compress, ctx: *ctx_mod.Ctx) anyerror!void {
         const negotiation = self.negotiate(ctx);
-        try addVary(ctx);
+        try vary.add(ctx, "Accept-Encoding");
         try ctx.next();
 
         const response = &ctx.response;
@@ -70,7 +71,7 @@ pub const Compress = struct {
                 response.reset();
                 response.setStatus(406);
                 response.text("Not Acceptable") catch {};
-                try addVary(ctx);
+                try vary.add(ctx, "Accept-Encoding");
                 return;
             },
             .coding => |coding| {
@@ -361,20 +362,6 @@ fn compressible(content_type: ?[]const u8) bool {
         if (std.ascii.startsWithIgnoreCase(value, prefix)) return true;
     }
     return false;
-}
-
-fn addVary(ctx: *ctx_mod.Ctx) !void {
-    if (ctx.responseHeader("vary")) |existing| {
-        if (containsToken(existing, "accept-encoding")) return;
-        const combined = try std.fmt.allocPrint(
-            ctx.arena,
-            "{s}, Accept-Encoding",
-            .{existing},
-        );
-        try ctx.setHeader("Vary", combined);
-    } else {
-        try ctx.setHeader("Vary", "Accept-Encoding");
-    }
 }
 
 fn containsToken(value: []const u8, token: []const u8) bool {

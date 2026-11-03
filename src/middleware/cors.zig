@@ -1,6 +1,7 @@
 const std = @import("std");
 const netz = @import("netz");
 const ctx_mod = @import("../ctx.zig");
+const vary = @import("../vary.zig");
 
 /// Cross-Origin Resource Sharing policy.
 ///
@@ -38,7 +39,7 @@ pub const Cors = struct {
             try ctx.setHeader("Access-Control-Allow-Origin", "*");
         } else {
             try ctx.setHeader("Access-Control-Allow-Origin", origin);
-            try addVary(ctx, "Origin");
+            try vary.add(ctx, "Origin");
         }
         if (self.allow_credentials) {
             try ctx.setHeader("Access-Control-Allow-Credentials", "true");
@@ -67,14 +68,14 @@ pub const Cors = struct {
             return;
         }
 
-        try addVary(ctx, "Access-Control-Request-Method");
+        try vary.add(ctx, "Access-Control-Request-Method");
         try ctx.setHeader(
             "Access-Control-Allow-Methods",
             try std.mem.join(ctx.arena, ", ", self.allow_methods),
         );
 
         if (ctx.header("access-control-request-headers")) |requested| {
-            try addVary(ctx, "Access-Control-Request-Headers");
+            try vary.add(ctx, "Access-Control-Request-Headers");
             if (self.allow_headers.len == 0) {
                 try ctx.setHeader("Access-Control-Allow-Headers", requested);
             } else {
@@ -146,19 +147,6 @@ pub const Cors = struct {
         return true;
     }
 };
-
-fn addVary(ctx: *ctx_mod.Ctx, value: []const u8) !void {
-    if (ctx.responseHeader("vary")) |existing| {
-        const combined = try std.fmt.allocPrint(
-            ctx.arena,
-            "{s}, {s}",
-            .{ existing, value },
-        );
-        try ctx.setHeader("Vary", combined);
-    } else {
-        try ctx.setHeader("Vary", value);
-    }
-}
 
 test "cors reflects allowed origins and answers preflight" {
     const allocator = std.testing.allocator;

@@ -2,6 +2,7 @@ const std = @import("std");
 const ctx_mod = @import("ctx.zig");
 const precondition = @import("precondition.zig");
 const stream_mod = @import("stream.zig");
+const vary = @import("vary.zig");
 
 pub const MimeType = struct {
     extension: []const u8,
@@ -32,6 +33,28 @@ pub const default_mime_types = [_]MimeType{
     .{ .extension = ".otf", .content_type = "font/otf" },
     .{ .extension = ".pdf", .content_type = "application/pdf" },
     .{ .extension = ".wasm", .content_type = "application/wasm" },
+    .{ .extension = ".webmanifest", .content_type = "application/manifest+json" },
+    .{ .extension = ".jsonld", .content_type = "application/ld+json" },
+    .{ .extension = ".csv", .content_type = "text/csv; charset=utf-8" },
+    .{ .extension = ".md", .content_type = "text/markdown; charset=utf-8" },
+    .{ .extension = ".yaml", .content_type = "application/yaml" },
+    .{ .extension = ".yml", .content_type = "application/yaml" },
+    .{ .extension = ".toml", .content_type = "application/toml" },
+    .{ .extension = ".rss", .content_type = "application/rss+xml" },
+    .{ .extension = ".atom", .content_type = "application/atom+xml" },
+    .{ .extension = ".mp4", .content_type = "video/mp4" },
+    .{ .extension = ".webm", .content_type = "video/webm" },
+    .{ .extension = ".mov", .content_type = "video/quicktime" },
+    .{ .extension = ".mp3", .content_type = "audio/mpeg" },
+    .{ .extension = ".m4a", .content_type = "audio/mp4" },
+    .{ .extension = ".ogg", .content_type = "audio/ogg" },
+    .{ .extension = ".wav", .content_type = "audio/wav" },
+    .{ .extension = ".flac", .content_type = "audio/flac" },
+    .{ .extension = ".eot", .content_type = "application/vnd.ms-fontobject" },
+    .{ .extension = ".ttc", .content_type = "font/collection" },
+    .{ .extension = ".zip", .content_type = "application/zip" },
+    .{ .extension = ".gz", .content_type = "application/gzip" },
+    .{ .extension = ".tar", .content_type = "application/x-tar" },
 };
 
 pub const default_cache_control = "public, max-age=3600";
@@ -120,7 +143,7 @@ pub const StaticFiles = struct {
         var served_stat = stat;
         var content_encoding: ?[]const u8 = null;
         if (self.precompressed) {
-            try addVary(ctx, "Accept-Encoding");
+            try vary.add(ctx, "Accept-Encoding");
             if (ctx.header("range") == null) {
                 if (chooseVariant(ctx.header("accept-encoding"))) |variant| {
                     const sidecar = try std.fmt.allocPrint(
@@ -235,6 +258,7 @@ pub const StaticFiles = struct {
         const file = self.dir.openFile(ctx.io, served_relative, .{
             .mode = .read_only,
             .allow_directory = false,
+            .follow_symlinks = self.follow_symlinks,
         }) catch return notFound(ctx);
         errdefer file.close(ctx.io);
 
@@ -552,26 +576,6 @@ fn parseQuality(text: []const u8) ?u16 {
     while (fraction_digits < 3) : (fraction_digits += 1) fraction *= 10;
     if (whole == 1 and fraction != 0) return null;
     return whole * 1000 + fraction;
-}
-
-/// Append `value` to `Vary` unless it (or `*`) is already present.
-fn addVary(ctx: *ctx_mod.Ctx, value: []const u8) !void {
-    const existing = ctx.header("vary") orelse {
-        return ctx.setHeader("Vary", value);
-    };
-    var tokens = std.mem.splitScalar(u8, existing, ',');
-    while (tokens.next()) |raw_token| {
-        const token = std.mem.trim(u8, raw_token, " \t");
-        if (std.mem.eql(u8, token, "*") or
-            std.ascii.eqlIgnoreCase(token, value))
-        {
-            return;
-        }
-    }
-    return ctx.setHeader(
-        "Vary",
-        try std.fmt.allocPrint(ctx.arena, "{s}, {s}", .{ existing, value }),
-    );
 }
 
 fn normalizePath(
