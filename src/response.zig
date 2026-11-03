@@ -200,6 +200,14 @@ pub const Response = struct {
         self.committed = true;
     }
 
+    /// Release a buffered body while keeping status, headers, and trailers.
+    /// Used by conditional-response middleware when switching to `304`.
+    pub fn clearBody(self: *Response) void {
+        if (self.body_owned) self.allocator.free(self.body);
+        self.body = "";
+        self.body_owned = false;
+    }
+
     pub fn text(self: *Response, body: []const u8) !void {
         if (self.stream != null) return error.StreamAlreadySet;
         if (self.upgrade != null) return error.UpgradeAlreadySet;

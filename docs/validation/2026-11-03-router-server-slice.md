@@ -107,6 +107,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   ownership, and run a concrete session with text/binary sends, ping/pong,
   message deinit, and explicit or normal close frames; HTTP/2 and HTTP/3
   reject upgrades.
+- `Etag` middleware derives a validator from the final buffered body and
+  answers `If-None-Match` with `304`.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API; handler errors use the dispatcher's
   status mapping and canceled requests are excluded from status classes.
@@ -148,8 +150,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 99/99 tests passed (68 unit, 31 package/integration).
-- ReleaseFast: 99/99 tests passed.
+- Debug: 100/100 tests passed (69 unit, 31 package/integration).
+- ReleaseFast: 100/100 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

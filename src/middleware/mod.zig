@@ -8,6 +8,7 @@ pub const recover = @import("recover.zig");
 pub const compress_mod = @import("compress.zig");
 pub const metrics_mod = @import("metrics.zig");
 pub const rate_limit_mod = @import("rate_limit.zig");
+pub const etag_mod = @import("etag.zig");
 
 pub const requestId = request_id.requestId;
 pub const serverHeader = server_header.serverHeader;
@@ -22,6 +23,7 @@ pub const compress = compress_mod.compress;
 pub const Metrics = metrics_mod.Metrics;
 pub const metrics = metrics_mod.metrics;
 pub const RateLimit = rate_limit_mod.RateLimit;
+pub const Etag = etag_mod.Etag;
 
 comptime {
     _ = request_id;
@@ -34,4 +36,5 @@ comptime {
     _ = compress_mod;
     _ = metrics_mod;
     _ = rate_limit_mod;
+    _ = etag_mod;
 }

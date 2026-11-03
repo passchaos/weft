@@ -393,6 +393,9 @@ Built-ins:
 - `recover` — converts an uncommitted handler failure into the status dispatch
   would emit (`400`/`413`/`415`/`500`), or marks a committed partial response
   `Connection: close`.
+- `Etag` — content-derived `ETag` for buffered `200` responses, answering
+  `If-None-Match` with `304`. Register it outside `Compress` so the tag covers
+  the final encoded representation.
 - `Metrics` — lock-free total, active, status-class, and latency counters with a
   `snapshot()` API for health or metrics endpoints. Handler errors are
   classified with the same status mapping dispatch uses, and canceled requests
