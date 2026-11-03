@@ -33,6 +33,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Middleware: request-id propagation/validation, request-id-aware logging,
   constant-time Basic auth, security headers, CORS with preflight, recovery, and
   bounded gzip compression.
+- Recovery middleware maps uncommitted failures through the dispatcher's
+  error-to-status table instead of collapsing every failure to `500`.
 - Streaming response bodies through a concrete `StreamBody`/`StreamWriter` seam,
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
@@ -119,8 +121,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 87/87 tests passed (58 unit, 29 package/integration).
-- ReleaseFast: 87/87 tests passed.
+- Debug: 88/88 tests passed (59 unit, 29 package/integration).
+- ReleaseFast: 88/88 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

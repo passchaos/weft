@@ -1,5 +1,7 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const errors_mod = @import("../errors.zig");
+const response_mod = @import("../response.zig");
 
 /// Convert an uncommitted handler failure into a 500 response.
 ///
@@ -15,9 +17,10 @@ pub fn recover(ctx: *ctx_mod.Ctx) anyerror!void {
             .{@errorName(err)},
         );
         if (!ctx.response.committed) {
+            const status = errors_mod.statusForHandlerError(err);
             ctx.response.reset();
-            ctx.setStatus(500);
-            ctx.text("Internal Server Error") catch {};
+            ctx.setStatus(status);
+            ctx.text(response_mod.reasonFor(status)) catch {};
         } else {
             ctx.setHeader("Connection", "close") catch {};
         }
@@ -59,4 +62,37 @@ test "recover turns an uncommitted failure into 500" {
         "Internal Server Error",
         context.response.body,
     );
+}
+
+test "recover preserves dispatch statuses for client errors" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var request: @import("netz").http1.Request = .{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{ctx_mod.handler(recover)},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(_: *ctx_mod.Ctx) anyerror!void {
+                return error.InvalidJson;
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqual(@as(u16, 400), context.response.status);
+    try std.testing.expectEqualStrings("Bad Request", context.response.body);
 }

@@ -346,8 +346,9 @@ Built-ins:
   above `min_bytes`; streamed bodies are gzip-compressed as concatenated
   members. Existing `Content-Encoding`, `no-transform`, and refused identity
   are respected.
-- `recover` — converts an uncommitted handler failure into `500`, or marks a
-  committed partial response `Connection: close`.
+- `recover` — converts an uncommitted handler failure into the status dispatch
+  would emit (`400`/`413`/`415`/`500`), or marks a committed partial response
+  `Connection: close`.
 - `Metrics` — lock-free total, active, status-class, and latency counters with a
   `snapshot()` API for health or metrics endpoints. Handler errors are
   classified with the same status mapping dispatch uses, and canceled requests
