@@ -22,6 +22,12 @@ pub const Options = struct {
     /// `404`, `405`, and automatic `OPTIONS` responses. The slice must outlive
     /// the server and its router.
     middleware: []const Handler = &.{},
+    /// Optional handlers for requests that do not reach a route. They may
+    /// inspect `ctx.get(weft.RouteFailure)`; default status and `Allow` fields
+    /// are pre-set before they run.
+    not_found: ?Handler = null,
+    bad_request: ?Handler = null,
+    method_not_allowed: ?Handler = null,
     /// Number of connection workers. Each worker owns at most one live
     /// connection at a time, so this is the effective concurrent-connection
     /// bound.
@@ -439,6 +445,11 @@ pub fn Server(comptime H: type) type {
                 self.io,
                 self.options.limits,
                 self.options.middleware,
+                .{
+                    .not_found = self.options.not_found,
+                    .bad_request = self.options.bad_request,
+                    .method_not_allowed = self.options.method_not_allowed,
+                },
                 request,
                 client_info,
                 arena,

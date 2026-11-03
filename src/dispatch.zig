@@ -6,11 +6,21 @@ const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
 
-pub const Disposition = union(enum) {
+/// Why a request did not reach a route handler. Custom fallback handlers can
+/// inspect this through `ctx.get(RouteFailure)`.
+pub const RouteFailure = union(enum) {
     not_found,
     bad_request,
     method_not_allowed: router_mod.AllowedMethods,
     options_star: router_mod.AllowedMethods,
+};
+
+pub const Disposition = RouteFailure;
+
+pub const Fallbacks = struct {
+    not_found: ?ctx_mod.Handler = null,
+    bad_request: ?ctx_mod.Handler = null,
+    method_not_allowed: ?ctx_mod.Handler = null,
 };
 
 const HandlerRace = union(enum) {
@@ -44,6 +54,7 @@ pub fn dispatch(
     io: std.Io,
     limits: limits_mod.Limits,
     app_middleware: []const ctx_mod.Handler,
+    fallbacks: Fallbacks,
     request: *const netz.http1.Request,
     client_info: ctx_mod.ClientInfo,
     arena: std.mem.Allocator,
@@ -97,6 +108,10 @@ pub fn dispatch(
         },
     }
 
+    if (disposition) |value| {
+        final_handler = fallbackHandler(fallbacks, value);
+    }
+
     var middleware = app_middleware;
     if (disposition == null and route_middleware.len > 0) {
         const total = middleware.len + route_middleware.len;
@@ -125,7 +140,25 @@ pub fn dispatch(
     };
 
     if (disposition) |value| {
-        try context.set(Disposition, value);
+        try context.set(RouteFailure, value);
+        switch (value) {
+            .not_found => context.response.setStatus(404),
+            .bad_request => context.response.setStatus(400),
+            .method_not_allowed => |allowed| {
+                context.response.setStatus(405);
+                try context.response.setHeader(
+                    "Allow",
+                    try allowed.value(arena),
+                );
+            },
+            .options_star => |allowed| {
+                context.response.setStatus(204);
+                try context.response.setHeader(
+                    "Allow",
+                    try allowed.value(arena),
+                );
+            },
+        }
     }
 
     if (limits.request_timeout) |duration| {
@@ -160,6 +193,21 @@ pub fn dispatch(
     }
 
     return context.response;
+}
+
+fn fallbackHandler(
+    fallbacks: Fallbacks,
+    failure: RouteFailure,
+) ctx_mod.Handler {
+    return switch (failure) {
+        .not_found => fallbacks.not_found orelse
+            ctx_mod.handler(respondDisposition),
+        .bad_request => fallbacks.bad_request orelse
+            ctx_mod.handler(respondDisposition),
+        .method_not_allowed => fallbacks.method_not_allowed orelse
+            ctx_mod.handler(respondDisposition),
+        .options_star => ctx_mod.handler(respondDisposition),
+    };
 }
 
 fn respondDisposition(ctx: *ctx_mod.Ctx) anyerror!void {

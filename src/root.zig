@@ -29,6 +29,7 @@ pub const handler = @import("ctx.zig").handler;
 pub const handlerFor = @import("ctx.zig").handlerFor;
 pub const withContext = @import("ctx.zig").withContext;
 
+pub const RouteFailure = @import("dispatch.zig").RouteFailure;
 pub const query = @import("query.zig");
 pub const cookie = @import("cookie.zig");
 pub const multipart = @import("multipart.zig");

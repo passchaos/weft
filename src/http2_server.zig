@@ -21,6 +21,9 @@ pub const Options = struct {
     /// Application middleware that runs for matched routes, `404`, `405`,
     /// `400`, and automatic `OPTIONS`. The slice must outlive the server.
     middleware: []const Handler = &.{},
+    not_found: ?Handler = null,
+    bad_request: ?Handler = null,
+    method_not_allowed: ?Handler = null,
     max_connections: usize = 256,
     max_requests_per_connection: usize = 1000,
     accept_error_backoff: std.Io.Duration = .fromMilliseconds(10),
@@ -381,6 +384,11 @@ pub fn Http2Server(comptime H: type) type {
                 self.io,
                 self.options.limits,
                 self.options.middleware,
+                .{
+                    .not_found = self.options.not_found,
+                    .bad_request = self.options.bad_request,
+                    .method_not_allowed = self.options.method_not_allowed,
+                },
                 &request,
                 client_info,
                 arena,

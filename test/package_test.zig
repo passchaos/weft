@@ -27,6 +27,29 @@ fn upload(app: *App, ctx: *weft.Ctx) anyerror!void {
     });
 }
 
+fn customNotFound(ctx: *weft.Ctx) anyerror!void {
+    const failure = ctx.get(weft.RouteFailure) orelse
+        return ctx.internalError();
+    const kind = switch (failure) {
+        .not_found => "not_found",
+        else => "other",
+    };
+    try ctx.json(.{ .custom = kind, .status = ctx.response.status });
+}
+
+fn customMethodNotAllowed(ctx: *weft.Ctx) anyerror!void {
+    const failure = ctx.get(weft.RouteFailure) orelse
+        return ctx.internalError();
+    const allow = switch (failure) {
+        .method_not_allowed => |allowed| allowed,
+        else => return ctx.internalError(),
+    };
+    try ctx.json(.{
+        .custom = "method_not_allowed",
+        .allow = try allow.value(ctx.arena),
+    });
+}
+
 fn clientInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     try ctx.json(.{
@@ -2072,6 +2095,90 @@ test "package: OPTIONS star advertises router methods" {
     try std.testing.expect(std.mem.indexOf(u8, allow, "HEAD") != null);
     try std.testing.expect(std.mem.indexOf(u8, allow, "POST") != null);
     try std.testing.expect(std.mem.indexOf(u8, allow, "OPTIONS") != null);
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: custom not-found and method-not-allowed handlers" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .not_found = weft.handler(customNotFound),
+            .method_not_allowed = weft.handler(customMethodNotAllowed),
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/only", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+
+    const missing_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/missing",
+        .{base},
+    );
+    defer allocator.free(missing_uri);
+    var missing = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        missing_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer missing.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 404), missing.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"custom\":\"not_found\",\"status\":404}",
+        missing.response.body,
+    );
+
+    const only_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/only",
+        .{base},
+    );
+    defer allocator.free(only_uri);
+    var denied = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        only_uri,
+        .{ .method = .POST },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer denied.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 405), denied.response.status);
+    try std.testing.expect(denied.response.header("allow") != null);
+    try std.testing.expectEqualStrings(
+        "{\"custom\":\"method_not_allowed\",\"allow\":\"GET, HEAD, OPTIONS\"}",
+        denied.response.body,
+    );
 
     server.stop();
     try group.await(io);

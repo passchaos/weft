@@ -55,6 +55,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `OPTIONS *` advertises router-wide methods, `Ctx` exposes repeated header
   iteration, and static `If-Range` falls back to a full response when the ETag
   no longer matches.
+- Server options accept custom `404`, `400`, and `405` fallback handlers that
+  can inspect `RouteFailure`; default status and `Allow` are pre-set.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -83,14 +85,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 66/66 tests passed (42 unit, 24 package/integration).
-- ReleaseFast: 66/66 tests passed.
+- Debug: 67/67 tests passed (42 unit, 25 package/integration).
+- ReleaseFast: 67/67 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 85.0 ns/lookup 11761270 lookups/s
-router param:  routes=256  lookups=1000000 133.2 ns/lookup 7507096 lookups/s
+router static: routes=1024 lookups=2000000 85.3 ns/lookup 11729311 lookups/s
+router param:  routes=256  lookups=1000000 90.4 ns/lookup 11061508 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the

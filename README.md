@@ -313,6 +313,10 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
   nest.
 - Invalid patterns, duplicate method/path pairs, and wildcard/`any` conflicts
   are rejected at registration time.
+- `Options.not_found`, `Options.bad_request`, and
+  `Options.method_not_allowed` replace the default fallback bodies. They can
+  inspect `ctx.get(weft.RouteFailure)`; the default status and `Allow` fields
+  are pre-set before they run.
 - Path depth, captures per route, allowed methods, and middleware length are
   all bounded.
 
