@@ -93,6 +93,9 @@ pub fn main(init: std.process.Init) !void {
   `Limits.request_timeout` budget for cooperative handlers.
 - `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,
   deflate, br, zstd) with `Limits.max_body_bytes` as the decoded bound.
+- `ctx.addTrailer(name, value)` appends a response trailer. HTTP/1 emits
+  trailers only when the request sent `TE: trailers`; HTTP/2 and HTTP/3 emit
+  them after the body.
 - `ctx.bodyJson(T)` parses decoded JSON with the request arena. Invalid JSON
   becomes `400`; an unsupported coding becomes `415`; an oversized decoded
   body becomes `413`.

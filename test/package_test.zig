@@ -81,6 +81,12 @@ fn clientInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
     });
 }
 
+fn trailerRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.text("body");
+    try ctx.addTrailer("X-Checksum", "abc");
+}
+
 fn hello(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     const name = ctx.param("name") orelse "stranger";
@@ -1038,6 +1044,82 @@ test "package: server-sent events set stream headers and format fields" {
         "id: 1\nevent: tick\ndata: first\ndata: second\n\n: keep-alive\n\n",
         response.response.body,
     );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: HTTP/1 response trailers honor TE" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 4096,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/trailers", trailerRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/trailers",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    const te_headers = [_]netz.http1.Header{.{
+        .name = "TE",
+        .value = "trailers",
+    }};
+    var accepted = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .headers = &te_headers },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer accepted.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), accepted.response.status);
+    try std.testing.expectEqualStrings("body", accepted.response.body);
+    try std.testing.expectEqual(@as(usize, 1), accepted.response.trailers.len);
+    try std.testing.expect(std.ascii.eqlIgnoreCase(
+        "X-Checksum",
+        accepted.response.trailers[0].name,
+    ));
+    try std.testing.expectEqualStrings(
+        "abc",
+        accepted.response.trailers[0].value,
+    );
+
+    var refused = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer refused.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), refused.response.status);
+    try std.testing.expectEqualStrings("body", refused.response.body);
+    try std.testing.expectEqual(@as(usize, 0), refused.response.trailers.len);
 
     server.stop();
     try group.await(io);
@@ -2104,6 +2186,7 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         StreamHandlers.uploadRoute,
         .{ .streaming = true },
     );
+    try router.get("/trailers", trailerRoute, .{});
     try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
 
     var group: std.Io.Group = .init;
@@ -2227,6 +2310,29 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         "{\"bytes\":2048}",
         upload_response.body,
     );
+
+    const trailers_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/trailers",
+        .{base},
+    );
+    defer allocator.free(trailers_uri);
+    const te_header = [_]netz.http2.Hpack.HeaderField{.{
+        .name = "te",
+        .value = "trailers",
+    }};
+    var trailers_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        trailers_uri,
+        .{ .headers = &te_header },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer trailers_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), trailers_response.status);
+    try std.testing.expectEqualStrings("body", trailers_response.body);
+    try std.testing.expectEqual(@as(usize, 1), trailers_response.trailers.len);
+    try std.testing.expectEqualStrings("abc", trailers_response.trailers[0].value);
 
     const stream_uri = try std.fmt.allocPrint(
         allocator,

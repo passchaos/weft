@@ -27,6 +27,10 @@ pub const Response = struct {
     status: u16 = 200,
     reason: []const u8 = "OK",
     headers: std.ArrayListUnmanaged(Header) = .empty,
+    /// Trailer fields emitted after the body. Names and values are copied into
+    /// the response allocator.
+    trailers: std.ArrayListUnmanaged(Header) = .empty,
+    trailer_bytes: usize = 0,
     body: []const u8 = "",
     /// Incremental body selected by a handler. Mutually exclusive with a
     /// buffered `body`.
@@ -67,7 +71,9 @@ pub const Response = struct {
         self.cancelStream();
         self.cancelUpgrade();
         self.clearHeaders();
+        self.clearTrailers();
         self.headers.deinit(self.allocator);
+        self.trailers.deinit(self.allocator);
         if (self.body_owned) self.allocator.free(self.body);
         self.* = undefined;
     }
@@ -78,7 +84,10 @@ pub const Response = struct {
         self.cancelStream();
         self.cancelUpgrade();
         self.clearHeaders();
+        self.clearTrailers();
         self.headers.clearRetainingCapacity();
+        self.trailers.clearRetainingCapacity();
+        self.trailer_bytes = 0;
         if (self.body_owned) self.allocator.free(self.body);
         self.body = "";
         self.body_owned = false;
@@ -148,6 +157,34 @@ pub const Response = struct {
             .value = value_copy,
         });
         self.header_bytes += added;
+        self.committed = true;
+    }
+
+    /// Append a trailer field emitted after the body. Trailer names and values
+    /// use the same validation and budget as response headers.
+    pub fn addTrailer(
+        self: *Response,
+        name: []const u8,
+        value: []const u8,
+    ) !void {
+        try validateHeaderName(name);
+        try validateHeaderValue(value);
+        if (self.trailers.items.len + 1 > self.max_headers) {
+            return error.ResponseHeadersTooLarge;
+        }
+        const added = name.len + value.len + 4;
+        if (self.trailer_bytes + added > self.max_head_bytes) {
+            return error.ResponseHeadTooLarge;
+        }
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+        const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
+        try self.trailers.append(self.allocator, .{
+            .name = name_copy,
+            .value = value_copy,
+        });
+        self.trailer_bytes += added;
         self.committed = true;
     }
 
@@ -228,20 +265,25 @@ pub const Response = struct {
         self: *const Response,
         method: netz.http1.Method,
     ) netz.http1.runtime.ResponseOptions {
-        return self.toOptionsFor(method, .http_1_1);
+        return self.toOptionsFor(method, .http_1_1, false);
     }
 
     pub fn toOptionsFor(
         self: *const Response,
         method: netz.http1.Method,
         version: netz.http1.Version,
+        request_accepts_trailers: bool,
     ) netz.http1.runtime.ResponseOptions {
+        const emit_trailers = request_accepts_trailers and
+            self.trailers.items.len != 0;
         return .{
             .version = version,
             .status = self.status,
             .reason = self.reason,
             .headers = self.headers.items,
             .body = self.body,
+            .trailers = if (emit_trailers) self.trailers.items else &.{},
+            .request_accepts_trailers = emit_trailers,
             .request_method = method,
         };
     }
@@ -258,6 +300,14 @@ pub const Response = struct {
             self.allocator.free(field.name);
             self.allocator.free(field.value);
         }
+    }
+
+    fn clearTrailers(self: *Response) void {
+        for (self.trailers.items) |field| {
+            self.allocator.free(field.name);
+            self.allocator.free(field.value);
+        }
+        self.trailer_bytes = 0;
     }
 
     fn cancelStream(self: *Response) void {
@@ -446,4 +496,24 @@ test "response reset releases committed state" {
     try std.testing.expect(!response.committed);
     try std.testing.expectEqualStrings("", response.body);
     try std.testing.expect(!response.hasHeader("x-test"));
+}
+
+test "response trailers are validated and gated by request acceptance" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var response = Response.init(arena.allocator(), 1024);
+
+    try response.addTrailer("X-Checksum", "abc");
+    const accepted = response.toOptionsFor(.GET, .http_1_1, true);
+    try std.testing.expectEqual(@as(usize, 1), accepted.trailers.len);
+    try std.testing.expect(accepted.request_accepts_trailers);
+
+    const refused = response.toOptionsFor(.GET, .http_1_1, false);
+    try std.testing.expectEqual(@as(usize, 0), refused.trailers.len);
+    try std.testing.expect(!refused.request_accepts_trailers);
+
+    try std.testing.expectError(
+        error.InvalidHeaderValue,
+        response.addTrailer("X-Bad", "a\r\nb"),
+    );
 }

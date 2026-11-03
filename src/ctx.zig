@@ -451,6 +451,15 @@ pub const Ctx = struct {
         try self.response.appendHeader(name, value);
     }
 
+    /// Append a trailer field emitted after the response body.
+    pub fn addTrailer(
+        self: *Ctx,
+        name: []const u8,
+        value: []const u8,
+    ) !void {
+        try self.response.addTrailer(name, value);
+    }
+
     pub fn responseHeader(self: *const Ctx, name: []const u8) ?[]const u8 {
         return self.response.header(name);
     }

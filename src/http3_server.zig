@@ -498,7 +498,28 @@ pub fn Http3Server(comptime H: type) type {
                 decoded.method,
                 arena,
             );
-            try session.sendResponsePaced(stream_id, h3_response);
+            const emit_trailers = response.trailers.items.len != 0 and
+                !responseBodyForbidden(decoded.method, response.status);
+            if (!emit_trailers) {
+                try session.sendResponsePaced(stream_id, h3_response);
+                return;
+            }
+            try session.startResponse(
+                stream_id,
+                h3_response,
+                response.body.len,
+            );
+            if (response.body.len > 0) {
+                try session.sendResponseBodyPaced(
+                    stream_id,
+                    response.body,
+                    false,
+                );
+            }
+            try session.finishResponseTrailers(
+                stream_id,
+                try trailerFields(response, arena),
+            );
         }
 
         fn writeStreaming(
@@ -535,10 +556,44 @@ pub fn Http3Server(comptime H: type) type {
                 .write_fn = writeWithBudget,
             };
             try body.run(&stream_writer);
-            try session.sendResponseBodyPaced(stream_id, "", true);
+            if (response.trailers.items.len != 0 and
+                !responseBodyForbidden(decoded.method, response.status))
+            {
+                try session.finishResponseTrailers(
+                    stream_id,
+                    try trailerFields(response, arena),
+                );
+            } else {
+                try session.sendResponseBodyPaced(stream_id, "", true);
+            }
             response.stream = null;
         }
     };
+}
+
+fn responseBodyForbidden(method: []const u8, status: u16) bool {
+    return std.mem.eql(u8, method, "HEAD") or
+        status == 204 or
+        status == 304 or
+        (status >= 100 and status < 200);
+}
+
+fn trailerFields(
+    response: *const Response,
+    arena: std.mem.Allocator,
+) ![]const netz.http3.Qpack.HeaderField {
+    var fields = std.ArrayListUnmanaged(netz.http3.Qpack.HeaderField).empty;
+    for (response.trailers.items) |header| {
+        const name = try arena.alloc(u8, header.name.len);
+        for (header.name, name) |source, *target| {
+            target.* = std.ascii.toLower(source);
+        }
+        try fields.append(arena, .{
+            .name = name,
+            .value = header.value,
+        });
+    }
+    return fields.toOwnedSlice(arena);
 }
 
 fn toHttp3Response(

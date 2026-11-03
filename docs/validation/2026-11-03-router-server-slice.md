@@ -48,6 +48,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   and `Ctx.readBody()` buffers into the request arena.
 - HTTP/3 exposes a one-chunk replay reader for streaming routes over its
   already-buffered DATA body.
+- `Ctx.addTrailer` appends response trailers; HTTP/1 emits them only for
+  requests with `TE: trailers`, while HTTP/2 and HTTP/3 send trailing HEADERS
+  after the body.
 - `Ctx.sse` plus `sse.write`/`sse.comment` helpers for `text/event-stream`
   responses, with multiline `data:` framing, `id`/`event`/`retry` fields,
   injection rejection, and compression opt-out.
@@ -138,8 +141,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 97/97 tests passed (67 unit, 30 package/integration).
-- ReleaseFast: 97/97 tests passed.
+- Debug: 99/99 tests passed (68 unit, 31 package/integration).
+- ReleaseFast: 99/99 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

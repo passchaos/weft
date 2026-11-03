@@ -523,6 +523,8 @@ pub fn Http2Server(comptime H: type) type {
                 return;
             }
 
+            const emit_trailers = response.trailers.items.len != 0;
+
             if (response.stream) |body| {
                 var state = H2DuplexState{
                     .stream = stream,
@@ -538,12 +540,25 @@ pub fn Http2Server(comptime H: type) type {
                     stream.reset(.internal_error) catch {};
                     return err;
                 };
-                _ = try stream.finishResponse();
+                if (emit_trailers) {
+                    try stream.finishResponseTrailers(
+                        try trailerFields(response, arena),
+                    );
+                } else {
+                    _ = try stream.finishResponse();
+                }
                 response.stream = null;
                 return;
             }
 
-            _ = try stream.finishResponseData(response.body);
+            if (emit_trailers) {
+                _ = try stream.writeResponse(response.body);
+                try stream.finishResponseTrailers(
+                    try trailerFields(response, arena),
+                );
+            } else {
+                _ = try stream.finishResponseData(response.body);
+            }
         }
     };
 }
@@ -599,6 +614,24 @@ fn convertH2Headers(
         };
     }
     return headers;
+}
+
+fn trailerFields(
+    response: *const Response,
+    arena: std.mem.Allocator,
+) ![]const netz.http2.Hpack.HeaderField {
+    var fields = std.ArrayListUnmanaged(netz.http2.Hpack.HeaderField).empty;
+    for (response.trailers.items) |header| {
+        const name = try arena.alloc(u8, header.name.len);
+        for (header.name, name) |source, *target| {
+            target.* = std.ascii.toLower(source);
+        }
+        try fields.append(arena, .{
+            .name = name,
+            .value = header.value,
+        });
+    }
+    return fields.toOwnedSlice(arena);
 }
 
 fn headerFields(

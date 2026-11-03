@@ -486,6 +486,7 @@ pub fn Server(comptime H: type) type {
                         try connection.writeResponse(response.toOptionsFor(
                             handler_request.method,
                             handler_request.version,
+                            handler_request.acceptsTrailers(),
                         ));
                     } else {
                         try self.writeStreaming(
@@ -499,6 +500,7 @@ pub fn Server(comptime H: type) type {
                     try connection.writeResponse(response.toOptionsFor(
                         handler_request.method,
                         handler_request.version,
+                        handler_request.acceptsTrailers(),
                     ));
                 }
 
@@ -603,12 +605,24 @@ pub fn Server(comptime H: type) type {
                 }
             }
 
+            const accepts_trailers = request.acceptsTrailers() and
+                response.trailers.items.len != 0;
+            var trailer_names = try response.allocator.alloc(
+                []const u8,
+                if (accepts_trailers) response.trailers.items.len else 0,
+            );
+            for (response.trailers.items, 0..) |field, index| {
+                if (index >= trailer_names.len) break;
+                trailer_names[index] = field.name;
+            }
             var writer = connection.startResponse(.{
                 .version = request.version,
                 .status = response.status,
                 .reason = response.reason,
                 .headers = response.headers.items,
                 .body_length = body.length,
+                .trailer_names = trailer_names,
+                .request_accepts_trailers = accepts_trailers,
                 .request_method = request.method,
             }) catch |err| {
                 body.cancel();
@@ -626,7 +640,11 @@ pub fn Server(comptime H: type) type {
                 .write_fn = writeWithBudget,
             };
             try body.run(&stream_writer);
-            try writer.finish();
+            if (accepts_trailers) {
+                try writer.finishTrailers(response.trailers.items);
+            } else {
+                try writer.finish();
+            }
             response.stream = null;
         }
 
