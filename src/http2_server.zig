@@ -354,13 +354,19 @@ pub fn Http2Server(comptime H: type) type {
                 }
                 if (body_failed) continue;
 
+                var trailers = try arena.alloc(netz.http1.Header, 0);
+                if (!streaming) {
+                    if (stream.requestTrailers()) |raw| {
+                        trailers = convertH2Trailers(arena, raw) catch trailers;
+                    }
+                }
                 var handler_request = netz.http1.Request{
                     .method = method,
                     .target = target,
                     .version = .http_1_1,
                     .headers = headers,
                     .body = if (streaming) "" else body.items,
-                    .trailers = &.{},
+                    .trailers = trailers,
                     .consumed = 0,
                     .must_close = false,
                 };
@@ -555,6 +561,17 @@ fn writeDuplexWithBudget(raw: ?*anyopaque, data: []const u8) anyerror!void {
     _ = try state.stream.writeResponse(data);
 }
 
+fn convertH2Trailers(
+    allocator: std.mem.Allocator,
+    fields: []const netz.http2.Hpack.HeaderField,
+) ![]netz.http1.Header {
+    const headers = try allocator.alloc(netz.http1.Header, fields.len);
+    for (fields, headers) |field, *header| {
+        header.* = .{ .name = field.name, .value = field.value };
+    }
+    return headers;
+}
+
 fn convertH2Headers(
     allocator: std.mem.Allocator,
     fields: []const netz.http2.Hpack.HeaderField,
@@ -641,4 +658,19 @@ fn internalErrorResponse(
     response.setStatus(500);
     response.text("Internal Server Error") catch {};
     return response;
+}
+
+test "h2 request trailers convert to the http1 header view" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const fields = [_]netz.http2.Hpack.HeaderField{
+        .{ .name = "x-checksum", .value = "abc" },
+        .{ .name = "x-trace", .value = "one" },
+    };
+    const headers = try convertH2Trailers(arena.allocator(), &fields);
+    try std.testing.expectEqual(@as(usize, 2), headers.len);
+    try std.testing.expectEqualStrings("x-checksum", headers[0].name);
+    try std.testing.expectEqualStrings("abc", headers[0].value);
+    try std.testing.expectEqualStrings("one", headers[1].value);
 }
