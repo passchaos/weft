@@ -71,6 +71,7 @@ comptime {
     _ = @import("query.zig");
     _ = @import("cookie.zig");
     _ = @import("multipart.zig");
+    _ = @import("precondition.zig");
     _ = @import("static_files.zig");
     _ = @import("router.zig");
     _ = @import("server.zig");

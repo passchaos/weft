@@ -249,7 +249,9 @@ WebSocket upgrades with `400`.
 ## Static files
 
 `weft.StaticFiles` is a route handler that streams files below a directory. It
-supports ETag/`If-None-Match`, `If-Range`, single and multipart `Range`
+supports `ETag`/`Last-Modified` validators, RFC 9110 preconditions
+(`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`),
+`If-Range` with either an ETag or an HTTP-date, single and multipart `Range`
 requests (`206`/`416`), `HEAD`, index files, MIME detection, dotfile rejection,
 and traversal-safe path normalization.
 

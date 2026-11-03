@@ -37,8 +37,12 @@ processing, decoded request data, and cooperative graceful shutdown.
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
 - `StaticFiles` handler with traversal-safe normalization, dotfile/symlink
-  policy, MIME detection, ETag/`If-None-Match`, single and multipart `Range`
+  policy, MIME detection, ETag/`Last-Modified`, single and multipart `Range`
   support (`206`/`416`), index files, and streamed file reads.
+- RFC 9110 precondition evaluation (`If-Match`, `If-None-Match`,
+  `If-Modified-Since`, `If-Unmodified-Since`) in RFC order, plus `If-Range`
+  ETag and HTTP-date forms. HTTP dates accept IMF-fixdate, RFC 850, and
+  asctime inputs.
 - `StaticFiles` negotiates precompressed `.br`/`.zst`/`.gz` sidecars from
   `Accept-Encoding` (q-weighted, `br > zstd > gzip` on ties), preserves the
   original MIME type, emits `Content-Encoding`/`Vary: Accept-Encoding`, and
@@ -101,8 +105,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 74/74 tests passed (46 unit, 28 package/integration).
-- ReleaseFast: 74/74 tests passed.
+- Debug: 78/78 tests passed (50 unit, 28 package/integration).
+- ReleaseFast: 78/78 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

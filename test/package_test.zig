@@ -1082,6 +1082,69 @@ test "package: static files serve 200, 304, 206, and HEAD" {
         index_response.response.header("content-type").?,
     );
     const etag = index_response.response.header("etag").?;
+    const last_modified = index_response.response.header("last-modified").?;
+
+    var modified_since = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{.{
+            .name = "If-Modified-Since",
+            .value = last_modified,
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer modified_since.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 304), modified_since.response.status);
+    try std.testing.expectEqualStrings(
+        last_modified,
+        modified_since.response.header("last-modified").?,
+    );
+
+    var stale_modified_since = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{.{
+            .name = "If-Modified-Since",
+            .value = "Thu, 01 Jan 1970 00:00:00 GMT",
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer stale_modified_since.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        stale_modified_since.response.status,
+    );
+
+    var failed_if_match = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{.{
+            .name = "If-Match",
+            .value = "\"different\"",
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer failed_if_match.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 412), failed_if_match.response.status);
+
+    var failed_unmodified_since = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{.{
+            .name = "If-Unmodified-Since",
+            .value = "Thu, 01 Jan 1970 00:00:00 GMT",
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer failed_unmodified_since.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 412),
+        failed_unmodified_since.response.status,
+    );
 
     var conditional_response = try netz.http1.runtime.Client.requestUri(
         allocator,
@@ -1138,6 +1201,37 @@ test "package: static files serve 200, 304, 206, and HEAD" {
         stale_range.response.body,
     );
     try std.testing.expect(stale_range.response.header("content-range") == null);
+
+    var dated_range = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{
+            .{ .name = "Range", .value = "bytes=0-3" },
+            .{ .name = "If-Range", .value = last_modified },
+        } },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer dated_range.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 206), dated_range.response.status);
+    try std.testing.expectEqualStrings("<h1>", dated_range.response.body);
+
+    var stale_dated_range = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        index_uri,
+        .{ .headers = &.{
+            .{ .name = "Range", .value = "bytes=0-3" },
+            .{ .name = "If-Range", .value = "Thu, 01 Jan 1970 00:00:00 GMT" },
+        } },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer stale_dated_range.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), stale_dated_range.response.status);
+    try std.testing.expectEqualStrings("<h1>static</h1>", stale_dated_range.response.body);
+    try std.testing.expect(
+        stale_dated_range.response.header("content-range") == null,
+    );
 
     var multi_range = try netz.http1.runtime.Client.requestUri(
         allocator,

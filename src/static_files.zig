@@ -1,5 +1,6 @@
 const std = @import("std");
 const ctx_mod = @import("ctx.zig");
+const precondition = @import("precondition.zig");
 const stream_mod = @import("stream.zig");
 
 pub const MimeType = struct {
@@ -149,26 +150,49 @@ pub const StaticFiles = struct {
             "\"{d}-{d}\"",
             .{ served_stat.size, served_stat.mtime.nanoseconds },
         );
+        const last_modified: i64 = @intCast(@divFloor(
+            served_stat.mtime.nanoseconds,
+            std.time.ns_per_s,
+        ));
+        const last_modified_value = precondition.formatDate(last_modified);
 
-        if (ctx.header("if-none-match")) |if_none_match| {
-            if (etagMatches(if_none_match, etag)) {
+        const preconditions = precondition.evaluate(.{
+            .if_match = ctx.header("if-match"),
+            .if_none_match = ctx.header("if-none-match"),
+            .if_modified_since = ctx.header("if-modified-since"),
+            .if_unmodified_since = ctx.header("if-unmodified-since"),
+            .if_range = ctx.header("if-range"),
+            .range = if (content_encoding == null)
+                ctx.header("range")
+            else
+                null,
+        }, etag, last_modified);
+        switch (preconditions.outcome) {
+            .precondition_failed => {
                 try ctx.setHeader("ETag", etag);
+                try ctx.setHeader("Last-Modified", &last_modified_value);
+                if (self.cache_control) |cache| try ctx.setHeader(
+                    "Cache-Control",
+                    cache,
+                );
+                ctx.setStatus(412);
+                return ctx.text("Precondition Failed");
+            },
+            .not_modified => {
+                try ctx.setHeader("ETag", etag);
+                try ctx.setHeader("Last-Modified", &last_modified_value);
                 if (self.cache_control) |cache| try ctx.setHeader(
                     "Cache-Control",
                     cache,
                 );
                 ctx.setStatus(304);
                 return;
-            }
+            },
+            .proceed => {},
         }
 
         var ranges: ?RangeSet = null;
-        const range_allowed = if (content_encoding != null)
-            false
-        else if (ctx.header("if-range")) |if_range|
-            etagMatches(if_range, etag)
-        else
-            true;
+        const range_allowed = preconditions.range_allowed;
         if (range_allowed) {
             if (ctx.header("range")) |range_header| {
                 switch (parseRange(range_header, size)) {
@@ -215,6 +239,7 @@ pub const StaticFiles = struct {
         errdefer file.close(ctx.io);
 
         try ctx.setHeader("ETag", etag);
+        try ctx.setHeader("Last-Modified", &last_modified_value);
         if (content_encoding == null) {
             try ctx.setHeader("Accept-Ranges", "bytes");
         }
@@ -577,20 +602,6 @@ fn normalizePath(
     return std.mem.join(allocator, "/", segments.items);
 }
 
-fn etagMatches(header: []const u8, etag: []const u8) bool {
-    var iterator = std.mem.splitScalar(u8, header, ',');
-    while (iterator.next()) |part| {
-        const token = std.mem.trim(u8, part, " \t");
-        if (std.mem.eql(u8, token, "*")) return true;
-        const candidate = if (std.ascii.startsWithIgnoreCase(token, "W/"))
-            token[2..]
-        else
-            token;
-        if (std.mem.eql(u8, candidate, etag)) return true;
-    }
-    return false;
-}
-
 const max_ranges = 16;
 
 const RangePart = struct {
@@ -735,13 +746,6 @@ test "static range parsing handles single, suffix, and multiple ranges" {
     try std.testing.expectEqual(@as(usize, 1), mixed.count);
     try std.testing.expect(parseRange("bytes=20-", 10) == .unsatisfiable);
     try std.testing.expect(parseRange("bytes=", 10) == .ignore);
-}
-
-test "static etag matching accepts weak and wildcard forms" {
-    try std.testing.expect(etagMatches("\"abc\"", "\"abc\""));
-    try std.testing.expect(etagMatches("W/\"abc\"", "\"abc\""));
-    try std.testing.expect(etagMatches("*", "\"abc\""));
-    try std.testing.expect(!etagMatches("\"other\"", "\"abc\""));
 }
 
 test "static variant selection honours q values and wildcards" {
