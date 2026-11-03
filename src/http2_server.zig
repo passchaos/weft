@@ -428,11 +428,13 @@ pub fn Http2Server(comptime H: type) type {
                 response.status == 204 or
                 response.status == 304 or
                 (response.status >= 100 and response.status < 200);
+            var head_content_length: ?usize = null;
 
             if (response.stream) |body| {
                 if (body_forbidden) {
                     if (std.mem.eql(u8, method, "HEAD")) {
                         if (body.length) |length| {
+                            head_content_length = length;
                             response.setHeader(
                                 "Content-Length",
                                 try std.fmt.allocPrint(
@@ -465,7 +467,13 @@ pub fn Http2Server(comptime H: type) type {
             try stream.startResponse(options);
 
             if (body_forbidden) {
-                try stream.finish();
+                if (head_content_length) |length| {
+                    const filler = try arena.alloc(u8, length);
+                    @memset(filler, 0);
+                    try stream.writeData(filler, true);
+                } else {
+                    try stream.finish();
+                }
                 return;
             }
 
