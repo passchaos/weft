@@ -288,6 +288,10 @@ Built-ins:
   committed partial response `Connection: close`.
 - `Metrics` — lock-free total, active, status-class, and latency counters with a
   `snapshot()` API for health or metrics endpoints.
+- `RateLimit` — bounded per-client token buckets keyed by `Ctx.clientAddress()`,
+  with `429` and `Retry-After`, fixed storage, and least-recently-seen eviction.
+  Reverse-proxy deployments must apply their own trusted-forwarded-address
+  policy.
 
 Parameterized middleware uses a user-owned context:
 

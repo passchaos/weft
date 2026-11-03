@@ -62,6 +62,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   producer.
 - `Ctx` exposes the request timeout deadline, remaining budget, and expiry for
   cooperative handlers; access logs include protocol and remote address.
+- Bounded per-client `RateLimit` token buckets return `429`/`Retry-After`, use
+  fixed storage, and evict least-recently-seen clients.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
@@ -90,14 +92,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 68/68 tests passed (43 unit, 25 package/integration).
-- ReleaseFast: 68/68 tests passed.
+- Debug: 69/69 tests passed (44 unit, 25 package/integration).
+- ReleaseFast: 69/69 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 91.0 ns/lookup 10987414 lookups/s
-router param:  routes=256  lookups=1000000 96.8 ns/lookup 10333295 lookups/s
+router static: routes=1024 lookups=2000000 83.9 ns/lookup 11916992 lookups/s
+router param:  routes=256  lookups=1000000 90.8 ns/lookup 11012943 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
