@@ -47,6 +47,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   applying weft HTTP limits and a bounded accept/handshake budget.
 - Optional `Limits.request_timeout` races the middleware/handler chain against a
   timer, cancels at the next cancellation point, and returns `503`.
+- Response compression negotiates gzip or deflate from `Accept-Encoding`
+  quality values, honors `no-transform`, and returns `406` when identity is
+  explicitly refused.
 
 ## Verification
 
@@ -62,14 +65,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 51/51 tests passed (32 unit, 19 package/integration).
-- ReleaseFast: 51/51 tests passed.
+- Debug: 54/54 tests passed (35 unit, 19 package/integration).
+- ReleaseFast: 54/54 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 80.6 ns/lookup 12404657 lookups/s
-router param:  routes=256  lookups=1000000 90.3 ns/lookup 11072771 lookups/s
+router static: routes=1024 lookups=2000000 80.7 ns/lookup 12389537 lookups/s
+router param:  routes=256  lookups=1000000 91.1 ns/lookup 10972009 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the
@@ -79,7 +82,6 @@ guarantee.
 ## Remaining gaps
 
 - Streaming request bodies (responses are streamed).
-- Multi-encoding responses.
+- Brotli and zstd response compression.
 - CPU-bound handler preemption without cancellation points.
 - HTTP/2 and HTTP/3 adapters.
-- Compression currently supports gzip only.

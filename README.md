@@ -204,8 +204,9 @@ Built-ins:
 - `BasicAuth` — constant-time Basic credential check with a challenge response.
 - `Cors` — exact-origin allow list, credential support, preflight handling,
   configured request-header validation, and `Vary` maintenance.
-- `Compress` — gzip for accepted `Accept-Encoding`, compressible content types,
-  and bodies above `min_bytes`; existing `Content-Encoding` is respected.
+- `Compress` — gzip/deflate negotiation from `Accept-Encoding` quality values,
+  compressible content types, and bodies above `min_bytes`; existing
+  `Content-Encoding`, `no-transform`, and refused identity are respected.
 - `recover` — converts an uncommitted handler failure into `500`, or marks a
   committed partial response `Connection: close`.
 
@@ -300,5 +301,5 @@ The first slice targets HTTP/1.1 through `netz.http1.runtime`, including
 cleartext and TLS listeners, and mirrors HTTP/1.0 request versions with
 appropriate connection semantics. The public `Ctx`/`Handler`/`Router` surface
 is protocol-version agnostic so HTTP/2 and HTTP/3 adapters can be added without
-changing application handlers. Remaining slices include multi-encoding
-responses and HTTP/2/HTTP/3 adapters.
+changing application handlers. Remaining slices include Brotli/zstd
+response compression and HTTP/2/HTTP/3 adapters.
