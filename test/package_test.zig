@@ -1249,6 +1249,166 @@ test "package: static files serve 200, 304, 206, and HEAD" {
     try group.await(runtime_io);
 }
 
+test "package: static files negotiate precompressed sidecars" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const raw_body = "<h1>compressed static</h1>";
+    const compressed = try gzipAlloc(allocator, raw_body);
+    defer allocator.free(compressed);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "index.html",
+        .data = raw_body,
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "index.html.gz",
+        .data = compressed,
+    });
+
+    var static = weft.StaticFiles{ .dir = tmp.dir };
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const runtime_io = backend.io();
+
+    var server = try weft.Server(App).init(
+        runtime_io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().addRaw(.GET, "/assets/*", static.handler(), .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(runtime_io);
+    try group.concurrent(runtime_io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/assets/index.html",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var encoded = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        uri,
+        .{ .headers = &.{.{
+            .name = "Accept-Encoding",
+            .value = "gzip",
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer encoded.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), encoded.response.status);
+    try std.testing.expectEqualStrings(
+        "gzip",
+        encoded.response.header("content-encoding").?,
+    );
+    try std.testing.expectEqualStrings(
+        "text/html; charset=utf-8",
+        encoded.response.header("content-type").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Accept-Encoding",
+        encoded.response.header("vary").?,
+    );
+    try std.testing.expect(encoded.response.header("accept-ranges") == null);
+    try std.testing.expectEqualStrings(compressed, encoded.response.body);
+
+    var identity = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer identity.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), identity.response.status);
+    try std.testing.expect(identity.response.header("content-encoding") == null);
+    try std.testing.expectEqualStrings("bytes", identity.response.header(
+        "accept-ranges",
+    ).?);
+    try std.testing.expectEqualStrings(raw_body, identity.response.body);
+
+    // Unknown codings fall back to the raw representation.
+    var unknown = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        uri,
+        .{ .headers = &.{.{
+            .name = "Accept-Encoding",
+            .value = "br",
+        }} },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer unknown.deinit(allocator);
+    try std.testing.expect(unknown.response.header("content-encoding") == null);
+    try std.testing.expectEqualStrings(raw_body, unknown.response.body);
+
+    // Range requests bypass encoded representations so byte offsets stay valid.
+    var ranged = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        uri,
+        .{ .headers = &.{
+            .{ .name = "Accept-Encoding", .value = "gzip" },
+            .{ .name = "Range", .value = "bytes=0-3" },
+        } },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer ranged.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 206), ranged.response.status);
+    try std.testing.expect(ranged.response.header("content-encoding") == null);
+    try std.testing.expectEqualStrings("<h1>", ranged.response.body);
+
+    // HEAD reports the encoded length without sending a body.
+    var head = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        uri,
+        .{
+            .method = .HEAD,
+            .headers = &.{.{
+                .name = "Accept-Encoding",
+                .value = "gzip",
+            }},
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer head.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), head.response.status);
+    try std.testing.expectEqualStrings("", head.response.body);
+    const encoded_length = try std.fmt.allocPrint(
+        allocator,
+        "{d}",
+        .{compressed.len},
+    );
+    defer allocator.free(encoded_length);
+    try std.testing.expectEqualStrings(
+        encoded_length,
+        head.response.header("content-length").?,
+    );
+
+    server.stop();
+    try group.await(runtime_io);
+}
+
 test "package: gzip request bodies are decoded for JSON handlers" {
     const allocator = std.testing.allocator;
 

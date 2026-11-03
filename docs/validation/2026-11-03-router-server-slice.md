@@ -39,6 +39,10 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `StaticFiles` handler with traversal-safe normalization, dotfile/symlink
   policy, MIME detection, ETag/`If-None-Match`, single and multipart `Range`
   support (`206`/`416`), index files, and streamed file reads.
+- `StaticFiles` negotiates precompressed `.br`/`.zst`/`.gz` sidecars from
+  `Accept-Encoding` (q-weighted, `br > zstd > gzip` on ties), preserves the
+  original MIME type, emits `Content-Encoding`/`Vary: Accept-Encoding`, and
+  falls back to the raw file for `Range` requests so byte offsets stay valid.
 - Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
   `bodyJson`/`bodyForm`; malformed JSON maps to `400`, unsupported codings to
   `415`, and oversized decoded bodies to `413`.
@@ -97,8 +101,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 71/71 tests passed (44 unit, 27 package/integration).
-- ReleaseFast: 71/71 tests passed.
+- Debug: 74/74 tests passed (46 unit, 28 package/integration).
+- ReleaseFast: 74/74 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

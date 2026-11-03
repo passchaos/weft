@@ -266,6 +266,14 @@ try router.addRaw(.GET, "/assets/*", files.handler(), .{});
 `statFile(.follow_symlinks = false)` and rejects non-regular entries. Files
 larger than `max_file_bytes` or `Limits.max_response_bytes` return `413`.
 
+With `precompressed` enabled (the default), sibling `.br`, `.zst`, and `.gz`
+sidecars are served according to `Accept-Encoding` (`br` preferred, then
+`zstd`, then `gzip`, honouring `q` weights and `*`). The response keeps the
+original `Content-Type`, adds `Content-Encoding` and `Vary: Accept-Encoding`,
+and reports the sidecar's `Content-Length`/`ETag`. Encoded representations are
+not range-addressable: a request carrying `Range` always receives the raw file
+with `Accept-Ranges: bytes`. Set `.precompressed = false` to disable sidecars.
+
 ## Middleware
 
 A middleware is a plain function that calls `ctx.next()` to continue:

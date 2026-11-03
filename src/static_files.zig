@@ -43,6 +43,11 @@ pub const max_segments = 128;
 /// larger than `max_file_bytes` or `Limits.max_response_bytes` are rejected.
 /// The caller owns `dir` and must close it after the router and server stop
 /// using this handler.
+///
+/// When `precompressed` is enabled, `.br`, `.zst`, and `.gz` sidecars are
+/// served for clients that accept them, and `Vary: Accept-Encoding` is added.
+/// Encoded representations are not range-addressable; a request carrying
+/// `Range` always receives the raw file.
 pub const StaticFiles = struct {
     dir: std.Io.Dir,
     max_file_bytes: usize = 16 * 1024 * 1024,
@@ -50,6 +55,7 @@ pub const StaticFiles = struct {
     index_file: ?[]const u8 = "index.html",
     allow_dotfiles: bool = false,
     follow_symlinks: bool = false,
+    precompressed: bool = true,
     mime_types: []const MimeType = &default_mime_types,
 
     pub fn handler(self: *StaticFiles) ctx_mod.Handler {
@@ -107,11 +113,41 @@ pub const StaticFiles = struct {
             return ctx.text("Content Too Large");
         }
 
-        const size: usize = @intCast(stat.size);
+        const mime = self.contentType(relative);
+
+        var served_relative = relative;
+        var served_stat = stat;
+        var content_encoding: ?[]const u8 = null;
+        if (self.precompressed) {
+            try addVary(ctx, "Accept-Encoding");
+            if (ctx.header("range") == null) {
+                if (chooseVariant(ctx.header("accept-encoding"))) |variant| {
+                    const sidecar = try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{s}{s}",
+                        .{ relative, variant.extension },
+                    );
+                    if (self.dir.statFile(ctx.io, sidecar, .{
+                        .follow_symlinks = self.follow_symlinks,
+                    }) catch null) |sidecar_stat| {
+                        if (sidecar_stat.kind == .file and
+                            sidecar_stat.size <= self.max_file_bytes and
+                            sidecar_stat.size <= ctx.limits.max_response_bytes)
+                        {
+                            served_relative = sidecar;
+                            served_stat = sidecar_stat;
+                            content_encoding = variant.encoding;
+                        }
+                    }
+                }
+            }
+        }
+
+        const size: usize = @intCast(served_stat.size);
         const etag = try std.fmt.allocPrint(
             ctx.arena,
             "\"{d}-{d}\"",
-            .{ stat.size, stat.mtime.nanoseconds },
+            .{ served_stat.size, served_stat.mtime.nanoseconds },
         );
 
         if (ctx.header("if-none-match")) |if_none_match| {
@@ -126,10 +162,10 @@ pub const StaticFiles = struct {
             }
         }
 
-        const mime = self.contentType(relative);
-
         var ranges: ?RangeSet = null;
-        const range_allowed = if (ctx.header("if-range")) |if_range|
+        const range_allowed = if (content_encoding != null)
+            false
+        else if (ctx.header("if-range")) |if_range|
             etagMatches(if_range, etag)
         else
             true;
@@ -172,14 +208,19 @@ pub const StaticFiles = struct {
             }
         }
 
-        const file = self.dir.openFile(ctx.io, relative, .{
+        const file = self.dir.openFile(ctx.io, served_relative, .{
             .mode = .read_only,
             .allow_directory = false,
         }) catch return notFound(ctx);
         errdefer file.close(ctx.io);
 
         try ctx.setHeader("ETag", etag);
-        try ctx.setHeader("Accept-Ranges", "bytes");
+        if (content_encoding == null) {
+            try ctx.setHeader("Accept-Ranges", "bytes");
+        }
+        if (content_encoding) |encoding| {
+            try ctx.setHeader("Content-Encoding", encoding);
+        }
         if (self.cache_control) |cache| {
             try ctx.setHeader("Cache-Control", cache);
         }
@@ -396,6 +437,118 @@ fn notFound(ctx: *ctx_mod.Ctx) anyerror!void {
     return ctx.text("Not Found");
 }
 
+/// Encodings are listed in descending preference so equal `q` values resolve
+/// to `br` first, then `zstd`, then `gzip`.
+const Variant = struct {
+    extension: []const u8,
+    encoding: []const u8,
+};
+
+const variants = [_]Variant{
+    .{ .extension = ".br", .encoding = "br" },
+    .{ .extension = ".zst", .encoding = "zstd" },
+    .{ .extension = ".gz", .encoding = "gzip" },
+};
+
+/// Select the best acceptable precompressed variant, honouring `q` weights and
+/// the `*` wildcard. Returns null when the client accepts no known encoding.
+fn chooseVariant(header: ?[]const u8) ?Variant {
+    const value = header orelse return null;
+
+    var star_quality: ?u16 = null;
+    var qualities = [_]?u16{null} ** variants.len;
+
+    var tokens = std.mem.splitScalar(u8, value, ',');
+    while (tokens.next()) |raw_token| {
+        const token = std.mem.trim(u8, raw_token, " \t");
+        if (token.len == 0) continue;
+
+        var parameters = std.mem.splitScalar(u8, token, ';');
+        const coding = std.mem.trim(u8, parameters.next() orelse continue, " \t");
+        if (coding.len == 0) continue;
+
+        var quality: u16 = 1000;
+        while (parameters.next()) |raw_parameter| {
+            const parameter = std.mem.trim(u8, raw_parameter, " \t");
+            if (std.ascii.startsWithIgnoreCase(parameter, "q=")) {
+                quality = parseQuality(parameter["q=".len..]) orelse 0;
+            }
+        }
+
+        if (std.mem.eql(u8, coding, "*")) {
+            star_quality = quality;
+            continue;
+        }
+        for (variants, 0..) |variant, index| {
+            if (std.ascii.eqlIgnoreCase(coding, variant.encoding)) {
+                qualities[index] = quality;
+            }
+        }
+    }
+
+    var best: ?Variant = null;
+    var best_quality: u16 = 0;
+    for (variants, 0..) |variant, index| {
+        const quality = qualities[index] orelse star_quality orelse continue;
+        if (quality <= best_quality) continue;
+        best = variant;
+        best_quality = quality;
+    }
+    return best;
+}
+
+/// Parse an HTTP `q` value into thousandths, e.g. `0.5` becomes `500`.
+fn parseQuality(text: []const u8) ?u16 {
+    const value = std.mem.trim(u8, text, " \t");
+    if (value.len == 0) return null;
+
+    var whole: u16 = 0;
+    var fraction: u16 = 0;
+    var fraction_digits: u16 = 0;
+    var seen_dot = false;
+    for (value) |char| {
+        if (char == '.') {
+            if (seen_dot) return null;
+            seen_dot = true;
+            continue;
+        }
+        if (char < '0' or char > '9') return null;
+        const digit: u16 = char - '0';
+        if (seen_dot) {
+            if (fraction_digits == 3) return null;
+            fraction = fraction * 10 + digit;
+            fraction_digits += 1;
+        } else {
+            if (whole >= 2) return null;
+            whole = whole * 10 + digit;
+        }
+    }
+    if (whole > 1) return null;
+    while (fraction_digits < 3) : (fraction_digits += 1) fraction *= 10;
+    if (whole == 1 and fraction != 0) return null;
+    return whole * 1000 + fraction;
+}
+
+/// Append `value` to `Vary` unless it (or `*`) is already present.
+fn addVary(ctx: *ctx_mod.Ctx, value: []const u8) !void {
+    const existing = ctx.header("vary") orelse {
+        return ctx.setHeader("Vary", value);
+    };
+    var tokens = std.mem.splitScalar(u8, existing, ',');
+    while (tokens.next()) |raw_token| {
+        const token = std.mem.trim(u8, raw_token, " \t");
+        if (std.mem.eql(u8, token, "*") or
+            std.ascii.eqlIgnoreCase(token, value))
+        {
+            return;
+        }
+    }
+    return ctx.setHeader(
+        "Vary",
+        try std.fmt.allocPrint(ctx.arena, "{s}, {s}", .{ existing, value }),
+    );
+}
+
 fn normalizePath(
     allocator: std.mem.Allocator,
     raw: []const u8,
@@ -589,4 +742,61 @@ test "static etag matching accepts weak and wildcard forms" {
     try std.testing.expect(etagMatches("W/\"abc\"", "\"abc\""));
     try std.testing.expect(etagMatches("*", "\"abc\""));
     try std.testing.expect(!etagMatches("\"other\"", "\"abc\""));
+}
+
+test "static variant selection honours q values and wildcards" {
+    try std.testing.expect(chooseVariant(null) == null);
+    try std.testing.expect(chooseVariant("identity") == null);
+    try std.testing.expect(chooseVariant("gzip;q=0") == null);
+
+    const gzip = chooseVariant("gzip").?;
+    try std.testing.expectEqualStrings("gzip", gzip.encoding);
+    try std.testing.expectEqualStrings(".gz", gzip.extension);
+
+    // Equal weights prefer brotli, then zstd, then gzip.
+    try std.testing.expectEqualStrings(
+        "br",
+        chooseVariant("gzip, br, zstd").?.encoding,
+    );
+    try std.testing.expectEqualStrings(
+        "zstd",
+        chooseVariant("gzip;q=0.8, zstd;q=0.9").?.encoding,
+    );
+    try std.testing.expectEqualStrings(
+        "gzip",
+        chooseVariant("gzip;q=1.0, br;q=0.5").?.encoding,
+    );
+
+    // Explicit weights override the wildcard, and `q=0` excludes a coding.
+    try std.testing.expectEqualStrings(
+        "gzip",
+        chooseVariant("*;q=0.5, gzip;q=0.9").?.encoding,
+    );
+    try std.testing.expect(chooseVariant("*;q=0") == null);
+    try std.testing.expectEqualStrings(
+        "br",
+        chooseVariant("*;q=0, br;q=0.5").?.encoding,
+    );
+    try std.testing.expectEqualStrings(
+        "br",
+        chooseVariant("*").?.encoding,
+    );
+
+    // Unknown codings are ignored; uppercase names are accepted.
+    try std.testing.expectEqualStrings(
+        "gzip",
+        chooseVariant("deflate, GZIP").?.encoding,
+    );
+}
+
+test "static quality parsing clamps malformed values" {
+    try std.testing.expectEqual(@as(?u16, 1000), parseQuality("1"));
+    try std.testing.expectEqual(@as(?u16, 1000), parseQuality("1.000"));
+    try std.testing.expectEqual(@as(?u16, 500), parseQuality("0.5"));
+    try std.testing.expectEqual(@as(?u16, 50), parseQuality("0.05"));
+    try std.testing.expectEqual(@as(?u16, 0), parseQuality("0"));
+    try std.testing.expect(parseQuality("1.5") == null);
+    try std.testing.expect(parseQuality("2") == null);
+    try std.testing.expect(parseQuality("") == null);
+    try std.testing.expect(parseQuality("abc") == null);
 }
