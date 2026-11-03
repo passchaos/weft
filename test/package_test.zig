@@ -1057,6 +1057,46 @@ test "package: static files serve 200, 304, 206, and HEAD" {
     );
     defer allocator.free(base);
 
+    var directory_redirect = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        base,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer directory_redirect.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 301),
+        directory_redirect.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "/assets/",
+        directory_redirect.response.header("location").?,
+    );
+
+    const directory_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/",
+        .{base},
+    );
+    defer allocator.free(directory_uri);
+    var directory_index = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        runtime_io,
+        directory_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer directory_index.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        directory_index.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "<h1>static</h1>",
+        directory_index.response.body,
+    );
+
     const index_uri = try std.fmt.allocPrint(
         allocator,
         "{s}/index.html",

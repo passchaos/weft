@@ -80,6 +80,9 @@ pub const StaticFiles = struct {
     allow_dotfiles: bool = false,
     follow_symlinks: bool = false,
     precompressed: bool = true,
+    /// Redirect directory requests that lack a trailing slash so relative URLs
+    /// in the served index document resolve against the directory.
+    redirect_directories: bool = true,
     mime_types: []const MimeType = &default_mime_types,
 
     pub fn handler(self: *StaticFiles) ctx_mod.Handler {
@@ -110,11 +113,22 @@ pub const StaticFiles = struct {
         };
 
         var relative = path;
-        var stat = self.dir.statFile(ctx.io, relative, .{
+        const stat_path = if (path.len == 0) "." else path;
+        var stat = self.dir.statFile(ctx.io, stat_path, .{
             .follow_symlinks = self.follow_symlinks,
         }) catch return notFound(ctx);
 
         if (stat.kind == .directory) {
+            if (self.redirect_directories and
+                !targetEndsWithSlash(ctx.target()))
+            {
+                ctx.setStatus(301);
+                try ctx.setHeader(
+                    "Location",
+                    try directoryLocation(ctx.arena, ctx.target()),
+                );
+                return ctx.text("Moved Permanently");
+            }
             const index = self.index_file orelse return notFound(ctx);
             relative = if (relative.len == 0)
                 try ctx.arena.dupe(u8, index)
@@ -578,6 +592,22 @@ fn parseQuality(text: []const u8) ?u16 {
     return whole * 1000 + fraction;
 }
 
+fn targetEndsWithSlash(target: []const u8) bool {
+    const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
+    return path_end > 0 and target[path_end - 1] == '/';
+}
+
+fn directoryLocation(
+    allocator: std.mem.Allocator,
+    target: []const u8,
+) ![]const u8 {
+    const query_start = std.mem.indexOfScalar(u8, target, '?');
+    const path = if (query_start) |index| target[0..index] else target;
+    const query = if (query_start) |index| target[index..] else "";
+    if (path.len == 0) return std.fmt.allocPrint(allocator, "/{s}", .{query});
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ path, query });
+}
+
 fn normalizePath(
     allocator: std.mem.Allocator,
     raw: []const u8,
@@ -750,6 +780,22 @@ test "static range parsing handles single, suffix, and multiple ranges" {
     try std.testing.expectEqual(@as(usize, 1), mixed.count);
     try std.testing.expect(parseRange("bytes=20-", 10) == .unsatisfiable);
     try std.testing.expect(parseRange("bytes=", 10) == .ignore);
+}
+
+test "static directory redirects preserve the query string" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(!targetEndsWithSlash("/assets"));
+    try std.testing.expect(!targetEndsWithSlash("/assets?x=1"));
+    try std.testing.expect(targetEndsWithSlash("/assets/"));
+    try std.testing.expect(targetEndsWithSlash("/assets/?x=1"));
+
+    const location = try directoryLocation(allocator, "/assets?x=1");
+    defer allocator.free(location);
+    try std.testing.expectEqualStrings("/assets/?x=1", location);
+
+    const rooted = try directoryLocation(allocator, "?x=1");
+    defer allocator.free(rooted);
+    try std.testing.expectEqualStrings("/?x=1", rooted);
 }
 
 test "static variant selection honours q values and wildcards" {

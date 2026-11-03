@@ -39,6 +39,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `StaticFiles` handler with traversal-safe normalization, dotfile/symlink
   policy, MIME detection, ETag/`Last-Modified`, single and multipart `Range`
   support (`206`/`416`), index files, and streamed file reads.
+- Directory requests without a trailing slash redirect (`301`) to the slash
+  form while preserving the query string; the empty wildcard capture maps to
+  the configured root directory so `/assets/` serves its index.
 - RFC 9110 precondition evaluation (`If-Match`, `If-None-Match`,
   `If-Modified-Since`, `If-Unmodified-Since`) in RFC order, plus `If-Range`
   ETag and HTTP-date forms. HTTP dates accept IMF-fixdate, RFC 850, and
@@ -105,8 +108,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 78/78 tests passed (50 unit, 28 package/integration).
-- ReleaseFast: 78/78 tests passed.
+- Debug: 80/80 tests passed (52 unit, 28 package/integration).
+- ReleaseFast: 80/80 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
