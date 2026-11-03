@@ -77,7 +77,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   when gzip is negotiated, with cancellation forwarded to the original
   producer.
 - `Ctx` exposes the request timeout deadline, remaining budget, and expiry for
-  cooperative handlers; access logs include protocol and remote address.
+  cooperative handlers; access logs include protocol and remote address,
+  report the dispatched status for handler failures, and use `499` for
+  cancellations.
 - Bounded per-client `RateLimit` token buckets return `429`/`Retry-After`, use
   fixed storage, evict least-recently-seen clients, and key on the peer IP
   without the ephemeral port so reconnects share one bucket.
@@ -117,8 +119,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 86/86 tests passed (57 unit, 29 package/integration).
-- ReleaseFast: 86/86 tests passed.
+- Debug: 87/87 tests passed (58 unit, 29 package/integration).
+- ReleaseFast: 87/87 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
