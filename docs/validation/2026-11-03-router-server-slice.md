@@ -18,7 +18,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Route groups with owned prefixes and middleware chains, including nesting.
 - Decoded path parameters and query pairs; malformed percent encoding and
   control bytes become `400`.
-- Typed JSON/form body helpers, cookie lookup and validated `Set-Cookie`
+- Typed JSON/form body helpers, cookie lookup (including DQUOTE unwrapping) and
+  validated `Set-Cookie`
   serialization.
 - Response header count/byte budgets, header-name/value validation, copying
   into the response arena, replace/append semantics, and head room reserved for
@@ -123,8 +124,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 90/90 tests passed (61 unit, 29 package/integration).
-- ReleaseFast: 90/90 tests passed.
+- Debug: 91/91 tests passed (62 unit, 29 package/integration).
+- ReleaseFast: 91/91 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

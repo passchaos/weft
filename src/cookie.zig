@@ -48,7 +48,20 @@ pub fn find(
             const equals = std.mem.indexOfScalar(u8, trimmed, '=') orelse
                 continue;
             if (std.mem.eql(u8, trimmed[0..equals], name)) {
-                return std.mem.trim(u8, trimmed[equals + 1 ..], " \t");
+                const value = std.mem.trim(
+                    u8,
+                    trimmed[equals + 1 ..],
+                    " \t",
+                );
+                // RFC 6265 allows a DQUOTE-wrapped cookie-value; expose the
+                // octets without the quotes.
+                if (value.len >= 2 and
+                    value[0] == '"' and
+                    value[value.len - 1] == '"')
+                {
+                    return value[1 .. value.len - 1];
+                }
+                return value;
             }
         }
     }
@@ -149,6 +162,14 @@ test "cookie lookup scans multiple headers" {
     try std.testing.expectEqualStrings("abc", find(&headers, "session").?);
     try std.testing.expectEqualStrings("zh", find(&headers, "lang").?);
     try std.testing.expect(find(&headers, "missing") == null);
+}
+
+test "cookie lookup unwraps quoted values" {
+    const headers = [_]netz.http1.Header{
+        .{ .name = "Cookie", .value = "q=\"hello\"; bad=\"open" },
+    };
+    try std.testing.expectEqualStrings("hello", find(&headers, "q").?);
+    try std.testing.expectEqualStrings("\"open", find(&headers, "bad").?);
 }
 
 test "cookie serialization includes attributes" {
