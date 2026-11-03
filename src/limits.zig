@@ -60,4 +60,15 @@ pub const Limits = struct {
             .write_strategy = self.write_strategy,
         };
     }
+
+    pub fn toHttp2Netz(self: Limits) netz.http2.runtime.Limits {
+        return .{
+            .max_body_bytes = self.max_body_bytes,
+            .max_header_fields = self.max_request_headers,
+            .max_header_list_size = self.max_head_bytes,
+            .handshake_timeout = self.request_head_timeout,
+            .auto_date_header = self.auto_date_header,
+            .tcp_nodelay = self.tcp_nodelay,
+        };
+    }
 };

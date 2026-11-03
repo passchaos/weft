@@ -149,6 +149,35 @@ TLS workers use `tls_accept_timeout` as the combined accept plus handshake
 budget, which also bounds idle shutdown polling. TLS transport, ciphers,
 certificate policy, and session handling remain owned by Netz.
 
+## HTTP/2
+
+`weft.Http2Server(H)` serves cleartext HTTP/2 with prior-knowledge h2c. It reuses
+the same `Router`, `Ctx`, middleware, limits, and streaming response contract:
+
+```zig
+var server = try weft.Http2Server(App).init(
+    io,
+    gpa,
+    .{
+        .address = .{ .ip4 = .loopback(8080) },
+        .limits = .{ .max_body_bytes = 1024 * 1024 },
+    },
+    .{},
+);
+defer server.deinit();
+
+try server.router().get("/hello/:name", hello, .{});
+try server.serve();
+```
+
+Netz owns frame parsing, HPACK, flow control, and stream state. Weft maps each
+completed request into the concrete `Ctx` view and maps responses back to
+lowercase HTTP/2 header fields. Response streaming, `HEAD`, `404/405/OPTIONS`,
+request decoding, and timeout budgets behave the same as HTTP/1.
+
+Current HTTP/2 limitations: cleartext only, and each worker serves one request
+at a time per connection even though the transport multiplexes streams.
+
 ## Static files
 
 `weft.StaticFiles` is a route handler that streams files below a directory. It
@@ -299,9 +328,9 @@ second), including capture allocation from a fixed arena.
 
 ## Status
 
-The first slice targets HTTP/1.1 through `netz.http1.runtime`, including
-cleartext and TLS listeners, and mirrors HTTP/1.0 request versions with
-appropriate connection semantics. The public `Ctx`/`Handler`/`Router` surface
-is protocol-version agnostic so HTTP/2 and HTTP/3 adapters can be added without
-changing application handlers. Remaining slices include Brotli/zstd
-response compression and HTTP/2/HTTP/3 adapters.
+HTTP/1.1 is served through `netz.http1.runtime` with cleartext and TLS
+listeners, and mirrors HTTP/1.0 request versions with appropriate connection
+semantics. `Http2Server` provides a cleartext h2c adapter over the same
+application surface. Remaining slices include concurrent HTTP/2 stream
+dispatch, h2 TLS, HTTP/3, streaming request bodies, and Brotli/zstd response
+compression.

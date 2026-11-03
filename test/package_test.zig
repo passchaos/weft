@@ -47,6 +47,28 @@ fn gzipAlloc(
     return output.toOwnedSlice();
 }
 
+fn serveHttp2Server(
+    server: *weft.Http2Server(App),
+) std.Io.Cancelable!void {
+    server.serve() catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            std.log.scoped(.weft).warn("http2 server failed: {s}", .{@errorName(err)});
+            return;
+        },
+    };
+}
+
+fn h2Header(
+    response: *const netz.http2.runtime.OwnedResponse,
+    name: []const u8,
+) ?[]const u8 {
+    for (response.headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
+    }
+    return null;
+}
+
 fn serveServer(server: *weft.Server(App)) std.Io.Cancelable!void {
     server.serve() catch |err| switch (err) {
         error.Canceled => return error.Canceled,
@@ -1389,6 +1411,149 @@ test "package: request timeout cancels slow handlers and allows fast ones" {
     try std.testing.expectEqualStrings(
         "hello from weft",
         fast_response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: HTTP/2 adapter serves routes, errors, and streams" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Http2Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+            .accept_timeout = .fromMilliseconds(100),
+            .idle_timeout = .fromMilliseconds(100),
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/hello/:name", hello, .{});
+    try router.post("/echo", echoJson, .{});
+    try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp2Server, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+
+    const hello_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/hello/weft?lang=zh",
+        .{base},
+    );
+    defer allocator.free(hello_uri);
+    var hello_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        hello_uri,
+        .{},
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer hello_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), hello_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"hello\",\"name\":\"weft\"}",
+        hello_response.body,
+    );
+
+    const missing_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/missing",
+        .{base},
+    );
+    defer allocator.free(missing_uri);
+    var missing_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        missing_uri,
+        .{},
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer missing_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 404), missing_response.status);
+    try std.testing.expectEqualStrings("Not Found", missing_response.body);
+
+    const echo_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/echo",
+        .{base},
+    );
+    defer allocator.free(echo_uri);
+    var echo_headers = [_]netz.http2.Hpack.HeaderField{.{
+        .name = "content-type",
+        .value = "application/json",
+    }};
+    var echo_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        echo_uri,
+        .{
+            .method = "POST",
+            .body = "{\"message\":\"weft\"}",
+            .headers = &echo_headers,
+        },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer echo_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), echo_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"weft\"}",
+        echo_response.body,
+    );
+
+    const stream_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/stream/fixed",
+        .{base},
+    );
+    defer allocator.free(stream_uri);
+    var stream_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        stream_uri,
+        .{},
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer stream_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), stream_response.status);
+    try std.testing.expectEqualStrings("hello stream", stream_response.body);
+
+    var head_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        stream_uri,
+        .{ .method = "HEAD" },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer head_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), head_response.status);
+    try std.testing.expectEqualStrings("", head_response.body);
+    try std.testing.expectEqualStrings(
+        "12",
+        h2Header(&head_response, "content-length").?,
     );
 
     server.stop();

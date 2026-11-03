@@ -46,6 +46,8 @@ pub const max_allowed_methods = @import("router.zig").max_allowed_methods;
 
 pub const Options = @import("server.zig").Options;
 pub const Server = @import("server.zig").Server;
+pub const Http2Options = @import("http2_server.zig").Options;
+pub const Http2Server = @import("http2_server.zig").Http2Server;
 
 pub const middleware = @import("middleware/mod.zig");
 
@@ -59,5 +61,7 @@ comptime {
     _ = @import("static_files.zig");
     _ = @import("router.zig");
     _ = @import("server.zig");
+    _ = @import("dispatch.zig");
+    _ = @import("http2_server.zig");
     _ = middleware;
 }

@@ -4,8 +4,8 @@ const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
-const query_mod = @import("query.zig");
 const stream_mod = @import("stream.zig");
+const dispatch_mod = @import("dispatch.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -69,32 +69,6 @@ const Listener = union(enum) {
         };
     }
 };
-
-const Disposition = union(enum) {
-    not_found,
-    bad_request,
-    method_not_allowed: router_mod.AllowedMethods,
-};
-
-const HandlerRace = union(enum) {
-    handler: void,
-    timeout: void,
-};
-
-const HandlerRun = struct {
-    context: *Ctx,
-    err: ?anyerror = null,
-};
-
-fn runHandler(run: *HandlerRun) void {
-    run.context.run() catch |err| {
-        run.err = err;
-    };
-}
-
-fn sleepTask(io: std.Io, duration: std.Io.Duration) void {
-    std.Io.sleep(io, duration, .awake) catch {};
-}
 
 const StreamState = struct {
     writer: *netz.http1.runtime.ResponseWriter,
@@ -436,167 +410,18 @@ pub fn Server(comptime H: type) type {
             request: *const netz.http1.Request,
             arena: std.mem.Allocator,
         ) !Response {
-            const target = request.target;
-            const query_index = std.mem.indexOfScalar(u8, target, '?');
-            const path = if (query_index) |index| target[0..index] else target;
-            const query = if (query_index) |index| target[index + 1 ..] else "";
-
-            const resolution = try self.app_router.resolve(
-                request.method,
-                path,
+            return dispatch_mod.dispatch(
+                H,
+                &self.app,
+                &self.app_router,
+                self.io,
+                self.options.limits,
+                self.options.middleware,
+                request,
                 arena,
             );
-
-            var disposition: ?Disposition = null;
-            var query_params: []const query_mod.Pair = &.{};
-            var params: []const ctx_mod.Param = &.{};
-            var route_middleware: []const Handler = &.{};
-            var final_handler: Handler = ctx_mod.handler(respondDisposition);
-
-            const parsed_query = query_mod.parse(
-                arena,
-                query,
-                self.options.limits.max_query_params,
-            ) catch blk: {
-                disposition = .bad_request;
-                break :blk query_mod.Query{};
-            };
-            query_params = parsed_query.pairs;
-
-            switch (resolution) {
-                .matched => |matched| {
-                    if (disposition == null) {
-                        if (decodeParams(arena, matched.params) catch null) |decoded| {
-                            params = decoded;
-                            route_middleware = matched.route.middleware;
-                            final_handler = matched.route.handler;
-                        } else {
-                            disposition = .bad_request;
-                        }
-                    }
-                },
-                .method_not_allowed => |allowed| {
-                    if (disposition == null) {
-                        disposition = .{ .method_not_allowed = allowed };
-                    }
-                },
-                .not_found => {
-                    if (disposition == null) disposition = .not_found;
-                },
-            }
-
-            var middleware = self.options.middleware;
-            if (disposition == null and route_middleware.len > 0) {
-                const total = middleware.len + route_middleware.len;
-                if (total > self.options.limits.max_middleware) {
-                    return error.TooMuchMiddleware;
-                }
-                const combined = try arena.alloc(Handler, total);
-                @memcpy(combined[0..middleware.len], middleware);
-                @memcpy(combined[middleware.len..], route_middleware);
-                middleware = combined;
-            }
-
-            var context = Ctx{
-                .app = @ptrCast(&self.app),
-                .io = self.io,
-                .arena = arena,
-                .limits = self.options.limits,
-                .request = request,
-                .query = query,
-                .query_params = query_params,
-                .params = params,
-                .response = Response.initWithLimits(arena, self.options.limits),
-                .middleware = middleware,
-                .final_handler = final_handler,
-            };
-
-            if (disposition) |value| {
-                try context.set(Disposition, value);
-            }
-
-            if (self.options.limits.request_timeout) |duration| {
-                var run = HandlerRun{ .context = &context };
-                var race_buffer: [2]HandlerRace = undefined;
-                var select = std.Io.Select(HandlerRace).init(
-                    self.io,
-                    &race_buffer,
-                );
-                defer select.cancelDiscard();
-
-                try select.concurrent(.handler, runHandler, .{&run});
-                try select.concurrent(.timeout, sleepTask, .{
-                    self.io,
-                    duration,
-                });
-
-                const winner = select.await() catch |err| return err;
-                switch (winner) {
-                    .handler => if (run.err) |err| {
-                        if (err == error.Canceled) return error.Canceled;
-                        applyHandlerError(&context, err);
-                    },
-                    .timeout => {
-                        // The handler task may still be mutating the response;
-                        // wait for cancellation before replacing it.
-                        select.cancelDiscard();
-                        context.response.reset();
-                        context.response.setStatus(503);
-                        context.response.text("Service Unavailable") catch {};
-                    },
-                }
-            } else {
-                context.run() catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    applyHandlerError(&context, err);
-                };
-            }
-
-            return context.response;
         }
     };
-}
-
-fn respondDisposition(ctx: *Ctx) anyerror!void {
-    const disposition = ctx.get(Disposition) orelse {
-        ctx.setStatus(500);
-        return ctx.text("Internal Server Error");
-    };
-
-    switch (disposition) {
-        .not_found => {
-            ctx.setStatus(404);
-            try ctx.text("Not Found");
-        },
-        .bad_request => {
-            ctx.setStatus(400);
-            try ctx.text("Bad Request");
-        },
-        .method_not_allowed => |allowed| {
-            try ctx.setHeader("Allow", try allowed.value(ctx.arena));
-            if (ctx.method() == .OPTIONS) {
-                ctx.setStatus(204);
-                return;
-            }
-            ctx.setStatus(405);
-            try ctx.text("Method Not Allowed");
-        },
-    }
-}
-
-fn decodeParams(
-    arena: std.mem.Allocator,
-    raw: []const ctx_mod.Param,
-) ![]const ctx_mod.Param {
-    if (raw.len == 0) return &.{};
-    const decoded = try arena.alloc(ctx_mod.Param, raw.len);
-    for (raw, 0..) |param, index| {
-        decoded[index] = .{
-            .name = param.name,
-            .value = try query_mod.decodeComponent(arena, param.value, false),
-        };
-    }
-    return decoded;
 }
 
 fn internalErrorResponse(
@@ -607,26 +432,6 @@ fn internalErrorResponse(
     response.setStatus(500);
     response.text("Internal Server Error") catch {};
     return response;
-}
-
-fn applyHandlerError(context: *Ctx, err: anyerror) void {
-    std.log.scoped(.weft).warn(
-        "handler failed: {s}",
-        .{@errorName(err)},
-    );
-    // Nothing has reached the wire yet, so a failed handler can always be
-    // replaced with a clean response.
-    const status = statusForHandlerError(err);
-    context.response.reset();
-    context.response.setStatus(status);
-    context.response.text(response_mod.reasonFor(status)) catch {};
-}
-
-fn statusForHandlerError(err: anyerror) u16 {
-    if (err == error.UnsupportedMediaType) return 415;
-    if (err == error.PayloadTooLarge) return 413;
-    if (err == error.BadRequest or err == error.InvalidJson) return 400;
-    return 500;
 }
 
 fn statusForReadError(err: anyerror) ?u16 {
