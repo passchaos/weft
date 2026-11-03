@@ -180,6 +180,16 @@ fn h2Header(
     return null;
 }
 
+fn h3Header(
+    response: *const netz.http3.runtime.OwnedHandshakeResponse,
+    name: []const u8,
+) ?[]const u8 {
+    for (response.response.headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
+    }
+    return null;
+}
+
 fn serveServer(server: *weft.Server(App)) std.Io.Cancelable!void {
     server.serve() catch |err| switch (err) {
         error.Canceled => return error.Canceled,
@@ -2953,6 +2963,22 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try std.testing.expectEqualStrings(
         "hello stream",
         stream_response.response.body,
+    );
+
+    var head_response = try client.request(.{
+        .method = "HEAD",
+        .path = "/stream/fixed",
+        .authority = "localhost",
+    });
+    defer head_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        head_response.response.status,
+    );
+    try std.testing.expectEqualStrings("", head_response.response.body);
+    try std.testing.expectEqualStrings(
+        "12",
+        h3Header(&head_response, "content-length").?,
     );
 
     server.stop();

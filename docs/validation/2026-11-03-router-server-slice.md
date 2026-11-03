@@ -176,4 +176,9 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 
 - Native step-driven DATA delivery for HTTP/3 request bodies; HTTP/2 uses
   netz's concurrent engine and HTTP/3 handlers are already concurrent.
+- HTTP/3 adoption of `HandshakeServerSession.serveConcurrentStreams` waits on
+  netz marking suppress-body (`HEAD`/`204`/`304`) streaming responses as
+  finished, plus bounded (non-whole-body) `nextBody` delivery. Tracked in
+  `netz/docs/weft-integration-requests.md`; weft already covers the buffered
+  adapter's HEAD `Content-Length` behavior in `test/package_test.zig`.
 - CPU-bound handler preemption without cancellation points.
