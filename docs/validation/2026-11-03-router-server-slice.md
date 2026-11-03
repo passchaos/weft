@@ -39,6 +39,10 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `StaticFiles` handler with traversal-safe normalization, dotfile/symlink
   policy, MIME detection, ETag/`If-None-Match`, single `Range` support
   (`206`/`416`), index files, and streamed file reads.
+- Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
+  `bodyJson`/`bodyForm`; malformed JSON maps to `400`, unsupported codings to
+  `415`, and oversized decoded bodies to `413`.
+- CORS preflight validates requested headers against a configured allow list.
 
 ## Verification
 
@@ -54,14 +58,14 @@ zig build bench -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 46/46 tests passed (31 unit, 15 package/integration).
-- ReleaseFast: 46/46 tests passed.
+- Debug: 49/49 tests passed (32 unit, 17 package/integration).
+- ReleaseFast: 49/49 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 80.6 ns/lookup 12403475 lookups/s
-router param:  routes=256  lookups=1000000 90.3 ns/lookup 11069290 lookups/s
+router static: routes=1024 lookups=2000000 80.7 ns/lookup 12386547 lookups/s
+router param:  routes=256  lookups=1000000 90.9 ns/lookup 11006933 lookups/s
 ```
 
 The benchmark includes capture-array allocation from a fixed arena for the

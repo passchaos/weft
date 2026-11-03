@@ -449,10 +449,11 @@ pub fn Server(comptime H: type) type {
                     .{@errorName(err)},
                 );
                 // Nothing has reached the wire yet, so a failed handler can
-                // always be replaced with a clean 500.
+                // always be replaced with a clean response.
+                const status = statusForHandlerError(err);
                 context.response.reset();
-                context.response.setStatus(500);
-                context.response.text("Internal Server Error") catch {};
+                context.response.setStatus(status);
+                context.response.text(response_mod.reasonFor(status)) catch {};
             };
 
             return context.response;
@@ -510,6 +511,13 @@ fn internalErrorResponse(
     response.setStatus(500);
     response.text("Internal Server Error") catch {};
     return response;
+}
+
+fn statusForHandlerError(err: anyerror) u16 {
+    if (err == error.UnsupportedMediaType) return 415;
+    if (err == error.PayloadTooLarge) return 413;
+    if (err == error.BadRequest or err == error.InvalidJson) return 400;
+    return 500;
 }
 
 fn statusForReadError(err: anyerror) ?u16 {

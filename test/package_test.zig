@@ -18,6 +18,35 @@ fn hello(app: *App, ctx: *weft.Ctx) anyerror!void {
     });
 }
 
+const JsonPayload = struct {
+    message: []const u8,
+};
+
+fn echoJson(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    const payload = try ctx.bodyJson(JsonPayload);
+    try ctx.json(.{ .message = payload.message });
+}
+
+fn gzipAlloc(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+) ![]u8 {
+    var output = try std.Io.Writer.Allocating.initCapacity(allocator, 64);
+    defer output.deinit();
+
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var encoder = try std.compress.flate.Compress.init(
+        &output.writer,
+        &window,
+        .gzip,
+        .default,
+    );
+    try encoder.writer.writeAll(body);
+    try encoder.finish();
+    return output.toOwnedSlice();
+}
+
 fn serveServer(server: *weft.Server(App)) std.Io.Cancelable!void {
     server.serve() catch |err| switch (err) {
         error.Canceled => return error.Canceled,
@@ -1028,6 +1057,151 @@ test "package: static files serve 200, 304, 206, and HEAD" {
 
     server.stop();
     try group.await(runtime_io);
+}
+
+test "package: gzip request bodies are decoded for JSON handlers" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().post("/echo", echoJson, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const compressed = try gzipAlloc(
+        allocator,
+        "{\"message\":\"weft\"}",
+    );
+    defer allocator.free(compressed);
+
+    var headers = [_]netz.http1.Header{
+        .{ .name = "Content-Encoding", .value = "gzip" },
+        .{ .name = "Content-Type", .value = "application/json" },
+    };
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/echo",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .headers = &headers,
+            .body = compressed,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"weft\"}",
+        response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: invalid JSON and unsupported encodings map to 400 and 415" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().post("/echo", echoJson, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/echo",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var invalid_json = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .body = "{",
+            .headers = &.{.{
+                .name = "Content-Type",
+                .value = "application/json",
+            }},
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer invalid_json.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 400), invalid_json.response.status);
+
+    var unsupported = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .body = "{}",
+            .headers = &.{
+                .{ .name = "Content-Type", .value = "application/json" },
+                .{ .name = "Content-Encoding", .value = "compress" },
+            },
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer unsupported.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 415), unsupported.response.status);
+
+    server.stop();
+    try group.await(io);
 }
 
 test "package: response header budget failure becomes 500" {

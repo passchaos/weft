@@ -85,8 +85,12 @@ pub fn main(init: std.process.Init) !void {
   `+` is decoded as a space. `ctx.queryPairs()` exposes all pairs in wire order.
 - `ctx.header(name)`, `ctx.body()`, `ctx.method()`, and `ctx.target()` expose the
   parsed request.
-- `ctx.bodyJson(T)` parses JSON with the request arena.
-- `ctx.bodyForm()` parses `application/x-www-form-urlencoded` bodies.
+- `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,
+  deflate, br, zstd) with `Limits.max_body_bytes` as the decoded bound.
+- `ctx.bodyJson(T)` parses decoded JSON with the request arena. Invalid JSON
+  becomes `400`; an unsupported coding becomes `415`; an oversized decoded
+  body becomes `413`.
+- `ctx.bodyForm()` parses decoded `application/x-www-form-urlencoded` bodies.
 - `ctx.cookie(name)` reads request cookies; `ctx.setCookie(...)` appends a
   validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
@@ -176,8 +180,8 @@ Built-ins:
 - `log` — logs method, target, request id, status, and elapsed nanoseconds.
 - `securityHeaders` / `SecurityHeaders` — configurable browser hardening fields.
 - `BasicAuth` — constant-time Basic credential check with a challenge response.
-- `Cors` — exact-origin allow list, credential support, preflight handling, and
-  `Vary` maintenance.
+- `Cors` — exact-origin allow list, credential support, preflight handling,
+  configured request-header validation, and `Vary` maintenance.
 - `Compress` — gzip for accepted `Accept-Encoding`, compressible content types,
   and bodies above `min_bytes`; existing `Content-Encoding` is respected.
 - `recover` — converts an uncommitted handler failure into `500`, or marks a
@@ -260,8 +264,8 @@ zig build bench -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
-On the reference development host, a ReleaseFast run reports roughly 80 ns per
-static lookup and 90 ns per parameter lookup (about 12.4M and 11.1M lookups per
+On the reference development host, a ReleaseFast run reports roughly 81 ns per
+static lookup and 91 ns per parameter lookup (about 12.4M and 11.0M lookups per
 second), including capture allocation from a fixed arena.
 
 ## Status

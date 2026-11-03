@@ -78,6 +78,11 @@ pub const Cors = struct {
             if (self.allow_headers.len == 0) {
                 try ctx.setHeader("Access-Control-Allow-Headers", requested);
             } else {
+                if (!self.requestedHeadersAllowed(requested)) {
+                    ctx.setStatus(403);
+                    try ctx.text("CORS header not allowed");
+                    return;
+                }
                 try ctx.setHeader(
                     "Access-Control-Allow-Headers",
                     try std.mem.join(ctx.arena, ", ", self.allow_headers),
@@ -119,6 +124,26 @@ pub const Cors = struct {
             if (std.mem.eql(u8, allowed, method)) return true;
         }
         return false;
+    }
+
+    fn requestedHeadersAllowed(
+        self: *const Cors,
+        requested: []const u8,
+    ) bool {
+        var iterator = std.mem.splitScalar(u8, requested, ',');
+        while (iterator.next()) |part| {
+            const name = std.mem.trim(u8, part, " \t");
+            if (name.len == 0) continue;
+            var allowed = false;
+            for (self.allow_headers) |candidate| {
+                if (std.ascii.eqlIgnoreCase(candidate, name)) {
+                    allowed = true;
+                    break;
+                }
+            }
+            if (!allowed) return false;
+        }
+        return true;
     }
 };
 
@@ -231,5 +256,53 @@ test "cors leaves disallowed origins without cors headers" {
     try std.testing.expectEqualStrings("ok", context.response.body);
     try std.testing.expect(
         context.response.header("access-control-allow-origin") == null,
+    );
+}
+
+test "cors rejects requested headers outside the allow list" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const origins = [_][]const u8{"https://app.example"};
+    const allowed_headers = [_][]const u8{"content-type"};
+    var cors = Cors{
+        .allowed_origins = &origins,
+        .allow_headers = &allowed_headers,
+    };
+
+    var headers = [_]netz.http1.Header{
+        .{ .name = "Origin", .value = "https://app.example" },
+        .{ .name = "Access-Control-Request-Method", .value = "POST" },
+        .{ .name = "Access-Control-Request-Headers", .value = "content-type, x-evil" },
+    };
+    var request: netz.http1.Request = .{
+        .method = .OPTIONS,
+        .target = "/api",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{cors.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.text("route");
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqual(@as(u16, 403), context.response.status);
+    try std.testing.expectEqualStrings(
+        "CORS header not allowed",
+        context.response.body,
     );
 }

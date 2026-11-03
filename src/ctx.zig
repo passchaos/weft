@@ -129,6 +129,29 @@ pub const Ctx = struct {
         return self.request.body;
     }
 
+    /// Decode any `Content-Encoding` layers using the request arena.
+    ///
+    /// The decoded output is bounded by `Limits.max_body_bytes`. An absent or
+    /// `identity` encoding borrows the original body without allocating.
+    pub fn decodedBody(self: *Ctx) ![]const u8 {
+        const decoded = self.request.decodeContentAlloc(
+            self.arena,
+            self.limits.max_body_bytes,
+        ) catch |err| switch (err) {
+            error.UnsupportedContentEncoding => return error.UnsupportedMediaType,
+            error.DecodedBodyTooLarge,
+            error.EncodedBodyTooLarge,
+            => return error.PayloadTooLarge,
+            error.InvalidContentEncoding,
+            error.TooManyContentEncodings,
+            error.InvalidDecoderState,
+            error.AliasedBuffers,
+            => return error.BadRequest,
+            else => return err,
+        };
+        return decoded.bytes;
+    }
+
     pub fn param(self: *const Ctx, name: []const u8) ?[]const u8 {
         for (self.params) |p| {
             if (std.mem.eql(u8, p.name, name)) return p.value;
@@ -166,9 +189,17 @@ pub const Ctx = struct {
         return self.query_params;
     }
 
-    /// Parse the request body as JSON using the request arena.
+    /// Parse the decoded request body as JSON using the request arena.
     pub fn bodyJson(self: *Ctx, comptime T: type) !T {
-        return std.json.parseFromSliceLeaky(T, self.arena, self.body(), .{});
+        return std.json.parseFromSliceLeaky(
+            T,
+            self.arena,
+            try self.decodedBody(),
+            .{},
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidJson,
+        };
     }
 
     /// Parse an `application/x-www-form-urlencoded` request body. The returned
@@ -188,9 +219,12 @@ pub const Ctx = struct {
         }
         return query_mod.parse(
             self.arena,
-            self.body(),
+            try self.decodedBody(),
             self.limits.max_query_params,
-        );
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.BadRequest,
+        };
     }
 
     /// Read a request cookie by name. Cookie names are case-sensitive.
