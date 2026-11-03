@@ -392,7 +392,8 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 `weft.Limits` maps Netz's HTTP/1 limits and adds weft-owned budgets:
 
 - `max_request_arena_bytes` bounds per-request headers, bodies, params,
-  decoded query values, response headers, and middleware locals.
+  decoded query values, response headers, and middleware locals. HTTP/1,
+  HTTP/2, and HTTP/3 adapters all enforce it with a fixed arena.
 - `max_response_bytes` rejects oversized buffered bodies before they are
   written and bounds the bytes produced by streaming bodies.
 - `max_response_headers` and `max_response_head_bytes` bound the response head

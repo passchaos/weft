@@ -254,6 +254,13 @@ pub fn Http2Server(comptime H: type) type {
         ) !void {
             var served: usize = 0;
             var last_stream_id: u31 = 0;
+            // Bound per-request allocations by the same arena budget as the
+            // HTTP/1 adapter.
+            const arena_buffer = try self.allocator.alloc(
+                u8,
+                self.options.limits.max_request_arena_bytes,
+            );
+            defer self.allocator.free(arena_buffer);
 
             while (served < self.options.max_requests_per_connection) : (served += 1) {
                 if (self.shutdown.isSet()) {
@@ -285,8 +292,12 @@ pub fn Http2Server(comptime H: type) type {
                 defer request.deinit(self.allocator);
                 last_stream_id = request.stream_id;
 
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
-                defer arena.deinit();
+                // Bound per-request allocations by the same arena budget as
+                // the HTTP/1 adapter.
+                var fixed_arena = std.heap.FixedBufferAllocator.init(
+                    arena_buffer,
+                );
+                const arena = fixed_arena.allocator();
 
                 const client_info = ctx_mod.ClientInfo{
                     .address = connection.stream.socket.address,
@@ -297,7 +308,7 @@ pub fn Http2Server(comptime H: type) type {
                 var response = self.dispatch(
                     &request,
                     client_info,
-                    arena.allocator(),
+                    arena,
                 ) catch |err| blk: {
                     if (err == error.Canceled) return error.Canceled;
                     std.log.scoped(.weft).warn(
@@ -305,7 +316,7 @@ pub fn Http2Server(comptime H: type) type {
                         .{@errorName(err)},
                     );
                     break :blk internalErrorResponse(
-                        arena.allocator(),
+                        arena,
                         self.options.limits,
                     );
                 };
@@ -325,7 +336,7 @@ pub fn Http2Server(comptime H: type) type {
                     connection,
                     &request,
                     &response,
-                    arena.allocator(),
+                    arena,
                 );
             }
 

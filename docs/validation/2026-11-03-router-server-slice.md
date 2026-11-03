@@ -88,6 +88,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `Http2Server(H)` serves cleartext h2c and TLS/ALPN `h2` through the same
   router, middleware, timeout, streaming, and error semantics, including
   lowercase response field mapping and graceful GOAWAY.
+- All three server adapters bound per-request allocations with the same
+  `max_request_arena_bytes` fixed budget.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both
   adapters.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part

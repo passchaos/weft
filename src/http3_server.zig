@@ -257,6 +257,14 @@ pub fn Http3Server(comptime H: type) type {
             session: *netz.http3.runtime.HandshakeServerSession,
         ) !void {
             var served: usize = 0;
+            // Bound per-request allocations by the same arena budget as the
+            // HTTP/1 and HTTP/2 adapters.
+            const arena_buffer = try self.allocator.alloc(
+                u8,
+                self.options.limits.max_request_arena_bytes,
+            );
+            defer self.allocator.free(arena_buffer);
+
             while (served < self.options.max_requests_per_connection) : (served += 1) {
                 if (self.shutdown.isSet()) {
                     session.initiateShutdown() catch {};
@@ -278,8 +286,12 @@ pub fn Http3Server(comptime H: type) type {
                 };
                 defer request.deinit(self.allocator);
 
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
-                defer arena.deinit();
+                // Bound per-request allocations by the same arena budget as
+                // the HTTP/1 and HTTP/2 adapters.
+                var fixed_arena = std.heap.FixedBufferAllocator.init(
+                    arena_buffer,
+                );
+                const arena = fixed_arena.allocator();
 
                 const client_info = ctx_mod.ClientInfo{
                     .address = request.from,
@@ -289,7 +301,7 @@ pub fn Http3Server(comptime H: type) type {
                 var response = self.dispatch(
                     &request.request,
                     client_info,
-                    arena.allocator(),
+                    arena,
                 ) catch |err| blk: {
                     if (err == error.Canceled) return error.Canceled;
                     std.log.scoped(.weft).warn(
@@ -297,7 +309,7 @@ pub fn Http3Server(comptime H: type) type {
                         .{@errorName(err)},
                     );
                     break :blk internalErrorResponse(
-                        arena.allocator(),
+                        arena,
                         self.options.limits,
                     );
                 };
@@ -318,7 +330,7 @@ pub fn Http3Server(comptime H: type) type {
                     request.stream_id,
                     &request.request,
                     &response,
-                    arena.allocator(),
+                    arena,
                 );
             }
 
