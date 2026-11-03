@@ -59,7 +59,7 @@ pub fn dispatch(
     request: *const netz.http1.Request,
     client_info: ctx_mod.ClientInfo,
     arena: std.mem.Allocator,
-    body_reader: ?*ctx_mod.BodyReader,
+    body_reader: ?ctx_mod.BodyReader,
 ) !response_mod.Response {
     const target = request.target;
     const query_index = std.mem.indexOfScalar(u8, target, '?');

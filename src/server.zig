@@ -1,6 +1,5 @@
 const std = @import("std");
 const netz = @import("netz");
-const body_stream_mod = @import("body_stream.zig");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -289,34 +288,19 @@ pub fn Server(comptime H: type) type {
                 );
                 const arena = fixed_buffer.allocator();
 
-                var state = StreamingRead(H){
-                    .server = self,
-                    .allocator = self.allocator,
-                    .arena = arena,
-                    .client_info = .{
-                        .address = connection.stream.socket.address,
-                        .protocol = .http_1_1,
-                        .tls = connection.tls_server_conn != null,
-                    },
-                };
-                defer state.body.deinit(self.allocator);
-                defer state.clearStreaming();
-
-                var request = connection.readRequestStreamingWithOptionsAndHead(
+                const reader = connection.readRequestBodyWithBuffer(
                     .{
                         .max_headers = self.options.limits.max_request_headers,
                         .max_request_target_bytes = self.options.limits.max_request_target_bytes,
                     },
-                    &state,
-                    StreamingRead(H).onHead,
-                    StreamingRead(H).onChunk,
+                    self.options.limits.max_streaming_window_bytes,
                 ) catch |err| {
-                    if (state.streaming) {
-                        state.reader.?.finish();
-                        if (state.future) |*future| {
-                            _ = future.await(self.io) catch {};
-                        }
-                    }
+                    if (err == error.Canceled) return error.Canceled;
+                    return err;
+                };
+                defer reader.deinit();
+
+                const head = reader.head() catch |err| {
                     if (err == error.ConnectionClosed) return false;
                     if (err == error.Canceled) return error.Canceled;
                     const status = statusForReadError(err) orelse return false;
@@ -330,69 +314,120 @@ pub fn Server(comptime H: type) type {
                     }) catch {};
                     return false;
                 };
-                defer request.deinit(self.allocator);
 
-                var handler_request: netz.http1.Request = .{
-                    .method = request.method,
-                    .target = request.target,
-                    .version = request.version,
-                    .headers = request.headers,
-                    .body = if (state.streaming) "" else state.body.items,
-                    .trailers = request.trailers,
-                    .consumed = 0,
-                    .must_close = request.must_close,
+                const client_info = ctx_mod.ClientInfo{
+                    .address = connection.stream.socket.address,
+                    .protocol = switch (head.version) {
+                        .http_1_0 => .http_1_0,
+                        .http_1_1 => .http_1_1,
+                        else => .http_1_1,
+                    },
+                    .tls = connection.tls_server_conn != null,
                 };
 
-                var response: Response = undefined;
-                if (state.streaming) {
-                    state.reader.?.finish();
-                    response = state.future.?.await(self.io) catch |err| blk: {
-                        if (err == error.Canceled) return error.Canceled;
-                        std.log.scoped(.weft).warn(
-                            "dispatch failed: {s}",
-                            .{@errorName(err)},
-                        );
-                        break :blk internalErrorResponse(
-                            arena,
-                            self.options.limits,
-                        );
-                    };
-                } else if (state.fallback_streaming) {
-                    response = dispatchWithReplay(
-                        self,
-                        &handler_request,
-                        state.client_info,
-                        arena,
-                        state.body.items,
-                        self.options.limits,
-                    ) catch |err| blk: {
-                        if (err == error.Canceled) return error.Canceled;
-                        std.log.scoped(.weft).warn(
-                            "dispatch failed: {s}",
-                            .{@errorName(err)},
-                        );
-                        break :blk internalErrorResponse(
-                            arena,
-                            self.options.limits,
-                        );
-                    };
+                const method = head.method;
+                const target = head.target;
+                const query_index = std.mem.indexOfScalar(u8, target, '?');
+                const path = if (query_index) |index| target[0..index] else target;
+                const streaming = self.app_router.isStreaming(method, path);
+
+                var body: std.ArrayListUnmanaged(u8) = .empty;
+                defer body.deinit(self.allocator);
+                var body_reader: ?ctx_mod.BodyReader = null;
+                var drain_failed = false;
+
+                if (streaming) {
+                    body_reader = .{ .pull = reader };
                 } else {
-                    response = self.dispatch(
-                        &handler_request,
-                        state.client_info,
-                        arena,
-                        null,
-                    ) catch |err| blk: {
+                    while (true) {
+                        const chunk = reader.next() catch |err| {
+                            if (err == error.Canceled) return error.Canceled;
+                            if (err == error.ConnectionClosed) return false;
+                            const status = statusForReadError(err) orelse
+                                return false;
+                            connection.writeResponse(.{
+                                .status = status,
+                                .reason = response_mod.reasonFor(status),
+                                .headers = &.{.{
+                                    .name = "Connection",
+                                    .value = "close",
+                                }},
+                            }) catch {};
+                            return false;
+                        };
+                        if (chunk == null) break;
+                        const next_total = std.math.add(
+                            usize,
+                            body.items.len,
+                            chunk.?.len,
+                        ) catch return false;
+                        if (next_total > self.options.limits.max_body_bytes) {
+                            connection.writeResponse(.{
+                                .status = 413,
+                                .reason = response_mod.reasonFor(413),
+                                .headers = &.{.{
+                                    .name = "Connection",
+                                    .value = "close",
+                                }},
+                            }) catch {};
+                            return false;
+                        }
+                        try body.appendSlice(self.allocator, chunk.?);
+                    }
+                }
+
+                var meta: ?netz.http1.runtime.StreamingRequest = null;
+                if (!streaming) {
+                    meta = reader.takeRequest() catch |err| {
                         if (err == error.Canceled) return error.Canceled;
-                        std.log.scoped(.weft).warn(
-                            "dispatch failed: {s}",
-                            .{@errorName(err)},
-                        );
-                        break :blk internalErrorResponse(
-                            arena,
-                            self.options.limits,
-                        );
+                        return false;
                     };
+                }
+                defer if (meta) |*value| value.deinit(self.allocator);
+
+                var handler_request = netz.http1.Request{
+                    .method = method,
+                    .target = target,
+                    .version = head.version,
+                    .headers = head.headers,
+                    .body = if (streaming) "" else body.items,
+                    .trailers = if (meta) |value| value.trailers else &.{},
+                    .consumed = 0,
+                    .must_close = head.must_close,
+                };
+
+                var response = self.dispatch(
+                    &handler_request,
+                    client_info,
+                    arena,
+                    body_reader,
+                ) catch |err| blk: {
+                    if (err == error.Canceled) return error.Canceled;
+                    std.log.scoped(.weft).warn(
+                        "dispatch failed: {s}",
+                        .{@errorName(err)},
+                    );
+                    break :blk internalErrorResponse(
+                        arena,
+                        self.options.limits,
+                    );
+                };
+
+                if (streaming) {
+                    while (true) {
+                        const chunk = reader.next() catch {
+                            drain_failed = true;
+                            break;
+                        };
+                        if (chunk == null) break;
+                    }
+                    if (!drain_failed) {
+                        if (reader.takeRequest()) |value| {
+                            meta = value;
+                        } else |_| {
+                            drain_failed = true;
+                        }
+                    }
                 }
 
                 if (response.body.len > self.options.limits.max_response_bytes) {
@@ -406,11 +441,12 @@ pub fn Server(comptime H: type) type {
                     response.text("Internal Server Error") catch {};
                 };
 
-                const keep_alive = request.keepAlive() and
+                const keep_alive = !drain_failed and
+                    head.keepAlive() and
                     !self.shutdown.isSet();
                 if (!keep_alive) {
                     response.setHeader("Connection", "close") catch {};
-                } else if (request.version == .http_1_0) {
+                } else if (head.version == .http_1_0) {
                     response.setHeader("Connection", "keep-alive") catch {};
                 }
                 if (self.shutdown.isSet()) connection.gracefulShutdown();
@@ -427,16 +463,16 @@ pub fn Server(comptime H: type) type {
                     }
                 }
 
-                if (response.stream) |body| {
+                if (response.stream) |stream_body| {
                     const body_forbidden = handler_request.method == .HEAD or
                         response.status == 204 or
                         response.status == 304 or
                         (response.status >= 100 and response.status < 200);
                     if (body_forbidden) {
-                        body.cancel();
+                        stream_body.cancel();
                         response.stream = null;
                         if (handler_request.method == .HEAD) {
-                            if (body.length) |length| {
+                            if (stream_body.length) |length| {
                                 response.setHeader(
                                     "Content-Length",
                                     try std.fmt.allocPrint(
@@ -456,7 +492,7 @@ pub fn Server(comptime H: type) type {
                             connection,
                             &handler_request,
                             &response,
-                            body,
+                            stream_body,
                         );
                     }
                 } else {
@@ -599,7 +635,7 @@ pub fn Server(comptime H: type) type {
             request: *const netz.http1.Request,
             client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
-            body_reader: ?*ctx_mod.BodyReader,
+            body_reader: ?ctx_mod.BodyReader,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -618,206 +654,6 @@ pub fn Server(comptime H: type) type {
                 arena,
                 body_reader,
             );
-        }
-    };
-}
-
-fn dupeHeaders(
-    allocator: std.mem.Allocator,
-    headers: []const netz.http1.Header,
-) ![]netz.http1.Header {
-    const copy = try allocator.alloc(netz.http1.Header, headers.len);
-    var count: usize = 0;
-    errdefer {
-        freeHeaderCopy(allocator, copy[0..count]);
-        allocator.free(copy);
-    }
-    for (headers, 0..) |header, index| {
-        const name = try allocator.dupe(u8, header.name);
-        const value = allocator.dupe(u8, header.value) catch |err| {
-            allocator.free(name);
-            return err;
-        };
-        copy[index] = .{ .name = name, .value = value };
-        count += 1;
-    }
-    return copy;
-}
-
-fn freeHeaderCopy(
-    allocator: std.mem.Allocator,
-    headers: []const netz.http1.Header,
-) void {
-    for (headers) |header| {
-        allocator.free(header.name);
-        allocator.free(header.value);
-    }
-}
-
-fn dispatchWithReplay(
-    server: anytype,
-    request: *const netz.http1.Request,
-    client_info: ctx_mod.ClientInfo,
-    arena: std.mem.Allocator,
-    body: []const u8,
-    limits: Limits,
-) !Response {
-    var replay = try body_stream_mod.Reader.init(
-        server.allocator,
-        server.io,
-        limits.max_streaming_window_bytes,
-    );
-    defer replay.deinit();
-    try replay.push(body);
-    replay.finish();
-    return server.dispatch(request, client_info, arena, &replay);
-}
-
-fn StreamingRead(comptime H: type) type {
-    return struct {
-        const Self = @This();
-
-        server: *Server(H),
-        allocator: std.mem.Allocator,
-        arena: std.mem.Allocator,
-        client_info: ctx_mod.ClientInfo,
-        body: std.ArrayListUnmanaged(u8) = .empty,
-        reader: ?*body_stream_mod.Reader = null,
-        headers: ?[]netz.http1.Header = null,
-        target: ?[]u8 = null,
-        request: ?netz.http1.Request = null,
-        future: ?std.Io.Future(anyerror!Response) = null,
-        streaming: bool = false,
-        /// Route asked for streaming but the Io backend could not run the
-        /// handler concurrently; the body is buffered and replayed through a
-        /// reader after the read completes.
-        fallback_streaming: bool = false,
-        method: netz.http1.Method = .GET,
-        version: netz.http1.Version = .http_1_1,
-        must_close: bool = false,
-
-        fn onHead(self: *Self, head: netz.streaming.http1.RequestHead) !void {
-            self.method = head.method;
-            self.version = head.version;
-            self.must_close = head.must_close;
-            self.client_info.protocol = switch (head.version) {
-                .http_1_0 => .http_1_0,
-                .http_1_1 => .http_1_1,
-                else => .http_1_1,
-            };
-
-            const target = head.target;
-            const query_index = std.mem.indexOfScalar(u8, target, '?');
-            const path = if (query_index) |index| target[0..index] else target;
-            const resolution = try self.server.app_router.resolve(
-                head.method,
-                path,
-                self.allocator,
-            );
-            switch (resolution) {
-                .matched => |matched| {
-                    defer matched.deinit(self.allocator);
-                    if (!matched.route.streaming) return;
-                },
-                else => return,
-            }
-
-            var reader: ?*body_stream_mod.Reader = null;
-            var reader_initialized = false;
-            var headers: ?[]netz.http1.Header = null;
-            var target_copy: ?[]u8 = null;
-            var committed = false;
-            defer if (!committed) {
-                if (reader) |value| {
-                    if (reader_initialized) value.deinit();
-                    self.allocator.destroy(value);
-                }
-                if (headers) |value| self.allocator.free(value);
-                if (target_copy) |value| self.allocator.free(value);
-            };
-
-            reader = try self.allocator.create(body_stream_mod.Reader);
-            reader.?.* = try body_stream_mod.Reader.init(
-                self.allocator,
-                self.server.io,
-                self.server.options.limits.max_streaming_window_bytes,
-            );
-            reader_initialized = true;
-
-            headers = try dupeHeaders(self.allocator, head.headers);
-            target_copy = try self.allocator.dupe(u8, target);
-
-            self.reader = reader.?;
-            self.headers = headers.?;
-            self.target = target_copy.?;
-            self.request = .{
-                .method = head.method,
-                .target = target_copy.?,
-                .version = head.version,
-                .headers = headers.?,
-                .body = "",
-                .consumed = 0,
-                .must_close = head.must_close,
-            };
-            self.streaming = true;
-            committed = true;
-
-            self.future = std.Io.concurrent(
-                self.server.io,
-                Self.run,
-                .{self},
-            ) catch {
-                self.fallback_streaming = true;
-                self.clearStreaming();
-                return;
-            };
-        }
-
-        fn onChunk(self: *Self, chunk: []const u8) !void {
-            if (self.streaming) {
-                try self.reader.?.push(chunk);
-                return;
-            }
-            const next = std.math.add(
-                usize,
-                self.body.items.len,
-                chunk.len,
-            ) catch return error.BodyTooLarge;
-            if (next > self.server.options.limits.max_body_bytes) {
-                return error.BodyTooLarge;
-            }
-            try self.body.appendSlice(self.allocator, chunk);
-        }
-
-        fn run(self: *Self) anyerror!Response {
-            const reader = self.reader orelse
-                return error.InvalidStreamingState;
-            defer reader.drain();
-            return self.server.dispatch(
-                &self.request.?,
-                self.client_info,
-                self.arena,
-                reader,
-            );
-        }
-
-        fn clearStreaming(self: *Self) void {
-            self.streaming = false;
-            if (self.reader) |reader| {
-                reader.deinit();
-                self.allocator.destroy(reader);
-                self.reader = null;
-            }
-            if (self.headers) |headers| {
-                freeHeaderCopy(self.allocator, headers);
-                self.allocator.free(headers);
-                self.headers = null;
-            }
-            if (self.target) |target| {
-                self.allocator.free(target);
-                self.target = null;
-            }
-            self.request = null;
         }
     };
 }

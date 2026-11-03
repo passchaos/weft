@@ -41,12 +41,12 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Streaming response bodies through a concrete `StreamBody`/`StreamWriter` seam,
   with fixed or chunked framing, a `max_response_bytes` producer budget,
   HEAD/body-forbidden suppression, and cancellation cleanup.
-- Streaming request bodies for HTTP/1 and HTTP/2 through
-  `RouteOptions.streaming` and `Ctx.bodyReader()`, using a bounded
-  `max_streaming_window_bytes` producer/consumer window between the connection
-  task and a handler task. Unread bytes are drained before the response is
-  written, `Ctx.readBody()` buffers into the request arena, and a buffered
-  replay path covers runtimes without concurrent tasks.
+- Streaming request bodies for HTTP/1 through `RouteOptions.streaming` and
+  `Ctx.bodyReader()`, backed by netz's bounded pull reader; HTTP/2 uses a
+  bounded `max_streaming_window_bytes` producer/consumer window to a handler
+  task. Unread bytes are drained before the response is written,
+  `Ctx.readBody()` buffers into the request arena, and a buffered replay path
+  covers runtimes without concurrent tasks.
 - HTTP/3 exposes a one-chunk replay reader for streaming routes over its
   already-buffered DATA body.
 - `Ctx.sse` plus `sse.write`/`sse.comment` helpers for `text/event-stream`

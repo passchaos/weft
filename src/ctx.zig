@@ -18,7 +18,19 @@ pub const SetCookie = cookie_mod.SetCookie;
 pub const StreamBody = stream_mod.Body;
 pub const StreamWriter = stream_mod.Writer;
 pub const SseEvent = sse_mod.Event;
-pub const BodyReader = body_stream_mod.Reader;
+/// Incremental request-body source. HTTP/1 uses netz's pull reader directly;
+/// HTTP/2 and HTTP/3 replay buffered or bridge-delivered chunks.
+pub const BodyReader = union(enum) {
+    pull: *netz.http1.runtime.RequestBodyReader,
+    replay: *body_stream_mod.Reader,
+
+    pub fn next(self: BodyReader) !?[]const u8 {
+        return switch (self) {
+            .pull => |reader| reader.next(),
+            .replay => |reader| reader.next(),
+        };
+    }
+};
 pub const WebSocketSession = websocket_mod.Session;
 pub const WebSocketUpgrade = websocket_mod.Upgrade;
 
@@ -95,7 +107,7 @@ pub const Ctx = struct {
     request: *const netz.http1.Request,
     /// Bounded incremental body reader for routes registered with
     /// `RouteOptions.streaming`. Null for buffered requests.
-    body_reader: ?*BodyReader = null,
+    body_reader: ?BodyReader = null,
     /// Body cached by `readBody` after a streaming read.
     cached_body: ?[]const u8 = null,
     client_info: ClientInfo = .{},
@@ -214,7 +226,7 @@ pub const Ctx = struct {
 
     /// Incremental request-body reader for streaming routes. Null on buffered
     /// routes; use `readBody` when the whole body is needed.
-    pub fn bodyReader(self: *const Ctx) ?*BodyReader {
+    pub fn bodyReader(self: *const Ctx) ?BodyReader {
         return self.body_reader;
     }
 

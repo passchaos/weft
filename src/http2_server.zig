@@ -424,7 +424,7 @@ pub fn Http2Server(comptime H: type) type {
             request: *const netz.http1.Request,
             client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
-            body_reader: ?*ctx_mod.BodyReader,
+            body_reader: ?ctx_mod.BodyReader,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -666,7 +666,7 @@ fn dispatchReplayH2(
     defer replay.deinit();
     try replay.push(body);
     replay.finish();
-    return server.dispatchRequest(request, client_info, arena, &replay);
+    return server.dispatchRequest(request, client_info, arena, .{ .replay = &replay });
 }
 
 fn H2StreamingRead(comptime H: type) type {
@@ -773,7 +773,7 @@ fn H2StreamingRead(comptime H: type) type {
                 &self.request.?,
                 self.client_info,
                 self.arena,
-                reader,
+                .{ .replay = reader },
             );
         }
 

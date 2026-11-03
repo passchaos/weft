@@ -400,7 +400,7 @@ pub fn Http3Server(comptime H: type) type {
                 &request,
                 client_info,
                 arena,
-                if (replay) |*reader| reader else null,
+                if (replay) |*reader| .{ .replay = reader } else null,
             );
         }
 
