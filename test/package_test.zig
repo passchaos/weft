@@ -1838,6 +1838,10 @@ test "package: static files serve 200, 304, 206, and HEAD" {
         "15",
         head_response.response.header("content-length").?,
     );
+    try std.testing.expectEqualStrings(
+        "attachment; filename=\"index.html\"",
+        head_response.response.header("content-disposition").?,
+    );
 
     const js_uri = try std.fmt.allocPrint(
         allocator,
