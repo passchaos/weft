@@ -264,12 +264,21 @@ fn parseDisposition(
         }
     }
 
+    var extended: ?[]const u8 = null;
+    errdefer if (extended) |encoded_value| allocator.free(encoded_value);
+
     var params = std.mem.splitScalar(u8, value[disposition.len..], ';');
     while (params.next()) |raw_param| {
         const param = std.mem.trim(u8, raw_param, " \t");
         if (std.ascii.startsWithIgnoreCase(param, "name=")) {
             if (name.* != null) return error.InvalidMultipart;
             name.* = try parseQuoted(allocator, param["name=".len..]);
+        } else if (std.ascii.startsWithIgnoreCase(param, "filename*=")) {
+            if (extended != null) return error.InvalidMultipart;
+            extended = try parseExtendedValue(
+                allocator,
+                param["filename*=".len..],
+            );
         } else if (std.ascii.startsWithIgnoreCase(param, "filename=")) {
             if (filename.* != null) return error.InvalidMultipart;
             filename.* = try parseQuoted(
@@ -278,6 +287,77 @@ fn parseDisposition(
             );
         }
     }
+
+    // RFC 6266 gives the extended form precedence over the plain fallback.
+    if (extended) |encoded_value| {
+        if (filename.*) |plain| allocator.free(plain);
+        filename.* = encoded_value;
+        extended = null;
+    }
+}
+
+/// Decode an RFC 5987 `charset'language'percent-encoded` value. UTF-8 is
+/// passed through; ISO-8859-1 bytes are widened to UTF-8 so callers always
+/// receive a valid UTF-8 filename.
+fn parseExtendedValue(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+) ![]const u8 {
+    const first = std.mem.indexOfScalar(u8, text, '\'') orelse
+        return error.InvalidMultipart;
+    const second = std.mem.indexOfScalarPos(
+        u8,
+        text,
+        first + 1,
+        '\'',
+    ) orelse return error.InvalidMultipart;
+    const charset = text[0..first];
+    const encoded = text[second + 1 ..];
+
+    var output = std.ArrayListUnmanaged(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < encoded.len) {
+        const char = encoded[index];
+        if (char == '%') {
+            if (index + 2 >= encoded.len) return error.InvalidMultipart;
+            const high = std.fmt.charToDigit(encoded[index + 1], 16) catch
+                return error.InvalidMultipart;
+            const low = std.fmt.charToDigit(encoded[index + 2], 16) catch
+                return error.InvalidMultipart;
+            try output.append(allocator, (high << 4) | low);
+            index += 3;
+            continue;
+        }
+        if (char < 0x20 or char == 0x7f) return error.InvalidMultipart;
+        try output.append(allocator, char);
+        index += 1;
+    }
+    if (output.items.len == 0) return error.InvalidMultipart;
+
+    if (std.ascii.eqlIgnoreCase(charset, "utf-8")) {
+        if (!std.unicode.utf8ValidateSlice(output.items)) {
+            return error.InvalidMultipart;
+        }
+        return output.toOwnedSlice(allocator);
+    }
+    if (std.ascii.eqlIgnoreCase(charset, "iso-8859-1")) {
+        const latin1 = try output.toOwnedSlice(allocator);
+        defer allocator.free(latin1);
+        var utf8 = std.ArrayListUnmanaged(u8).empty;
+        errdefer utf8.deinit(allocator);
+        for (latin1) |byte| {
+            if (byte < 0x80) {
+                try utf8.append(allocator, byte);
+            } else {
+                try utf8.append(allocator, 0xc0 | (byte >> 6));
+                try utf8.append(allocator, 0x80 | (byte & 0x3f));
+            }
+        }
+        return utf8.toOwnedSlice(allocator);
+    }
+    return error.InvalidMultipart;
 }
 
 fn parseQuoted(
@@ -343,6 +423,81 @@ test "multipart parses fields and files" {
     try std.testing.expectEqualStrings("hello", file.data);
     try std.testing.expectEqualStrings("a.txt", file.filename.?);
     try std.testing.expectEqualStrings("text/plain", file.content_type.?);
+}
+
+test "multipart prefers RFC 5987 filename* over filename" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"file\"; " ++
+        "filename=\"fallback.txt\"; " ++
+        "filename*=UTF-8''caf%C3%A9.txt\r\n" ++
+        "\r\n" ++
+        "hello\r\n" ++
+        "--weft--\r\n";
+
+    var form = try parse(
+        arena.allocator(),
+        "multipart/form-data; boundary=weft",
+        body,
+        .{},
+    );
+    defer form.deinit(arena.allocator());
+
+    const file = form.part("file").?;
+    try std.testing.expectEqualStrings("caf\u{00e9}.txt", file.filename.?);
+}
+
+test "multipart widens ISO-8859-1 filename* to UTF-8" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"file\"; " ++
+        "filename*=ISO-8859-1'en'caf%E9.txt\r\n" ++
+        "\r\n" ++
+        "hello\r\n" ++
+        "--weft--\r\n";
+
+    var form = try parse(
+        arena.allocator(),
+        "multipart/form-data; boundary=weft",
+        body,
+        .{},
+    );
+    defer form.deinit(arena.allocator());
+
+    const file = form.part("file").?;
+    try std.testing.expectEqualStrings("caf\u{00e9}.txt", file.filename.?);
+}
+
+test "multipart rejects malformed filename*" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"file\"; " ++
+        "filename*=UTF-8''bad%ZZ.txt\r\n" ++
+        "\r\n" ++
+        "hello\r\n" ++
+        "--weft--\r\n";
+
+    try std.testing.expectError(
+        error.InvalidMultipart,
+        parse(
+            arena.allocator(),
+            "multipart/form-data; boundary=weft",
+            body,
+            .{},
+        ),
+    );
 }
 
 test "multipart ignores boundary text inside part data" {

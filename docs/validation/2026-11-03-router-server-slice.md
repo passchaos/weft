@@ -131,7 +131,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part
   count, header count, and header-byte limits. Boundaries are matched only at
   the start of the body or after CRLF, so boundary text inside field data is
-  not treated as a delimiter.
+  not treated as a delimiter. Filenames decode RFC 5987 `filename*` for
+  UTF-8 and ISO-8859-1 (widened to UTF-8) and prefer it over `filename`.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
   with semaphore-bounded sessions. Each session runs up to
@@ -154,8 +155,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 104/104 tests passed (71 unit, 33 package/integration).
-- ReleaseFast: 104/104 tests passed.
+- Debug: 107/107 tests passed (74 unit, 33 package/integration).
+- ReleaseFast: 107/107 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

@@ -106,6 +106,8 @@ pub fn main(init: std.process.Init) !void {
 - `ctx.multipart()` parses `multipart/form-data` with bounded part and header
   counts; part data borrows the bounded request body, and boundaries are
   matched only at line starts so field data containing boundary text is safe.
+  Filenames honor RFC 5987 `filename*` (UTF-8 and ISO-8859-1, widened to
+  UTF-8) and prefer it over the plain `filename` fallback.
 - `ctx.cookie(name)` reads request cookies, unwrapping RFC 6265 DQUOTE
   values; `ctx.setCookie(...)` appends a validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
