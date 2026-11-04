@@ -53,6 +53,9 @@ pub fn main(init: std.process.Init) !void {
         weft.handler(weft.middleware.log),
     };
 
+    // `init` stores the application context by value. Share mutable state
+    // through pointers so handlers and pre-built middleware observe the same
+    // instance (for example `App{ .metrics = &metrics_state }`).
     var server = try weft.Server(App).init(
         io,
         init.gpa,

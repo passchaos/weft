@@ -7,8 +7,10 @@ const std = @import("std");
 const netz = @import("netz");
 const weft = @import("weft");
 
+/// The server stores the application context by value, so shared mutable
+/// state lives behind a pointer that every copy of `App` sees.
 const App = struct {
-    metrics: weft.middleware.Metrics = .{},
+    metrics: *weft.middleware.Metrics,
 };
 
 fn upload(app: *App, ctx: *weft.Ctx) anyerror!void {
@@ -73,7 +75,8 @@ pub fn main(init: std.process.Init) !void {
     defer backend.deinit();
     const io = backend.io();
 
-    var app = App{};
+    var metrics_state = weft.middleware.Metrics{};
+    const app = App{ .metrics = &metrics_state };
     var server = try weft.Server(App).init(
         io,
         allocator,
@@ -89,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
             .max_connections = 4,
             .middleware = &.{
                 weft.handler(weft.middleware.requestId),
-                app.metrics.handler(),
+                metrics_state.handler(),
             },
         },
         app,

@@ -201,7 +201,8 @@ Results:
 - ReleaseFast: 137/137 tests passed.
 - Examples build; `zig build run-hello` and `zig build run-upload` complete
   their request sequences (streaming upload, streaming multipart, SSE, and
-  Prometheus output).
+  Prometheus output). The upload example keeps `Metrics` behind a pointer
+  because the server stores the app context by value.
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
