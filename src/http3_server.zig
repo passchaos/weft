@@ -30,8 +30,10 @@ pub const Options = struct {
     /// bounded.
     max_concurrent_handlers: usize = 8,
     /// Poll interval used while handlers are active and no new request is
-    /// immediately available.
-    handler_poll_interval: std.Io.Duration = .fromMilliseconds(5),
+    /// immediately available. The concurrent engine also uses this as its
+    /// command/receive poll budget, so a shorter interval directly reduces
+    /// per-request latency.
+    handler_poll_interval: std.Io.Duration = .fromMilliseconds(1),
     accept_error_backoff: std.Io.Duration = .fromMilliseconds(10),
     accept_timeout: std.Io.Duration = .fromMilliseconds(500),
     idle_timeout: std.Io.Duration = .fromSeconds(5),

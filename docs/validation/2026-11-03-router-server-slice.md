@@ -158,6 +158,8 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build examples
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
+zig build bench-h2 -Doptimize=ReleaseFast
+zig build bench-h3 -Doptimize=ReleaseFast
 ```
 
 Results:
@@ -195,8 +197,24 @@ H2 batched throughput now exceeds HTTP/1 keep-alive; the sequential path still
 pays HTTP/2 framing. `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>` override
 the benchmark shape.
 
+HTTP/3 synthetic-handshake throughput on the same host, sequential and batched
+(32 concurrent streams), with the default 1 ms H3 poll interval:
+
+```text
+server h3 sequential: requests=10000 2093322.2 ns/request 478 requests/s
+server h3 batched:    requests=32000 121535.1 ns/request 8228 requests/s
+```
+
+A 5 ms poll interval measured ~10.1 ms/req sequential and ~303 µs/req batched;
+the 1 ms default is about 5× faster sequentially. The remaining fixed ~2 ms
+per request is in the netz H3 client/engine path and remains an upstream
+performance item.
+
 ## Remaining gaps
 
+- HTTP/3 synthetic-handshake latency: even at a 1 ms poll interval the
+  netz H3 client/engine path shows a fixed ~2 ms per request, far above H2.
+  Tracked as a netz performance follow-up.
 - HTTP/3 streaming compression currently covers gzip only; Brotli and zstd
   streamed bodies need a streaming encoder from vort.
 - CPU-bound handler preemption without cancellation points.
