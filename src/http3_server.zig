@@ -46,29 +46,12 @@ pub const Options = struct {
     drain_timeout: ?std.Io.Duration = .fromSeconds(5),
 };
 
-const H3StreamState = struct {
-    session: *netz.http3.runtime.HandshakeServerSession,
-    stream_id: u62,
-    remaining: usize,
-};
-
-fn writeWithBudget(raw: ?*anyopaque, data: []const u8) anyerror!void {
-    const state: *H3StreamState = @ptrCast(@alignCast(raw orelse
-        return error.InvalidWriterState));
-    if (data.len > state.remaining) return error.ResponseTooLarge;
-    state.remaining -= data.len;
-    try state.session.sendResponseBodyPaced(
-        state.stream_id,
-        data,
-        false,
-    );
-}
-
 /// A bounded HTTP/3 server adapter over Netz's QUIC/TLS handshake runtime.
 ///
 /// Routes, middleware, request locals, decoded inputs, timeouts, and error
 /// semantics are shared with HTTP/1 and HTTP/2. QUIC frame parsing, QPACK,
-/// flow control, and TLS remain owned by Netz.
+/// flow control, and TLS remain owned by Netz. The connection owner serializes
+/// all session mutations while handlers run concurrently per stream.
 pub fn Http3Server(comptime H: type) type {
     comptime {
         if (H == void) {
@@ -83,6 +66,8 @@ pub fn Http3Server(comptime H: type) type {
         netz_server: netz.http3.runtime.HandshakeServer,
         app_router: router_mod.Router(H),
         shutdown: std.Io.Event = .unset,
+
+        const ConcurrentStream = netz.http3.runtime.HandshakeServerSession.ConcurrentStream;
 
         pub fn init(
             io: std.Io,
@@ -274,192 +259,187 @@ pub fn Http3Server(comptime H: type) type {
                 self.options.max_concurrent_streams,
                 self.options.max_concurrent_handlers,
             );
-            const active = try self.allocator.alloc(H3Active(H), capacity);
-            defer self.allocator.free(active);
-            for (active, 0..) |*item, index| {
-                item.* = .{ .server = self, .slot = index };
-            }
-            defer for (active) |*item| {
-                if (!item.used) continue;
-                if (item.future) |*future| {
-                    _ = future.cancel(self.io) catch {};
-                }
-                item.request.deinit(self.allocator);
-                if (item.arena_buffer.len > 0) {
-                    self.allocator.free(item.arena_buffer);
-                }
+            var context = H3ConcurrentContext(H){
+                .server = self,
+                .max_requests = self.options.max_requests_per_connection,
             };
-
-            const response_storage = try self.allocator.alloc(
-                H3ResponseMsg,
-                capacity,
+            var watcher = self.io.async(
+                H3ShutdownWatch.run,
+                .{ self.io, &self.shutdown, &context.session_shutdown },
             );
-            defer self.allocator.free(response_storage);
-            var responses = std.Io.Queue(H3ResponseMsg).init(response_storage);
-
-            var served: usize = 0;
-            var active_count: usize = 0;
-            var stop_accepting = false;
-
-            while (true) {
-                if (!stop_accepting and
-                    (self.shutdown.isSet() or
-                        served + active_count >=
-                            self.options.max_requests_per_connection))
-                {
-                    stop_accepting = true;
-                }
-
-                var progressed = false;
-                while (true) {
-                    var buffer: [1]H3ResponseMsg = undefined;
-                    const count = responses.get(
-                        self.io,
-                        &buffer,
-                        0,
-                    ) catch |err| switch (err) {
-                        error.Closed => break,
-                        else => return err,
-                    };
-                    if (count == 0) break;
-
-                    var message = buffer[0];
-                    const item = &active[message.slot];
-                    if (item.future) |*future| {
-                        _ = future.await(self.io) catch {};
-                    }
-                    self.respond(
-                        session,
-                        item.request.stream_id,
-                        &item.request.request,
-                        &message.response,
-                        item.arena,
-                    ) catch |err| {
-                        if (err == error.Canceled) return error.Canceled;
-                        std.log.scoped(.weft).warn(
-                            "http3 response failed: {s}",
-                            .{@errorName(err)},
-                        );
-                    };
-                    item.request.deinit(self.allocator);
-                    self.allocator.free(item.arena_buffer);
-                    item.* = .{ .server = self, .slot = message.slot };
-                    active_count -= 1;
-                    served += 1;
-                    progressed = true;
-                }
-
-                if (stop_accepting and active_count == 0) break;
-
-                var free_slot: ?usize = null;
-                if (!stop_accepting) {
-                    for (active, 0..) |*item, index| {
-                        if (!item.used) {
-                            free_slot = index;
-                            break;
-                        }
-                    }
-                }
-
-                if (free_slot) |slot| {
-                    const timeout = if (active_count == 0)
-                        self.options.idle_timeout
-                    else
-                        self.options.handler_poll_interval;
-                    var request = session.receiveRequestWithTimeout(
-                        timeout,
-                    ) catch |err| {
-                        if (err == error.Timeout) continue;
-                        if (err == error.Canceled) return error.Canceled;
-                        return err;
-                    };
-
-                    const item = &active[slot];
-                    const arena_buffer = self.allocator.alloc(
-                        u8,
-                        self.options.limits.max_request_arena_bytes,
-                    ) catch {
-                        request.deinit(self.allocator);
-                        return error.OutOfMemory;
-                    };
-                    item.request = request;
-                    item.arena_buffer = arena_buffer;
-                    item.fixed = std.heap.FixedBufferAllocator.init(
-                        arena_buffer,
-                    );
-                    item.arena = item.fixed.allocator();
-                    item.used = true;
-                    active_count += 1;
-                    item.future = self.io.async(
-                        H3Active(H).run,
-                        .{ item, &responses },
-                    );
-                    continue;
-                }
-
-                if (!progressed) {
-                    std.Io.sleep(
-                        self.io,
-                        self.options.handler_poll_interval,
-                        .awake,
-                    ) catch {};
-                }
+            defer {
+                context.session_shutdown.set(self.io);
+                _ = watcher.cancel(self.io);
             }
 
-            session.initiateShutdown() catch {};
+            _ = session.serveConcurrentStreams(
+                H3ConcurrentContext(H),
+                &context,
+                handleConcurrentStream,
+                .{
+                    .max_streams = capacity,
+                    .idle_timeout = self.options.idle_timeout,
+                    .shutdown = &context.session_shutdown,
+                    .poll_interval = self.options.handler_poll_interval,
+                    .max_buffered_body_bytes =
+                        self.options.limits.max_streaming_window_bytes,
+                },
+            ) catch |err| {
+                if (err == error.Canceled) return err;
+                std.log.scoped(.weft).warn(
+                    "http3 serve failed: {s}",
+                    .{@errorName(err)},
+                );
+                return err;
+            };
         }
 
-        fn dispatch(
+        fn handleConcurrentStream(
+            context: *H3ConcurrentContext(H),
+            stream: *ConcurrentStream,
+        ) anyerror!void {
+            try context.server.serveConcurrentStream(stream);
+            const completed = context.completed.fetchAdd(1, .monotonic) + 1;
+            if (completed >= context.max_requests) {
+                context.session_shutdown.set(context.server.io);
+            }
+        }
+
+        fn serveConcurrentStream(
             self: *@This(),
-            decoded: *const netz.http3.DecodedRequest,
-            client_info: ctx_mod.ClientInfo,
-            arena: std.mem.Allocator,
-        ) !Response {
-            const method = netz.http1.Method.parse(decoded.method) catch
-                return error.InvalidMethod;
-            const target = if (decoded.path.len == 0) "/" else decoded.path;
+            stream: *ConcurrentStream,
+        ) !void {
+            const arena_buffer = try self.allocator.alloc(
+                u8,
+                self.options.limits.max_request_arena_bytes,
+            );
+            defer self.allocator.free(arena_buffer);
+            var fixed = std.heap.FixedBufferAllocator.init(arena_buffer);
+            const arena = fixed.allocator();
 
-            var header_count: usize = 0;
-            for (decoded.headers) |field| {
-                if (!isPseudoHeader(field.name)) header_count += 1;
-            }
-            const has_host = findHeader(decoded.headers, "host") != null;
-            const add_host = decoded.authority != null and !has_host;
-            if (add_host) header_count += 1;
+            const head = stream.head();
+            const method = netz.http1.Method.parse(head.method) catch {
+                stream.reset(
+                    netz.http3.ApplicationErrorCode.general_protocol_error,
+                ) catch {};
+                return;
+            };
+            const target = if (head.path.len == 0) "/" else head.path;
+            const headers = convertH3HeadHeaders(
+                arena,
+                head.headers,
+                head.authority,
+            ) catch {
+                stream.reset(
+                    netz.http3.ApplicationErrorCode.internal_error,
+                ) catch {};
+                return;
+            };
 
-            const headers = try arena.alloc(netz.http1.Header, header_count);
-            var index: usize = 0;
-            for (decoded.headers) |field| {
-                if (isPseudoHeader(field.name)) continue;
-                headers[index] = .{ .name = field.name, .value = field.value };
-                index += 1;
-            }
-            if (add_host) {
-                headers[index] = .{
-                    .name = "Host",
-                    .value = decoded.authority.?,
+            const streaming = self.app_router.isStreaming(method, target);
+            var reader: ?ctx_mod.H3StreamReader = null;
+            var body: []const u8 = "";
+            var trailers: []netz.http1.Header = &.{};
+
+            if (streaming) {
+                reader = .{ .stream = stream };
+            } else {
+                body = readWholeBody(
+                    arena,
+                    stream,
+                    self.options.limits.max_body_bytes,
+                ) catch |err| {
+                    if (err == error.Canceled) return err;
+                    var response = Response.initWithLimits(
+                        arena,
+                        self.options.limits,
+                    );
+                    if (err == error.PayloadTooLarge) {
+                        response.setStatus(413);
+                        response.text("Payload Too Large") catch {};
+                    } else {
+                        response.setStatus(500);
+                        response.text("Internal Server Error") catch {};
+                    }
+                    try self.respondConcurrent(
+                        stream,
+                        head.method,
+                        &response,
+                        arena,
+                    );
+                    return;
                 };
+                if (stream.trailers()) |fields| {
+                    trailers = convertH3Trailers(arena, fields) catch &.{};
+                }
             }
 
-            var trailers = try arena.alloc(netz.http1.Header, 0);
-            if (decoded.trailers.len > 0) {
-                trailers = convertH3Trailers(arena, decoded.trailers) catch trailers;
-            }
             var request = netz.http1.Request{
                 .method = method,
                 .target = target,
                 .version = .http_1_1,
                 .headers = headers,
-                .body = decoded.body,
+                .body = body,
                 .trailers = trailers,
                 .consumed = 0,
             };
+            const client_info = ctx_mod.ClientInfo{
+                .address = stream.from(),
+                .protocol = .http_3,
+                .tls = true,
+            };
+            var response = self.dispatchRequest(
+                &request,
+                client_info,
+                arena,
+                if (reader) |*value| .{ .h3_stream = value } else null,
+            ) catch |err| blk: {
+                if (err == error.Canceled) return err;
+                std.log.scoped(.weft).warn(
+                    "http3 dispatch failed: {s}",
+                    .{@errorName(err)},
+                );
+                break :blk internalErrorResponse(
+                    arena,
+                    self.options.limits,
+                );
+            };
 
-            var replay: ?ctx_mod.ReplayReader = null;
-            if (self.app_router.isStreaming(method, target)) {
-                replay = ctx_mod.ReplayReader{ .body = decoded.body };
+            if (response.body.len > self.options.limits.max_response_bytes) {
+                response.reset();
+                response.setStatus(500);
+                response.text("Response Too Large") catch {};
             }
+            response.validateHead() catch {
+                response.reset();
+                response.setStatus(500);
+                response.text("Internal Server Error") catch {};
+            };
 
+            self.respondConcurrent(
+                stream,
+                head.method,
+                &response,
+                arena,
+            ) catch |err| {
+                if (err == error.Canceled) return err;
+                std.log.scoped(.weft).warn(
+                    "http3 response failed: {s}",
+                    .{@errorName(err)},
+                );
+                stream.reset(
+                    netz.http3.ApplicationErrorCode.internal_error,
+                ) catch {};
+            };
+        }
+
+        fn dispatchRequest(
+            self: *@This(),
+            request: *const netz.http1.Request,
+            client_info: ctx_mod.ClientInfo,
+            arena: std.mem.Allocator,
+            body_reader: ?ctx_mod.BodyReader,
+        ) !Response {
             return dispatch_mod.dispatch(
                 H,
                 &self.app,
@@ -472,18 +452,17 @@ pub fn Http3Server(comptime H: type) type {
                     .bad_request = self.options.bad_request,
                     .method_not_allowed = self.options.method_not_allowed,
                 },
-                &request,
+                request,
                 client_info,
                 arena,
-                if (replay) |*reader| .{ .replay = reader } else null,
+                body_reader,
             );
         }
 
-        fn respond(
+        fn respondConcurrent(
             self: *@This(),
-            session: *netz.http3.runtime.HandshakeServerSession,
-            stream_id: u62,
-            decoded: *const netz.http3.DecodedRequest,
+            stream: *ConcurrentStream,
+            method: []const u8,
             response: *Response,
             arena: std.mem.Allocator,
         ) !void {
@@ -495,133 +474,175 @@ pub fn Http3Server(comptime H: type) type {
                 ) catch {};
             }
 
+            const body_forbidden = responseBodyForbidden(method, response.status);
+            var head_length: ?usize = null;
+
             if (response.stream) |body| {
-                const body_forbidden = std.mem.eql(u8, decoded.method, "HEAD") or
-                    response.status == 204 or
-                    response.status == 304 or
-                    (response.status >= 100 and response.status < 200);
                 if (body_forbidden) {
-                    body.cancel();
-                    response.stream = null;
-                    if (std.mem.eql(u8, decoded.method, "HEAD")) {
+                    if (std.mem.eql(u8, method, "HEAD")) {
                         if (body.length) |length| {
+                            head_length = length;
                             response.setHeader(
                                 "Content-Length",
-                                try std.fmt.allocPrint(
+                                std.fmt.allocPrint(
                                     arena,
                                     "{d}",
                                     .{length},
-                                ),
-                            ) catch {};
+                                ) catch return error.OutOfMemory,
+                            ) catch return error.OutOfMemory;
                         }
                     }
-                    try self.writeBuffered(
-                        session,
-                        stream_id,
-                        decoded,
-                        response,
-                        arena,
-                    );
-                    return;
-                }
-
-                if (body.length) |length| {
+                    body.cancel();
+                    response.stream = null;
+                } else if (body.length) |length| {
                     if (length > self.options.limits.max_response_bytes) {
                         body.cancel();
                         return error.ResponseTooLarge;
                     }
                     response.setHeader(
                         "Content-Length",
-                        try std.fmt.allocPrint(arena, "{d}", .{length}),
-                    ) catch {};
+                        std.fmt.allocPrint(
+                            arena,
+                            "{d}",
+                            .{length},
+                        ) catch return error.OutOfMemory,
+                    ) catch return error.OutOfMemory;
                 }
-                try self.writeStreaming(
-                    session,
-                    stream_id,
-                    decoded,
-                    response,
-                    body,
-                    arena,
-                );
+            }
+
+            var h3_response = try toHttp3Response(response, method, arena);
+            h3_response.body = &.{};
+            h3_response.trailers = &.{};
+
+            if (body_forbidden) {
+                const length: ?usize = if (std.mem.eql(u8, method, "HEAD"))
+                    (head_length orelse
+                        if (response.body.len != 0) response.body.len else null)
+                else
+                    null;
+                try stream.startResponse(h3_response, length);
                 return;
             }
 
-            try self.writeBuffered(
-                session,
-                stream_id,
-                decoded,
-                response,
-                arena,
-            );
-        }
+            if (response.stream) |body| {
+                if (body.length == 0 and response.trailers.items.len == 0) {
+                    body.cancel();
+                    response.stream = null;
+                    try stream.startResponse(h3_response, 0);
+                    return;
+                }
+                const length = if (body.length) |value|
+                    if (value == 0 and response.trailers.items.len != 0)
+                        null
+                    else
+                        value
+                else
+                    null;
+                try stream.startResponse(h3_response, length);
 
-        fn writeBuffered(
-            self: *@This(),
-            session: *netz.http3.runtime.HandshakeServerSession,
-            stream_id: u62,
-            decoded: *const netz.http3.DecodedRequest,
-            response: *Response,
-            arena: std.mem.Allocator,
-        ) !void {
-            _ = self;
-            const h3_response = try toHttp3Response(
-                response,
-                decoded.method,
-                arena,
-            );
-            try session.sendResponsePaced(stream_id, h3_response);
-        }
+                var state = H3ConcurrentWriterState{
+                    .stream = stream,
+                    .remaining = body.length orelse
+                        self.options.limits.max_response_bytes,
+                };
+                var writer = stream_mod.Writer{
+                    .context = &state,
+                    .write_fn = writeConcurrentWithBudget,
+                };
+                body.run(&writer) catch |err| {
+                    body.cancel();
+                    stream.reset(
+                        netz.http3.ApplicationErrorCode.internal_error,
+                    ) catch {};
+                    return err;
+                };
+                if (response.trailers.items.len != 0) {
+                    try stream.finishWithTrailers(
+                        try trailerFields(response, arena),
+                    );
+                } else {
+                    try stream.finish();
+                }
+                response.stream = null;
+                return;
+            }
 
-        fn writeStreaming(
-            self: *@This(),
-            session: *netz.http3.runtime.HandshakeServerSession,
-            stream_id: u62,
-            decoded: *const netz.http3.DecodedRequest,
-            response: *Response,
-            body: stream_mod.Body,
-            arena: std.mem.Allocator,
-        ) !void {
-            var h3_response = try toHttp3Response(
-                response,
-                decoded.method,
-                arena,
-            );
-            // Streaming heads must not retain trailers; they are sent after
-            // the producer finishes.
-            h3_response.trailers = &.{};
-            session.startResponse(
-                stream_id,
-                h3_response,
-                body.length,
-            ) catch |err| {
-                body.cancel();
-                return err;
-            };
+            if (response.body.len == 0 and response.trailers.items.len == 0) {
+                try stream.startResponse(h3_response, 0);
+                return;
+            }
 
-            var state = H3StreamState{
-                .session = session,
-                .stream_id = stream_id,
-                .remaining = body.length orelse
-                    self.options.limits.max_response_bytes,
-            };
-            var stream_writer = stream_mod.Writer{
-                .context = &state,
-                .write_fn = writeWithBudget,
-            };
-            try body.run(&stream_writer);
-            if (response.trailers.items.len != 0 and
-                !responseBodyForbidden(decoded.method, response.status))
-            {
-                try session.finishResponseTrailersPaced(
-                    stream_id,
+            if (response.trailers.items.len != 0) {
+                try stream.startResponse(
+                    h3_response,
+                    if (response.body.len == 0) null else response.body.len,
+                );
+                if (response.body.len != 0) {
+                    try stream.writeData(response.body, false);
+                }
+                try stream.finishWithTrailers(
                     try trailerFields(response, arena),
                 );
             } else {
-                try session.sendResponseBodyPaced(stream_id, "", true);
+                try stream.startResponse(h3_response, response.body.len);
+                try stream.writeData(response.body, true);
             }
-            response.stream = null;
         }
     };
+}
+
+fn H3ConcurrentContext(comptime H: type) type {
+    return struct {
+        server: *Http3Server(H),
+        session_shutdown: std.Io.Event = .unset,
+        completed: std.atomic.Value(usize) = .init(0),
+        max_requests: usize = 0,
+    };
+}
+
+const H3ShutdownWatch = struct {
+    fn run(
+        io: std.Io,
+        source: *std.Io.Event,
+        target: *std.Io.Event,
+    ) void {
+        source.wait(io) catch return;
+        target.set(io);
+    }
+};
+
+const H3ConcurrentWriterState = struct {
+    stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
+    remaining: usize,
+};
+
+fn writeConcurrentWithBudget(
+    raw: ?*anyopaque,
+    data: []const u8,
+) anyerror!void {
+    const state: *H3ConcurrentWriterState = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    if (data.len > state.remaining) return error.ResponseTooLarge;
+    state.remaining -= data.len;
+    try state.stream.writeData(data, false);
+}
+
+fn readWholeBody(
+    arena: std.mem.Allocator,
+    stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
+    max_body_bytes: usize,
+) ![]const u8 {
+    var output = std.ArrayListUnmanaged(u8).empty;
+    var buffer: [16 * 1024]u8 = undefined;
+    while (true) {
+        const count = (try stream.nextBody(&buffer, null)) orelse break;
+        if (count == 0) continue;
+        const total = std.math.add(usize, output.items.len, count) catch
+            return error.PayloadTooLarge;
+        if (total > max_body_bytes) return error.PayloadTooLarge;
+        try output.appendSlice(arena, buffer[0..count]);
+    }
+    return output.items;
 }
 
 fn responseBodyForbidden(method: []const u8, status: u16) bool {
@@ -717,68 +738,6 @@ fn findHeader(
     return null;
 }
 
-const H3ResponseMsg = struct {
-    slot: usize,
-    response: Response,
-};
-
-fn H3Active(comptime H: type) type {
-    return struct {
-        const Self = @This();
-
-        server: *Http3Server(H),
-        request: netz.http3.runtime.OwnedHandshakeRequest = undefined,
-        arena_buffer: []u8 = &.{},
-        fixed: std.heap.FixedBufferAllocator = undefined,
-        arena: std.mem.Allocator = undefined,
-        future: ?std.Io.Future(anyerror!void) = null,
-        used: bool = false,
-        slot: usize = 0,
-
-        fn run(
-            self: *Self,
-            responses: *std.Io.Queue(H3ResponseMsg),
-        ) anyerror!void {
-            const client_info = ctx_mod.ClientInfo{
-                .address = self.request.from,
-                .protocol = .http_3,
-                .tls = true,
-            };
-            var response = self.server.dispatch(
-                &self.request.request,
-                client_info,
-                self.arena,
-            ) catch |err| blk: {
-                if (err == error.Canceled) return err;
-                std.log.scoped(.weft).warn(
-                    "http3 dispatch failed: {s}",
-                    .{@errorName(err)},
-                );
-                break :blk internalErrorResponse(
-                    self.arena,
-                    self.server.options.limits,
-                );
-            };
-
-            if (response.body.len > self.server.options.limits.max_response_bytes) {
-                response.reset();
-                response.setStatus(500);
-                response.text("Response Too Large") catch {};
-            }
-            response.validateHead() catch {
-                response.reset();
-                response.setStatus(500);
-                response.text("Internal Server Error") catch {};
-            };
-
-            try responses.putOne(self.server.io, .{
-                .slot = self.slot,
-                .response = response,
-            });
-        }
-    };
-}
-
 fn convertH3Trailers(
     allocator: std.mem.Allocator,
     fields: []const netz.http3.Qpack.HeaderField,
@@ -786,6 +745,35 @@ fn convertH3Trailers(
     const headers = try allocator.alloc(netz.http1.Header, fields.len);
     for (fields, headers) |field, *header| {
         header.* = .{ .name = field.name, .value = field.value };
+    }
+    return headers;
+}
+
+fn convertH3HeadHeaders(
+    allocator: std.mem.Allocator,
+    fields: []const netz.http3.Qpack.HeaderField,
+    authority: ?[]const u8,
+) ![]netz.http1.Header {
+    var count: usize = 0;
+    for (fields) |field| {
+        if (!isPseudoHeader(field.name)) count += 1;
+    }
+    const has_host = findHeader(fields, "host") != null;
+    const add_host = authority != null and !has_host;
+    if (add_host) count += 1;
+
+    const headers = try allocator.alloc(netz.http1.Header, count);
+    var index: usize = 0;
+    for (fields) |field| {
+        if (isPseudoHeader(field.name)) continue;
+        headers[index] = .{ .name = field.name, .value = field.value };
+        index += 1;
+    }
+    if (add_host) {
+        headers[index] = .{
+            .name = "Host",
+            .value = authority.?,
+        };
     }
     return headers;
 }
