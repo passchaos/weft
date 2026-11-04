@@ -113,7 +113,8 @@ Requests without a declared length keep the streaming reader: netz's
 concurrent engine publishes body completion only while draining a stream, so a
 bodyless request with no DATA frames cannot be read to completion from the
 handler. Those handlers must use `Ctx.readBody()` / `Ctx.bodyReader()` as
-before.
+before. The protocol-level follow-up is tracked as item 8 in
+`netz/docs/weft-integration-requests.md`.
 
 Package test: the HTTP/2 adapter test posts to `/body-echo` and asserts that a
 non-streaming handler sees the buffered body through `Ctx.body()`.
