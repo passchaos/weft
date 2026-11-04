@@ -2931,6 +2931,7 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
 
     const BatchCtx = struct {
         allocator: std.mem.Allocator,
+        expected_body: ?[]const u8 = null,
         count: usize = 0,
         ok: bool = true,
 
@@ -2946,6 +2947,15 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
                     defer response.deinit(self.allocator);
                     self.count += 1;
                     if (response.response.status != 200) self.ok = false;
+                    if (self.expected_body) |expected| {
+                        if (!std.mem.eql(
+                            u8,
+                            response.response.body,
+                            expected,
+                        )) {
+                            self.ok = false;
+                        }
+                    }
                 },
                 .err => self.ok = false,
             }
@@ -2972,6 +2982,32 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     );
     try std.testing.expectEqual(@as(usize, 32), batch_context.count);
     try std.testing.expect(batch_context.ok);
+
+    var upload_batch_context = BatchCtx{
+        .allocator = allocator,
+        .expected_body = "{\"bytes\":2048}",
+    };
+    var upload_batch_requests: [32]netz.http3.Request = undefined;
+    for (&upload_batch_requests) |*request| {
+        request.* = .{
+            .method = "POST",
+            .path = "/upload",
+            .authority = "localhost",
+            .body = upload_body,
+        };
+    }
+    var upload_batch_deadlines: [32]?std.Io.Clock.Timestamp = undefined;
+    for (&upload_batch_deadlines) |*deadline| deadline.* = null;
+    try client.requestBatchWithPerStreamDeadlines(
+        &upload_batch_requests,
+        &upload_batch_deadlines,
+        .{
+            .context = &upload_batch_context,
+            .on_result = BatchCtx.onResult,
+        },
+    );
+    try std.testing.expectEqual(@as(usize, 32), upload_batch_context.count);
+    try std.testing.expect(upload_batch_context.ok);
 
     var info_response = try client.request(.{
         .method = "GET",
