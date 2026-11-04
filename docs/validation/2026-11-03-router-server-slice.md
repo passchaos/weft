@@ -125,6 +125,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API; handler errors use the dispatcher's
   status mapping and canceled requests are excluded from status classes.
+  Snapshots render Prometheus text exposition with a validated metric
+  namespace.
 - Shared protocol-neutral dispatch extracted for HTTP/1 and HTTP/2 adapters.
 - `Http2Server(H)` serves cleartext h2c and TLS/ALPN `h2` through the same
   router, middleware, timeout, streaming, and error semantics, including
@@ -186,8 +188,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 122/122 tests passed (87 unit, 35 package/integration).
-- ReleaseFast: 122/122 tests passed.
+- Debug: 123/123 tests passed (88 unit, 35 package/integration).
+- ReleaseFast: 123/123 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

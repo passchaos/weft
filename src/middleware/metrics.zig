@@ -29,6 +29,59 @@ pub const Metrics = struct {
             if (self.total == 0) return 0;
             return self.total_latency_ns / self.total;
         }
+
+        /// Render this snapshot in the Prometheus text exposition format.
+        /// `namespace` must match `[a-zA-Z_][a-zA-Z0-9_]*`; an invalid prefix is
+        /// rejected so app configuration cannot inject arbitrary exposition
+        /// lines. Serve the result with
+        /// `Content-Type: text/plain; version=0.0.4; charset=utf-8`.
+        pub fn writePrometheus(
+            self: Snapshot,
+            writer: *std.Io.Writer,
+            namespace: []const u8,
+        ) !void {
+            if (!validNamespace(namespace)) return error.InvalidNamespace;
+            try writer.print(
+                "# HELP {s}_requests_total Total requests handled.\n" ++
+                    "# TYPE {s}_requests_total counter\n" ++
+                    "{s}_requests_total {d}\n",
+                .{ namespace, namespace, namespace, self.total },
+            );
+            try writer.print(
+                "# HELP {s}_requests_active Requests currently in flight.\n" ++
+                    "# TYPE {s}_requests_active gauge\n" ++
+                    "{s}_requests_active {d}\n",
+                .{ namespace, namespace, namespace, self.active },
+            );
+            inline for (.{
+                .{ "2xx", self.status_2xx },
+                .{ "3xx", self.status_3xx },
+                .{ "4xx", self.status_4xx },
+                .{ "5xx", self.status_5xx },
+            }) |entry| {
+                try writer.print(
+                    "{s}_responses_total{{status_class=\"{s}\"}} {d}\n",
+                    .{ namespace, entry[0], entry[1] },
+                );
+            }
+            try writer.print(
+                "# HELP {s}_request_duration_nanoseconds_sum Total time spent in\n" ++
+                    "# TYPE {s}_request_duration_nanoseconds_sum counter\n" ++
+                    "{s}_request_duration_nanoseconds_sum {d}\n",
+                .{
+                    namespace,
+                    namespace,
+                    namespace,
+                    self.total_latency_ns,
+                },
+            );
+            try writer.print(
+                "# HELP {s}_request_duration_nanoseconds_count Requests measured.\n" ++
+                    "# TYPE {s}_request_duration_nanoseconds_count counter\n" ++
+                    "{s}_request_duration_nanoseconds_count {d}\n",
+                .{ namespace, namespace, namespace, self.total },
+            );
+        }
     };
 
     pub fn handler(self: *Metrics) ctx_mod.Handler {
@@ -200,4 +253,59 @@ test "metrics classify handler errors like dispatch" {
     try std.testing.expectEqual(@as(u64, 2), snapshot.total);
     try std.testing.expectEqual(@as(u64, 1), snapshot.status_4xx);
     try std.testing.expectEqual(@as(u64, 0), snapshot.status_5xx);
+}
+
+fn validNamespace(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value, 0..) |byte, index| {
+        const alpha = (byte >= 'a' and byte <= 'z') or
+            (byte >= 'A' and byte <= 'Z') or
+            byte == '_';
+        if (index == 0) {
+            if (!alpha) return false;
+            continue;
+        }
+        if (!alpha and !(byte >= '0' and byte <= '9')) return false;
+    }
+    return true;
+}
+
+test "prometheus exposition renders counters and rejects bad namespaces" {
+    const snapshot = Metrics.Snapshot{
+        .total = 5,
+        .active = 2,
+        .status_2xx = 3,
+        .status_3xx = 0,
+        .status_4xx = 1,
+        .status_5xx = 1,
+        .total_latency_ns = 5000,
+    };
+    var buffer: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try snapshot.writePrometheus(&writer, "weft");
+    const text = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        text,
+        "weft_requests_total 5",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        text,
+        "weft_responses_total{status_class=\"4xx\"} 1",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        text,
+        "weft_request_duration_nanoseconds_sum 5000",
+    ) != null);
+
+    try std.testing.expectError(
+        error.InvalidNamespace,
+        snapshot.writePrometheus(&writer, "bad-name"),
+    );
+    try std.testing.expectError(
+        error.InvalidNamespace,
+        snapshot.writePrometheus(&writer, ""),
+    );
 }

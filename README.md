@@ -434,7 +434,9 @@ Built-ins:
 - `Metrics` — lock-free total, active, status-class, and latency counters with a
   `snapshot()` API for health or metrics endpoints. Handler errors are
   classified with the same status mapping dispatch uses, and canceled requests
-  are excluded from status classes.
+  are excluded from status classes. `snapshot().writePrometheus(writer, name)`
+  renders the Prometheus text format; the namespace is validated to prevent
+  exposition injection.
 - `RateLimit` — bounded per-client token buckets keyed by the peer IP address
   without the ephemeral port (IPv4-mapped IPv6 shares the IPv4 key), with `429`
   and `Retry-After`, fixed storage, and least-recently-seen eviction.
