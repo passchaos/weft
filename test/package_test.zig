@@ -1775,6 +1775,34 @@ test "package: streaming request bodies reach handlers incrementally" {
         multipart_response.response.body,
     );
 
+    // A Content-Encoding'd body cannot be parsed incrementally; the handler
+    // must return 415 instead of misparsing compressed bytes.
+    const compressed_multipart = try gzipAlloc(allocator, multipart_body);
+    defer allocator.free(compressed_multipart);
+    const encoded_headers = [_]netz.http1.Header{
+        .{
+            .name = "Content-Type",
+            .value = "multipart/form-data; boundary=weft",
+        },
+        .{ .name = "Content-Encoding", .value = "gzip" },
+    };
+    var encoded_multipart = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        multipart_uri,
+        .{
+            .method = .POST,
+            .headers = &encoded_headers,
+            .body = compressed_multipart,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 512 * 1024 },
+    );
+    defer encoded_multipart.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 415),
+        encoded_multipart.response.status,
+    );
+
     server.stop();
     try group.await(io);
 }

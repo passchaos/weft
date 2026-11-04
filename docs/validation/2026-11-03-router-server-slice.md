@@ -164,7 +164,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   tests cover 200 KiB over HTTP/1, 1 KiB over HTTP/2, and 300 KiB over HTTP/3,
   and a differential test compares it with the buffered parser across every
   source chunk size. `DataReader.readAll(allocator, max_bytes)` drains one part
-  with its own bound, and `nextPart` skips any unread remainder.
+  with its own bound, and `nextPart` skips any unread remainder. Encoded
+  (`Content-Encoding`) bodies return `415`; the buffered parser handles them.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
   with semaphore-bounded sessions. Each session uses netz's owner-serialized

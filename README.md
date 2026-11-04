@@ -127,7 +127,9 @@ allocation.
   part at a time with a `DataReader` (`next` or bounded `readAll`), and
   enforces `Limits.max_body_bytes` across the whole body, so large uploads
   never need to fit in the request arena. Stopping a part early is safe:
-  `nextPart` skips the remainder.
+  `nextPart` skips the remainder. `Content-Encoding`'d bodies return `415`
+  because the parser reads wire bytes; use the buffered `ctx.multipart()` for
+  encoded uploads.
 - `ctx.cookie(name)` reads request cookies, unwrapping RFC 6265 DQUOTE
   values; `ctx.setCookie(...)` appends a validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are

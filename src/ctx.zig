@@ -588,6 +588,14 @@ pub const Ctx = struct {
             return error.NotStreamingRoute;
         const content_type = self.header("content-type") orelse
             return error.UnsupportedMediaType;
+        // Streaming multipart parses the wire bytes directly, so encoded
+        // bodies must use the buffered `multipart()` path instead.
+        if (self.header("content-encoding")) |encoding| {
+            const trimmed = std.mem.trim(u8, encoding, " \t");
+            if (!std.ascii.eqlIgnoreCase(trimmed, "identity")) {
+                return error.UnsupportedMediaType;
+            }
+        }
 
         // The source closure needs a stable address; keep the reader copy in
         // the request arena.
