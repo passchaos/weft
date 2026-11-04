@@ -278,7 +278,10 @@ defer server.deinit();
 ```
 
 The application surface is unchanged: routing, middleware, streaming, and
-limits behave exactly as on TCP. `server.ipAddress()` returns `null` and
+limits behave exactly as on TCP. `ctx.clientAddress()` is `null` because a
+Unix socket has no IP peer (std otherwise reports a synthetic `127.0.0.1`);
+with `Limits.trust_forwarded_for`, a trusted `X-Forwarded-For` header still
+supplies the client address. `server.ipAddress()` returns `null` and
 `server.unixPath()` returns the configured path; `server.address()` panics for
 a Unix-socket server because there is no TCP address. The socket file is
 caller-owned: Netz closes the listener on `deinit` but does not unlink the

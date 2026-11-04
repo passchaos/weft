@@ -4880,6 +4880,7 @@ test "package: Unix socket server serves HTTP/1" {
     try std.testing.expect(server.ipAddress() == null);
     try std.testing.expectEqualStrings(full_path, server.unixPath().?);
     try server.router().get("/", home, .{});
+    try server.router().get("/client", clientAddressText, .{});
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -4901,6 +4902,19 @@ test "package: Unix socket server serves HTTP/1" {
         "hello from weft",
         response.response.body,
     );
+
+    // std synthesizes 127.0.0.1 for Unix sockets; weft must not expose that
+    // as a real peer address.
+    var client_response = try client.request(.{
+        .method = .GET,
+        .target = "/client",
+    });
+    defer client_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        client_response.response.status,
+    );
+    try std.testing.expectEqualStrings("none", client_response.response.body);
 
     server.stop();
     try group.await(io);

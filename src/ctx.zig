@@ -187,13 +187,15 @@ pub const ClientInfo = struct {
 
 /// Resolve the client address, optionally honoring the leftmost
 /// `X-Forwarded-For` entry. The header is only consulted when the caller
-/// explicitly trusts its proxy.
+/// explicitly trusts its proxy. `peer` may be null for transports without an
+/// IP peer (for example a Unix socket); a trusted header still supplies an
+/// address in that case.
 pub fn resolveClientAddress(
     headers: anytype,
     peer: ?std.Io.net.IpAddress,
     trust_forwarded_for: bool,
 ) ?std.Io.net.IpAddress {
-    if (!trust_forwarded_for or peer == null) return peer;
+    if (!trust_forwarded_for) return peer;
     for (headers) |header| {
         if (!std.ascii.eqlIgnoreCase(header.name, "x-forwarded-for")) continue;
         var entries = std.mem.splitScalar(u8, header.value, ',');
@@ -1034,6 +1036,13 @@ test "client address honors a trusted forwarded-for header" {
     const ipv6 = resolveClientAddress(&quoted, peer, true).?;
     const expected6 = try std.Io.net.IpAddress.parse("2001:db8::1", 0);
     try std.testing.expect(ipv6.eql(&expected6));
+
+    // A Unix-socket peer has no IP address, but a trusted proxy header can
+    // still supply one.
+    const forwarded_without_peer =
+        resolveClientAddress(&headers, null, true).?;
+    try std.testing.expect(forwarded_without_peer.eql(&expected));
+    try std.testing.expect(resolveClientAddress(&headers, null, false) == null);
 }
 
 test "json media type accepts parameters and structured suffixes" {

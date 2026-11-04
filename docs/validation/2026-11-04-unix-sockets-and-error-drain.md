@@ -33,6 +33,14 @@ Accessors:
 The socket file is caller-owned. Netz's `UnixServer.deinit` closes the
 listener but does not unlink the path.
 
+`ctx.clientAddress()` is `null` for Unix connections. Zig's
+`UnixAddress.listen`/`connect` populate `Socket.address` with a synthetic
+`127.0.0.1`, which weft must not report as a real peer. When
+`Limits.trust_forwarded_for` is set, `resolveClientAddress` now still parses
+`X-Forwarded-For` even though the peer is null, so a Unix-socket reverse proxy
+can supply the client address. The Unix package test asserts both the
+`"none"` result and the header path at the unit level.
+
 ## HTTP/1 error-response drain
 
 `serveConnection` now returns a three-state `Disposition` instead of `bool`:

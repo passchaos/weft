@@ -391,7 +391,12 @@ pub fn Server(comptime H: type) type {
                 const client_info = ctx_mod.ClientInfo{
                     .address = ctx_mod.resolveClientAddress(
                         head.headers,
-                        connection.stream.socket.address,
+                        // std reports a synthetic loopback address for Unix
+                        // sockets, so do not expose it as a real peer.
+                        switch (self.netz_server) {
+                            .unix => null,
+                            else => connection.stream.socket.address,
+                        },
                         self.options.limits.trust_forwarded_for,
                     ),
                     .peer_certificates = connection.peerCertificates() orelse &.{},
