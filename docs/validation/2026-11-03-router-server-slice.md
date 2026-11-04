@@ -223,10 +223,14 @@ sequential requests, batched GETs, and batched 2 KiB uploads, all 32 streams
 per batch:
 
 ```text
-server h3 sequential:      requests=10000 76258.5 ns/request 13113 requests/s
-server h3 batched:         requests=32000 136621.9 ns/request  7319 requests/s
-server h3 upload batched:  requests=32000 182501.8 ns/request  5479 requests/s
+server h3 sequential:      requests=10000 77004.0 ns/request 12986 requests/s
+server h3 batched:         requests=32000 151222.2 ns/request  6613 requests/s
+server h3 upload batched:  requests=32000 180585.4 ns/request  5538 requests/s
 ```
+
+32-stream H3 numbers vary by roughly ±10% between runs (137–151 µs/req for
+GETs) while the 8-stream result stays near 44 µs/req, so the contention point
+is confirmed above eight concurrent streams.
 
 `-Dh3-poll-us=5000` measured 89.5 µs/req sequential and 186.5 µs/req batched,
 confirming the 1 ms default is still the better trade-off after netz's
