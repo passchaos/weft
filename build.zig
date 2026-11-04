@@ -87,8 +87,29 @@ pub fn build(b: *std.Build) void {
     const run_hello_step = b.step("run-hello", "Run the hello example");
     run_hello_step.dependOn(&run_example.step);
 
+    const upload_example = b.addExecutable(.{
+        .name = "upload",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/upload.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    b.installArtifact(upload_example);
+    const run_upload_example = b.addRunArtifact(upload_example);
+    const run_upload_step = b.step(
+        "run-upload",
+        "Run the streaming upload example",
+    );
+    run_upload_step.dependOn(&run_upload_example.step);
+
     const examples_step = b.step("examples", "Build all examples");
     examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
+    examples_step.dependOn(&b.addInstallArtifact(upload_example, .{}).step);
 
     const benchmark = b.addExecutable(.{
         .name = "router-bench",

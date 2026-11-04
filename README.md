@@ -553,12 +553,16 @@ itself is not synchronized with in-flight requests.
 zig build
 zig build test
 zig build run-hello
+zig build run-upload
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
 zig build bench-middleware -Doptimize=ReleaseFast
 zig build bench-static -Doptimize=ReleaseFast
 zig build bench-h2 -Doptimize=ReleaseFast
 ```
+
+`run-upload` starts a server, drives one streaming upload, one streaming
+multipart upload, an SSE response, and the Prometheus endpoint, then stops.
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
 On the reference development host, ReleaseFast reports about 52–56 ns per

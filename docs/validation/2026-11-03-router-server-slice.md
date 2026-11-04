@@ -186,6 +186,7 @@ zig fmt --check src test bench examples build.zig
 zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 zig build examples
+zig build run-upload
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
 zig build bench-middleware -Doptimize=ReleaseFast
@@ -198,7 +199,9 @@ Results:
 
 - Debug: 137/137 tests passed (99 unit, 38 package/integration).
 - ReleaseFast: 137/137 tests passed.
-- Examples build and `zig build run-hello` completes its request sequence.
+- Examples build; `zig build run-hello` and `zig build run-upload` complete
+  their request sequences (streaming upload, streaming multipart, SSE, and
+  Prometheus output).
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
