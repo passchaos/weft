@@ -545,7 +545,13 @@ pub const Ctx = struct {
             .{
                 .max_parts = self.limits.max_multipart_parts,
                 .max_body_bytes = self.limits.max_body_bytes,
-                .buffer_bytes = self.limits.max_streaming_window_bytes,
+                // The window comes from the request arena, so keep at least
+                // half of it available for headers, names, and the stream
+                // state itself.
+                .buffer_bytes = @min(
+                    self.limits.max_streaming_window_bytes,
+                    self.limits.max_request_arena_bytes / 2,
+                ),
             },
         );
     }

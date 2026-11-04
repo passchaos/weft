@@ -2740,6 +2740,11 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         streamingTrailerEcho,
         .{ .streaming = true },
     );
+    try router.post(
+        "/upload-multipart-stream",
+        StreamHandlers.multipartStreamRoute,
+        .{ .streaming = true },
+    );
     try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
 
     var group: std.Io.Group = .init;
@@ -2987,6 +2992,45 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         upload_trailer_response.body,
     );
 
+    const h2_file = try allocator.alloc(u8, 1024);
+    defer allocator.free(h2_file);
+    @memset(h2_file, 'h');
+    const h2_multipart_body = try std.fmt.allocPrint(
+        allocator,
+        "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"field\"\r\n" ++
+            "\r\n" ++
+            "value\r\n" ++
+            "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"file\"; " ++
+            "filename=\"h2.bin\"\r\n" ++
+            "\r\n" ++
+            "{s}\r\n" ++
+            "--weft--\r\n",
+        .{h2_file},
+    );
+    defer allocator.free(h2_multipart_body);
+    var h2_multipart_headers = [_]netz.http2.Hpack.HeaderField{.{
+        .name = "content-type",
+        .value = "multipart/form-data; boundary=weft",
+    }};
+    var h2_multipart_response = try batch_client.request(.{
+        .method = "POST",
+        .path = "/upload-multipart-stream",
+        .authority = "localhost",
+        .headers = &h2_multipart_headers,
+        .body = h2_multipart_body,
+    });
+    defer h2_multipart_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        h2_multipart_response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"field\":\"field\",\"file_bytes\":1024}",
+        h2_multipart_response.body,
+    );
+
     const stream_uri = try std.fmt.allocPrint(
         allocator,
         "{s}/stream/fixed",
@@ -3077,6 +3121,11 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
         .{ .streaming = true },
     );
     try router.get("/trailers-stream", streamingTrailerRoute, .{});
+    try router.post(
+        "/upload-multipart-stream",
+        StreamHandlers.multipartStreamRoute,
+        .{ .streaming = true },
+    );
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -3158,6 +3207,45 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try std.testing.expectEqualStrings(
         "{\"bytes\":409600}",
         large_upload_response.response.body,
+    );
+
+    const h3_file = try allocator.alloc(u8, 300 * 1024);
+    defer allocator.free(h3_file);
+    @memset(h3_file, 'm');
+    const h3_multipart_body = try std.fmt.allocPrint(
+        allocator,
+        "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"field\"\r\n" ++
+            "\r\n" ++
+            "value\r\n" ++
+            "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"file\"; " ++
+            "filename=\"h3.bin\"\r\n" ++
+            "\r\n" ++
+            "{s}\r\n" ++
+            "--weft--\r\n",
+        .{h3_file},
+    );
+    defer allocator.free(h3_multipart_body);
+    var h3_multipart_headers = [_]netz.http3.Qpack.HeaderField{.{
+        .name = "content-type",
+        .value = "multipart/form-data; boundary=weft",
+    }};
+    var h3_multipart_response = try client.request(.{
+        .method = "POST",
+        .path = "/upload-multipart-stream",
+        .authority = "localhost",
+        .headers = &h3_multipart_headers,
+        .body = h3_multipart_body,
+    });
+    defer h3_multipart_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        h3_multipart_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"field\":\"field\",\"file_bytes\":307200}",
+        h3_multipart_response.response.body,
     );
 
     var trailer_response = try client.request(.{

@@ -110,10 +110,11 @@ pub fn main(init: std.process.Init) !void {
   Filenames honor RFC 5987 `filename*` (UTF-8 and ISO-8859-1, widened to
   UTF-8) and prefer it over the plain `filename` fallback.
 - `ctx.multipartStream()` parses `multipart/form-data` incrementally from a
-  streaming route. It keeps one fixed window
-  (`Limits.max_streaming_window_bytes`), yields one part at a time with a
-  `DataReader`, and enforces `Limits.max_body_bytes` across the whole body, so
-  large uploads never need to fit in the request arena.
+  streaming route on HTTP/1, HTTP/2, and HTTP/3. It keeps one fixed window
+  (`min(max_streaming_window_bytes, max_request_arena_bytes / 2)`), yields one
+  part at a time with a `DataReader`, and enforces `Limits.max_body_bytes`
+  across the whole body, so large uploads never need to fit in the request
+  arena.
 - `ctx.cookie(name)` reads request cookies, unwrapping RFC 6265 DQUOTE
   values; `ctx.setCookie(...)` appends a validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are

@@ -149,8 +149,10 @@ processing, decoded request data, and cooperative graceful shutdown.
   UTF-8 and ISO-8859-1 (widened to UTF-8) and prefer it over `filename`.
 - `Ctx.multipartStream()` parses `multipart/form-data` incrementally over a
   streaming body reader with a fixed window, one part at a time, and a
-  whole-body budget. The package test streams a 200 KiB file through a 64 KiB
-  request arena and a 32 KiB window.
+  whole-body budget. The window is capped at half the request arena. Package
+  tests cover 200 KiB over HTTP/1, 1 KiB over HTTP/2, and 300 KiB over HTTP/3,
+  and a differential test compares it with the buffered parser across every
+  source chunk size.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
   with semaphore-bounded sessions. Each session uses netz's owner-serialized
