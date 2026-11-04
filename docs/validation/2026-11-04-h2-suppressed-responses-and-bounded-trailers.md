@@ -74,6 +74,14 @@ Tests in `src/multipart_stream.zig`:
 - `streaming multipart keeps a boundary prefix at the window edge`
 - `streaming multipart keeps a boundary prefix in the preamble`
 
+## If-Range date comparison
+
+RFC 9110 §13.1.5 requires an `If-Range` date validator to match the
+representation's `Last-Modified` value exactly. The static-file handler used
+`last_modified <= date`, so a future date incorrectly allowed a partial
+response. The comparison is now exact, and the precondition test covers a date
+newer than the representation.
+
 ## Verification
 
 ```sh

@@ -68,7 +68,9 @@ fn ifRangeMatches(value: []const u8, etag: []const u8, last_modified: i64) bool 
         return strongMatches(trimmed, etag);
     }
     if (parseDate(trimmed)) |date| {
-        return last_modified <= date;
+        // RFC 9110 §13.1.5: an If-Range date matches only when it is exactly
+        // equal to the representation's Last-Modified value.
+        return last_modified == date;
     }
     return false;
 }
@@ -411,6 +413,11 @@ test "precondition gates If-Range on the current validator" {
     try std.testing.expect(!evaluate(.{
         .range = "bytes=0-1",
         .if_range = "Sun, 06 Nov 1994 08:49:36 GMT",
+    }, etag, modified).range_allowed);
+    // A newer date is not the current representation's validator.
+    try std.testing.expect(!evaluate(.{
+        .range = "bytes=0-1",
+        .if_range = "Sun, 06 Nov 1994 08:49:38 GMT",
     }, etag, modified).range_allowed);
     // If-Range is ignored when there is no Range request.
     try std.testing.expect(evaluate(.{
