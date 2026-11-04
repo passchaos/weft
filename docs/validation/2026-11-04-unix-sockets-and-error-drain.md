@@ -42,31 +42,27 @@ listener but does not unlink the path.
   input, and closed;
 - `.upgraded` — a WebSocket took ownership of the socket.
 
-`respondAndDrain` writes the status with `Connection: close`, then calls
-`Connection.drainAndClose(deadline)` from netz (`a1d53bdc`). The deadline is
-`error_drain_timeout = 250 ms`; netz separately caps discarded bytes at
-64 KiB. This half-closes the write side first so the peer sees the response
-and EOF before the close.
+`respondAndDrain` calls `Connection.respondAndClose(response, deadline)` from
+netz. That API permits the final write even after the request read marked the
+connection unusable, forces `Connection: close`, half-closes the write side so
+the peer sees the response and EOF, drains bounded input, and closes. The
+deadline is `error_drain_timeout = 250 ms`; netz separately caps discarded
+bytes at 64 KiB.
 
 Errors from `readRequestBodyWithBuffer` are now mapped through
 `statusForReadError` instead of bubbling out and closing with no response.
 That covers head-stage rejections such as `431` and `414`, which happen before
 a reader is returned.
 
-## Upstream gap (filed with netz)
+## Post-read-failure write
 
 `Connection.writeResponse` begins with `writer_state.ensureAvailable()`. After
 `RequestBodyReader`'s producer calls `writer_state.failRead()`, the phase is
-`.unusable`, so the error response write is refused with
-`error.ConnectionUnusable` and the client sees only EOF. This affects every
+`.unusable`, so a plain error-response write is refused with
+`error.ConnectionUnusable`. `Connection.respondAndClose` is the netz API that
+solves this: it bypasses the availability check (the connection will not be
+reused), writes the response, drains, and closes. Weft uses it for every
 reader-surfaced status (`400/408/413/414/431`).
-
-Weft has the status mapping and drain wiring ready. Netz needs a
-post-read-failure write path; the request is recorded in
-`../netz/docs/weft-integration-requests.md` section 6, with the preferred
-shape `Connection.respondAndClose(response, deadline)`. Once available, weft's
-`respondAndDrain` should call that API and the end-to-end 431/414 package test
-should be restored.
 
 ## Verification
 
@@ -79,8 +75,8 @@ zig build examples --global-cache-dir /tmp/weft-zig-global --summary all
 
 Results at this slice:
 
-- Debug: 144/144 tests passed (101 unit + 43 package).
-- ReleaseFast: 144/144 tests passed.
+- Debug: 145/145 tests passed (101 unit + 44 package).
+- ReleaseFast: 145/145 tests passed.
 - Examples: build succeeded.
 
 New package tests:
@@ -91,6 +87,9 @@ New package tests:
   `netz.http1.runtime.Client.connectUnix`.
 - `package: server requires exactly one listen address` — asserts
   `error.InvalidOptions` for neither and both address forms.
+- `package: oversized request head and target return 431 and 414` — sends a
+  head over `max_head_bytes` and a target over `max_request_target_bytes`
+  through a real client, asserting the protocol status survives the close.
 
 The earlier `statusForReadError` unit test remains in `src/server.zig`.
 
@@ -100,5 +99,3 @@ The earlier `statusForReadError` unit test remains in `src/server.zig`.
   a TCP address.
 - The 250 ms drain budget is per error response and runs on the owning worker;
   it is bounded by `max_connections`.
-- Protocol-error responses remain dependent on the netz write path described
-  above.

@@ -4930,3 +4930,86 @@ test "package: server requires exactly one listen address" {
         ),
     );
 }
+
+test "package: oversized request head and target return 431 and 414" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 512,
+                .max_request_target_bytes = 32,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const address: std.Io.net.IpAddress = server.address();
+    const client_limits: netz.http1.runtime.Limits = .{
+        .max_head_bytes = 4096,
+        .max_body_bytes = 4096,
+    };
+
+    // A single header field over max_head_bytes must still deliver 431; the
+    // server answers and drains the unread head before closing.
+    var big_value: [1024]u8 = undefined;
+    @memset(&big_value, 'a');
+    var client = try netz.http1.runtime.Client.connect(
+        allocator,
+        io,
+        address,
+        client_limits,
+    );
+    defer client.close();
+    var response = try client.request(.{
+        .method = .GET,
+        .target = "/",
+        .host = "localhost",
+        .headers = &.{.{
+            .name = "X-Oversized",
+            .value = &big_value,
+        }},
+    });
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 431), response.response.status);
+
+    // A target over max_request_target_bytes maps to 414 through the same
+    // write-drain-close path.
+    var long_target: [128]u8 = undefined;
+    @memset(&long_target, 'b');
+    long_target[0] = '/';
+    var client2 = try netz.http1.runtime.Client.connect(
+        allocator,
+        io,
+        address,
+        client_limits,
+    );
+    defer client2.close();
+    var response2 = try client2.request(.{
+        .method = .GET,
+        .target = &long_target,
+        .host = "localhost",
+    });
+    defer response2.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 414), response2.response.status);
+
+    server.stop();
+    try group.await(io);
+}

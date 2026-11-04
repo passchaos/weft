@@ -680,6 +680,11 @@ buffered/streaming multipart, and HTTP-date/precondition parsers, asserting
 that every input either fails cleanly or yields bounded, control-byte-free
 results.
 
+HTTP/1 protocol-error responses (`400/408/413/414/431`) are written through
+`Connection.respondAndClose`, which permits one final response after a failed
+request read, then half-closes and drains unread input within a 250 ms budget
+so the status is not lost to a TCP RST.
+
 ## Limitations
 
 - HTTP/3 sequential latency is higher than HTTP/2 (roughly 76 µs vs 25 µs per
@@ -690,9 +695,3 @@ results.
 - `Etag` covers buffered responses; streamed bodies are not hashed.
 - `StaticFiles` sidecar (`.br`/`.zst`/`.gz`) responses are not range-addressable
   by design; `Range` requests receive the raw file.
-- HTTP/1 protocol-error responses (400/408/413/414/431) that follow a failed
-  request-head read still depend on Netz allowing a final write after
-  `writer_state` is retired. Weft writes the response and then calls
-  `Connection.drainAndClose`, but until Netz exposes a post-read-failure write
-  path the write can be refused with `ConnectionUnusable` and the client sees
-  only the close.

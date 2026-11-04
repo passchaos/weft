@@ -319,25 +319,29 @@ pub fn Server(comptime H: type) type {
         };
 
         /// Send an error response, then close without losing it to a TCP RST
-        /// caused by unread request bytes. The drain is bounded by Netz and by
-        /// `error_drain_timeout`; failure still closes the connection.
+        /// caused by unread request bytes. `respondAndClose` also permits the
+        /// write after a failed request read, when `writeResponse` would
+        /// return `error.ConnectionUnusable`. The drain is bounded by Netz and
+        /// by `error_drain_timeout`; failure still closes the connection.
         fn respondAndDrain(
             self: *@This(),
             connection: *netz.http1.runtime.Connection,
             status: u16,
         ) void {
-            connection.writeResponse(.{
-                .status = status,
-                .reason = response_mod.reasonFor(status),
-                .headers = &.{.{
-                    .name = "Connection",
-                    .value = "close",
-                }},
-            }) catch {};
-            connection.drainAndClose(.fromNow(
-                self.io,
-                .{ .raw = error_drain_timeout, .clock = .awake },
-            ));
+            connection.respondAndClose(
+                .{
+                    .status = status,
+                    .reason = response_mod.reasonFor(status),
+                    .headers = &.{.{
+                        .name = "Connection",
+                        .value = "close",
+                    }},
+                },
+                .fromNow(
+                    self.io,
+                    .{ .raw = error_drain_timeout, .clock = .awake },
+                ),
+            ) catch {};
         }
 
         fn serveConnection(
