@@ -113,7 +113,9 @@ escaped queries decode into a single buffer.
 - `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,
   deflate, br, zstd) with `Limits.max_body_bytes` as the decoded bound.
   `ctx.decodedReader()` exposes the same decoding incrementally on streaming
-  routes, with both encoded and decoded bytes bounded.
+  routes, with both encoded and decoded bytes bounded; a package test feeds a
+  20 KiB gzip body through a 4 KiB streaming window to exercise multi-chunk
+  decoding.
 - `ctx.addTrailer(name, value)` appends a response trailer. HTTP/1 emits
   trailers only when the request sent `TE: trailers`; HTTP/2 and HTTP/3 emit
   them after the body.

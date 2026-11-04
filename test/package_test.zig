@@ -1865,6 +1865,93 @@ test "package: streaming request bodies reach handlers incrementally" {
     try group.await(io);
 }
 
+test "package: streaming decode handles multi-chunk compressed bodies" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    const decodeRoute = struct {
+        fn handle(ctx: *weft.Ctx) anyerror!void {
+            const reader = if (try ctx.decodedReader()) |decoded|
+                weft.BodyReader{ .decoded = decoded }
+            else
+                ctx.bodyReader().?;
+            var total: usize = 0;
+            while (try reader.next()) |chunk| total += chunk.len;
+            try ctx.json(.{ .bytes = total });
+        }
+    };
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 128 * 1024,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 4096,
+                // Small enough that a 20 KiB upload arrives in many chunks.
+                .max_streaming_window_bytes = 4096,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().addRaw(
+        .POST,
+        "/decoded",
+        weft.handler(decodeRoute.handle),
+        .{ .streaming = true },
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const payload = try allocator.alloc(u8, 20 * 1024);
+    defer allocator.free(payload);
+    var prng = std.Random.DefaultPrng.init(0xdec0_de);
+    prng.random().bytes(payload);
+    const compressed = try gzipAlloc(allocator, payload);
+    defer allocator.free(compressed);
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/decoded",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+    const headers = [_]netz.http1.Header{.{
+        .name = "Content-Encoding",
+        .value = "gzip",
+    }};
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .headers = &headers,
+            .body = compressed,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 128 * 1024 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":20480}",
+        response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
 test "package: streaming byte budget failure becomes 500" {
     const allocator = std.testing.allocator;
 

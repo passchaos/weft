@@ -199,8 +199,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 137/137 tests passed (99 unit, 38 package/integration).
-- ReleaseFast: 137/137 tests passed.
+- Debug: 138/138 tests passed (99 unit, 39 package/integration).
+- ReleaseFast: 138/138 tests passed.
 - Examples build; `zig build run-hello` and `zig build run-upload` complete
   their request sequences (streaming upload, streaming multipart, SSE, and
   Prometheus output). The upload example keeps `Metrics` behind a pointer
