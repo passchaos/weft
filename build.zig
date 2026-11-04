@@ -161,6 +161,26 @@ pub fn build(b: *std.Build) void {
     );
     bench_h2_step.dependOn(&run_h2_benchmark.step);
 
+    const h3_batch = b.option(
+        u32,
+        "h3-batch",
+        "Concurrent streams per HTTP/3 benchmark batch (default 32)",
+    ) orelse 32;
+    const h3_batch_iterations = b.option(
+        u32,
+        "h3-batch-iterations",
+        "HTTP/3 benchmark batch iterations (default 1000)",
+    ) orelse 1_000;
+    const h3_poll_us = b.option(
+        u32,
+        "h3-poll-us",
+        "HTTP/3 handler poll interval override in microseconds (0 uses the weft default)",
+    ) orelse 0;
+    const h3_bench_options = b.addOptions();
+    h3_bench_options.addOption(u32, "batch_size", h3_batch);
+    h3_bench_options.addOption(u32, "batch_iterations", h3_batch_iterations);
+    h3_bench_options.addOption(u32, "poll_us", h3_poll_us);
+
     const h3_benchmark = b.addExecutable(.{
         .name = "h3-server-bench",
         .root_module = b.createModule(.{
@@ -170,6 +190,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "weft", .module = weft_mod },
                 .{ .name = "netz", .module = netz_mod },
+                .{ .name = "build_options", .module = h3_bench_options.createModule() },
             },
         }),
     });

@@ -1,6 +1,7 @@
 const std = @import("std");
 const netz = @import("netz");
 const weft = @import("weft");
+const build_options = @import("build_options");
 
 const App = struct {};
 
@@ -45,8 +46,8 @@ const BatchCtx = struct {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const sequential_iterations: usize = 10_000;
-    const batch_size: usize = 32;
-    const batch_iterations: usize = 1_000;
+    const batch_size: usize = build_options.batch_size;
+    const batch_iterations: usize = build_options.batch_iterations;
 
     var backend = try netz.runtime.Backend.init(allocator);
     defer backend.deinit();
@@ -56,33 +57,39 @@ pub fn main(init: std.process.Init) !void {
     const original_dcid = [_]u8{ 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7 };
     const client_cid = [_]u8{ 0xe8, 0xe9, 0xea, 0xeb };
 
+    var server_options = weft.Http3Options{
+        .address = .{ .ip4 = .loopback(0) },
+        .limits = .{
+            .max_head_bytes = 4096,
+            .max_body_bytes = 512 * 1024,
+            .max_request_arena_bytes = 64 * 1024,
+            .max_response_bytes = 4096,
+        },
+        .max_connections = 1,
+        .max_requests_per_connection = 1_000_000,
+        .max_concurrent_streams = batch_size,
+        .max_concurrent_handlers = batch_size,
+        .accept_timeout = .fromMilliseconds(500),
+        .idle_timeout = .fromMilliseconds(100),
+        .quic_limits = .{
+            .max_datagram_size = 4096,
+            .max_frames_per_datagram = 8,
+        },
+        .handshake = .{
+            .local_connection_id = &server_cid,
+            .random = [_]u8{0xe2} ** 32,
+            .x25519_secret_key = [_]u8{0xe4} ** 32,
+        },
+    };
+    if (build_options.poll_us != 0) {
+        server_options.handler_poll_interval = .fromMicroseconds(
+            build_options.poll_us,
+        );
+    }
     var server = try weft.Http3Server(App).init(
         io,
         allocator,
-        .{
-            .address = .{ .ip4 = .loopback(0) },
-            .limits = .{
-                .max_head_bytes = 4096,
-                .max_body_bytes = 512 * 1024,
-                .max_request_arena_bytes = 64 * 1024,
-                .max_response_bytes = 4096,
-            },
-            .max_connections = 1,
-            .max_requests_per_connection = 1_000_000,
-            .max_concurrent_streams = batch_size,
-            .max_concurrent_handlers = batch_size,
-            .accept_timeout = .fromMilliseconds(500),
-            .idle_timeout = .fromMilliseconds(100),
-            .quic_limits = .{
-                .max_datagram_size = 4096,
-                .max_frames_per_datagram = 8,
-            },
-            .handshake = .{
-                .local_connection_id = &server_cid,
-                .random = [_]u8{0xe2} ** 32,
-                .x25519_secret_key = [_]u8{0xe4} ** 32,
-            },
-        },
+        server_options,
         .{},
     );
     defer server.deinit();
@@ -92,10 +99,6 @@ pub fn main(init: std.process.Init) !void {
     defer group.cancel(io);
     try group.concurrent(io, serveServer, .{&server});
 
-    std.debug.print(
-        "h3 bench connecting to port {d}\n",
-        .{server.address().ip4.port},
-    );
     var client = try netz.http3.runtime.HandshakeClient.connect(
         allocator,
         io,
