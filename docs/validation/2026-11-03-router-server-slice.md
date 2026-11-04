@@ -201,12 +201,13 @@ Results:
 - Router benchmark on the development host (ReleaseFast):
 
 ```text
-router static: routes=1024 lookups=2000000 97.0 ns/lookup 10306879 lookups/s
-router param:  routes=256  lookups=1000000 111.8 ns/lookup 8941462 lookups/s
+router static: routes=1024 lookups=2000000 52.1 ns/lookup 19205250 lookups/s
+router param:  routes=256  lookups=1000000 91.2 ns/lookup 10962601 lookups/s
 ```
 
-The benchmark includes capture-array allocation from a fixed arena for the
-parameter case. Numbers are indicative of this host, not a cross-machine
+Capture-free routes no longer allocate a zero-length parameter array, which
+cut the static path from ~97 ns to ~52 ns. The parameter case still includes
+capture-array allocation from a fixed arena. Numbers are indicative of this host, not a cross-machine
 guarantee.
 
 Static-file handler throughput (in-process, 64 KiB and 1 KiB files):

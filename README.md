@@ -559,9 +559,10 @@ zig build bench-h2 -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
-On the reference development host, ReleaseFast runs range from roughly 80–140
-ns per lookup (about 7M–12M lookups per second) depending on host load,
-including capture allocation from a fixed arena.
+On the reference development host, ReleaseFast reports about 52–56 ns per
+static lookup (about 18–19M lookups/s) and about 91 ns per parameter lookup
+(about 11M lookups/s), including capture allocation from a fixed arena.
+Capture-free routes skip the parameter allocation entirely.
 
 `bench-static` measures the `StaticFiles` handler in-process (normalization,
 stat, validators, and streamed reads) against a 64 KiB file and a 1 KiB file:

@@ -773,6 +773,9 @@ pub fn Router(comptime H: type) type {
             allocator: std.mem.Allocator,
             path: []const u8,
         ) !Match {
+            if (route.capture_count == 0) {
+                return .{ .route = route, .params = &.{}, .path = path };
+            }
             const params = try allocator.alloc(Param, route.capture_count);
             var capture_index: usize = 0;
             var segments = SegmentIterator{
