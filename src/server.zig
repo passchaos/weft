@@ -16,8 +16,18 @@ pub const Limits = limits_mod.Limits;
 pub const Router = router_mod.Router;
 pub const RouteOptions = router_mod.RouteOptions;
 
+/// Upper bound on how long an error response may spend draining unread
+/// request bytes before the connection closes. Netz caps the discarded bytes
+/// separately, so this only bounds a peer that keeps sending.
+const error_drain_timeout: std.Io.Duration = .fromMilliseconds(250);
+
 pub const Options = struct {
-    address: std.Io.net.IpAddress,
+    /// TCP listen address. Exactly one of `address` and `unix_path` must be
+    /// set.
+    address: ?std.Io.net.IpAddress = null,
+    /// Serve on a Unix domain socket instead of TCP. TLS is not supported on
+    /// Unix sockets.
+    unix_path: ?[]const u8 = null,
     limits: Limits = .{},
     /// Application middleware that runs before every route, including
     /// `404`, `405`, and automatic `OPTIONS` responses. The slice must outlive
@@ -55,18 +65,21 @@ pub const Options = struct {
 const Listener = union(enum) {
     plain: netz.http1.runtime.Server,
     tls: netz.http1.runtime.TlsServer,
+    unix: netz.http1.runtime.UnixServer,
 
     fn deinit(self: *Listener) void {
         switch (self.*) {
             .plain => |*server| server.deinit(),
             .tls => |*server| server.deinit(),
+            .unix => |*server| server.deinit(),
         }
     }
 
-    fn address(self: *const Listener) std.Io.net.IpAddress {
+    fn address(self: *const Listener) ?std.Io.net.IpAddress {
         return switch (self.*) {
             .plain => |server| server.address(),
             .tls => |server| server.address(),
+            .unix => null,
         };
     }
 
@@ -77,6 +90,7 @@ const Listener = union(enum) {
         return switch (self.*) {
             .plain => |*server| server.acceptWithTimeout(timeout),
             .tls => |*server| server.acceptWithTimeout(timeout),
+            .unix => |*server| server.acceptWithTimeout(timeout),
         };
     }
 };
@@ -144,21 +158,34 @@ pub fn Server(comptime H: type) type {
             if (options.middleware.len > options.limits.max_middleware) {
                 return error.TooMuchMiddleware;
             }
+            const has_tcp = options.address != null;
+            const has_unix = options.unix_path != null;
+            if (has_tcp == has_unix) return error.InvalidOptions;
+            if (has_unix and options.tls != null) return error.InvalidOptions;
+            const unix_address = if (options.unix_path) |path|
+                try std.Io.net.UnixAddress.init(path)
+            else
+                null;
 
-            var netz_server: Listener = if (options.tls) |tls_options| blk: {
+            var netz_server: Listener = if (unix_address) |unix| .{ .unix = try netz.http1.runtime.UnixServer.listen(
+                allocator,
+                io,
+                unix,
+                options.limits.toNetz(),
+            ) } else if (options.tls) |tls_options| blk: {
                 var tls = tls_options;
                 tls.limits = options.limits.toNetz();
                 tls.tcp_nodelay = options.limits.tcp_nodelay;
                 break :blk .{ .tls = try netz.http1.runtime.TlsServer.listen(
                     allocator,
                     io,
-                    options.address,
+                    options.address.?,
                     tls,
                 ) };
             } else .{ .plain = try netz.http1.runtime.Server.listen(
                 allocator,
                 io,
-                options.address,
+                options.address.?,
                 options.limits.toNetz(),
             ) };
             errdefer netz_server.deinit();
@@ -182,8 +209,21 @@ pub fn Server(comptime H: type) type {
             self.* = undefined;
         }
 
+        /// TCP listen address. Panics for a Unix-socket server; use
+        /// `ipAddress()` or `unixPath()` when the transport is not known.
         pub fn address(self: *const @This()) std.Io.net.IpAddress {
+            return self.netz_server.address() orelse
+                @panic("Unix-socket server has no TCP address");
+        }
+
+        /// TCP listen address, or null for a Unix-socket server.
+        pub fn ipAddress(self: *const @This()) ?std.Io.net.IpAddress {
             return self.netz_server.address();
+        }
+
+        /// Configured Unix socket path, or null for a TCP server.
+        pub fn unixPath(self: *const @This()) ?[]const u8 {
+            return self.options.unix_path;
         }
 
         pub fn router(self: *@This()) *router_mod.Router(H) {
@@ -257,7 +297,7 @@ pub fn Server(comptime H: type) type {
                 var close_connection = true;
                 defer if (close_connection) connection.close();
 
-                const upgraded = self.serveConnection(&connection) catch |err| {
+                const disposition = self.serveConnection(&connection) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
                     std.log.scoped(.weft).warn(
                         "connection error: {s}",
@@ -265,14 +305,45 @@ pub fn Server(comptime H: type) type {
                     );
                     continue;
                 };
-                if (upgraded) close_connection = false;
+                close_connection = disposition == .close;
             }
+        }
+
+        const Disposition = enum {
+            /// Close immediately; the connection is no longer usable.
+            close,
+            /// The connection was already drained and closed.
+            drained,
+            /// A WebSocket upgrade took ownership of the socket.
+            upgraded,
+        };
+
+        /// Send an error response, then close without losing it to a TCP RST
+        /// caused by unread request bytes. The drain is bounded by Netz and by
+        /// `error_drain_timeout`; failure still closes the connection.
+        fn respondAndDrain(
+            self: *@This(),
+            connection: *netz.http1.runtime.Connection,
+            status: u16,
+        ) void {
+            connection.writeResponse(.{
+                .status = status,
+                .reason = response_mod.reasonFor(status),
+                .headers = &.{.{
+                    .name = "Connection",
+                    .value = "close",
+                }},
+            }) catch {};
+            connection.drainAndClose(.fromNow(
+                self.io,
+                .{ .raw = error_drain_timeout, .clock = .awake },
+            ));
         }
 
         fn serveConnection(
             self: *@This(),
             connection: *netz.http1.runtime.Connection,
-        ) !bool {
+        ) !Disposition {
             const arena_buffer = try self.allocator.alloc(
                 u8,
                 self.options.limits.max_request_arena_bytes,
@@ -281,7 +352,7 @@ pub fn Server(comptime H: type) type {
 
             var served: usize = 0;
             while (served < self.options.max_requests_per_connection) : (served += 1) {
-                if (self.shutdown.isSet()) return false;
+                if (self.shutdown.isSet()) return .close;
 
                 var fixed_buffer = std.heap.FixedBufferAllocator.init(
                     arena_buffer,
@@ -296,23 +367,21 @@ pub fn Server(comptime H: type) type {
                     self.options.limits.max_streaming_window_bytes,
                 ) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
-                    return err;
+                    if (err == error.ConnectionClosed) return .close;
+                    // Head parsing happens here, so protocol rejections such
+                    // as 431/414 surface before a reader exists.
+                    const status = statusForReadError(err) orelse return .close;
+                    self.respondAndDrain(connection, status);
+                    return .drained;
                 };
                 defer reader.deinit();
 
                 const head = reader.head() catch |err| {
-                    if (err == error.ConnectionClosed) return false;
+                    if (err == error.ConnectionClosed) return .close;
                     if (err == error.Canceled) return error.Canceled;
-                    const status = statusForReadError(err) orelse return false;
-                    connection.writeResponse(.{
-                        .status = status,
-                        .reason = response_mod.reasonFor(status),
-                        .headers = &.{.{
-                            .name = "Connection",
-                            .value = "close",
-                        }},
-                    }) catch {};
-                    return false;
+                    const status = statusForReadError(err) orelse return .close;
+                    self.respondAndDrain(connection, status);
+                    return .drained;
                 };
 
                 const client_info = ctx_mod.ClientInfo{
@@ -347,35 +416,21 @@ pub fn Server(comptime H: type) type {
                     while (true) {
                         const chunk = reader.next() catch |err| {
                             if (err == error.Canceled) return error.Canceled;
-                            if (err == error.ConnectionClosed) return false;
+                            if (err == error.ConnectionClosed) return .close;
                             const status = statusForReadError(err) orelse
-                                return false;
-                            connection.writeResponse(.{
-                                .status = status,
-                                .reason = response_mod.reasonFor(status),
-                                .headers = &.{.{
-                                    .name = "Connection",
-                                    .value = "close",
-                                }},
-                            }) catch {};
-                            return false;
+                                return .close;
+                            self.respondAndDrain(connection, status);
+                            return .drained;
                         };
                         if (chunk == null) break;
                         const next_total = std.math.add(
                             usize,
                             body.items.len,
                             chunk.?.len,
-                        ) catch return false;
+                        ) catch return .close;
                         if (next_total > self.options.limits.max_body_bytes) {
-                            connection.writeResponse(.{
-                                .status = 413,
-                                .reason = response_mod.reasonFor(413),
-                                .headers = &.{.{
-                                    .name = "Connection",
-                                    .value = "close",
-                                }},
-                            }) catch {};
-                            return false;
+                            self.respondAndDrain(connection, 413);
+                            return .drained;
                         }
                         try body.appendSlice(self.allocator, chunk.?);
                     }
@@ -385,7 +440,10 @@ pub fn Server(comptime H: type) type {
                 if (!streaming) {
                     meta = reader.takeRequest() catch |err| {
                         if (err == error.Canceled) return error.Canceled;
-                        return false;
+                        const status = statusForReadError(err) orelse
+                            return .close;
+                        self.respondAndDrain(connection, status);
+                        return .drained;
                     };
                 }
                 defer if (meta) |*value| value.deinit(self.allocator);
@@ -464,7 +522,7 @@ pub fn Server(comptime H: type) type {
                         upgrade_body,
                         arena,
                     )) {
-                        return true;
+                        return .upgraded;
                     }
                 }
 
@@ -509,9 +567,9 @@ pub fn Server(comptime H: type) type {
                     ));
                 }
 
-                if (!keep_alive) return false;
+                if (!keep_alive) return .close;
             }
-            return false;
+            return .close;
         }
 
         fn handleUpgrade(

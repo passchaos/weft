@@ -4834,3 +4834,99 @@ test "package: response header budget failure becomes 500" {
     server.stop();
     try group.await(io);
 }
+
+test "package: Unix socket server serves HTTP/1" {
+    if (comptime @import("builtin").os.tag == .windows) {
+        return error.SkipZigTest;
+    }
+
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_storage: [std.fs.max_path_bytes]u8 = undefined;
+    const directory_len = try tmp.dir.realPath(io, &path_storage);
+    const suffix = try std.fmt.bufPrint(
+        path_storage[directory_len..],
+        "/weft-http.sock",
+        .{},
+    );
+    const full_path = path_storage[0 .. directory_len + suffix.len];
+    const address = try std.Io.net.UnixAddress.init(full_path);
+    // The server owns the listener but not the filesystem entry.
+    defer std.Io.Dir.deleteFileAbsolute(io, full_path) catch {};
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .unix_path = full_path,
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try std.testing.expect(server.ipAddress() == null);
+    try std.testing.expectEqualStrings(full_path, server.unixPath().?);
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    var client = try netz.http1.runtime.Client.connectUnix(
+        allocator,
+        io,
+        address,
+        "localhost",
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer client.close();
+
+    var response = try client.request(.{ .method = .GET, .target = "/" });
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "hello from weft",
+        response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: server requires exactly one listen address" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Server(App).init(io, allocator, .{}, .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Server(App).init(
+            io,
+            allocator,
+            .{
+                .address = .{ .ip4 = .loopback(0) },
+                .unix_path = "/tmp/weft-conflict.sock",
+            },
+            .{},
+        ),
+    );
+}

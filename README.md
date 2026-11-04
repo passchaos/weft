@@ -260,6 +260,30 @@ TLS workers use `tls_accept_timeout` as the combined accept plus handshake
 budget, which also bounds idle shutdown polling. TLS transport, ciphers,
 certificate policy, and session handling remain owned by Netz.
 
+## Unix sockets
+
+Set `Options.unix_path` instead of `Options.address` to serve HTTP/1 over a
+Unix-domain stream socket (for example behind a reverse proxy on the same
+host). Exactly one of the two must be set, and TLS is rejected on Unix
+sockets:
+
+```zig
+var server = try weft.Server(App).init(
+    io,
+    gpa,
+    .{ .unix_path = "/run/weft.sock" },
+    .{},
+);
+defer server.deinit();
+```
+
+The application surface is unchanged: routing, middleware, streaming, and
+limits behave exactly as on TCP. `server.ipAddress()` returns `null` and
+`server.unixPath()` returns the configured path; `server.address()` panics for
+a Unix-socket server because there is no TCP address. The socket file is
+caller-owned: Netz closes the listener on `deinit` but does not unlink the
+path, so remove it after the server stops.
+
 ## HTTP/2
 
 `weft.Http2Server(H)` serves cleartext prior-knowledge h2c and optional TLS
@@ -643,13 +667,13 @@ changes are both important for H3 latency.
 
 ## Status
 
-HTTP/1.1 is served through `netz.http1.runtime` with cleartext and TLS
-listeners, and mirrors HTTP/1.0 request versions with appropriate connection
-semantics. `Http2Server` and `Http3Server` provide h2c, TLS/ALPN h2, and
-QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1, HTTP/2,
-and HTTP/3 request bodies all stream incrementally. HTTP/2 and HTTP/3 requests
-run up to `max_concurrent_handlers` handler tasks concurrently through netz's
-owner-serialized stream engines.
+HTTP/1.1 is served through `netz.http1.runtime` with cleartext, TLS, and
+Unix-domain socket listeners, and mirrors HTTP/1.0 request versions with
+appropriate connection semantics. `Http2Server` and `Http3Server` provide
+h2c, TLS/ALPN h2, and QUIC/TLS HTTP/3 adapters over the same application
+surface. HTTP/1, HTTP/2, and HTTP/3 request bodies all stream incrementally.
+HTTP/2 and HTTP/3 requests run up to `max_concurrent_handlers` handler tasks
+concurrently through netz's owner-serialized stream engines.
 
 Parser totality tests feed deterministic random bytes to the query, `Accept`,
 buffered/streaming multipart, and HTTP-date/precondition parsers, asserting
@@ -666,3 +690,9 @@ results.
 - `Etag` covers buffered responses; streamed bodies are not hashed.
 - `StaticFiles` sidecar (`.br`/`.zst`/`.gz`) responses are not range-addressable
   by design; `Range` requests receive the raw file.
+- HTTP/1 protocol-error responses (400/408/413/414/431) that follow a failed
+  request-head read still depend on Netz allowing a final write after
+  `writer_state` is retired. Weft writes the response and then calls
+  `Connection.drainAndClose`, but until Netz exposes a post-read-failure write
+  path the write can be refused with `ConnectionUnusable` and the client sees
+  only the close.
