@@ -892,6 +892,65 @@ test "package: 405, automatic OPTIONS, and HEAD fallback" {
     try group.await(io);
 }
 
+test "package: HTTP/1 routes an absolute-form request target" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 2,
+            .max_requests_per_connection = 4,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/hello/:name", hello, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const address = server.address();
+    var stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    var out_buffer: [1024]u8 = undefined;
+    var writer = stream.writer(io, &out_buffer);
+    try writer.interface.writeAll(
+        "GET http://example.com/hello/absolute HTTP/1.1\r\n" ++
+            "Host: example.com\r\n" ++
+            "Connection: close\r\n\r\n",
+    );
+    try writer.interface.flush();
+
+    var in_buffer: [4096]u8 = undefined;
+    var reader = stream.reader(io, &in_buffer);
+    var response_buffer: [8192]u8 = undefined;
+    const response_len = try reader.interface.readSliceShort(&response_buffer);
+    const response = response_buffer[0..response_len];
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "HTTP/1.1 200") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, response, "\"name\":\"absolute\"") != null,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
 test "package: decoded params and query values" {
     const allocator = std.testing.allocator;
 

@@ -3,7 +3,7 @@
 Scope: verify the current tree against the repository constraints in
 `AGENTS.md`, the feature list in `README.md`, and the measured performance
 claims. Everything below is backed by files or commands in this checkout;
-the full test suite is 157/157 in Debug and ReleaseFast.
+the full test suite is 159/159 in Debug and ReleaseFast.
 
 ## 1. Repository constraints
 
@@ -21,6 +21,8 @@ the full test suite is 157/157 in Debug and ReleaseFast.
 
 - HTTP/1.1 cleartext, HTTP/1.1 TLS, h2c, TLS/ALPN `h2`, and QUIC/TLS HTTP/3
   share one router, middleware chain, limits, error mapping, and `Ctx`.
+- HTTP/1 origin-form and absolute-form request targets are both routed by path
+  and query; `ctx.target()` preserves the original wire target.
 - HTTP/1 and prior-knowledge h2c also serve over Unix-domain sockets via
   `unix_path`; TLS is rejected there, and `clientAddress()` is `null` unless a
   trusted `X-Forwarded-For` supplies one.
@@ -68,8 +70,8 @@ zig build bench-static -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 157/157 (106 unit, 51 package/integration).
-- ReleaseFast: 157/157.
+- Debug: 159/159 (107 unit, 52 package/integration).
+- ReleaseFast: 159/159.
 - Examples build; `run-hello` and `run-upload` complete their request
   sequences (streaming upload, streaming multipart, SSE, Prometheus).
 - HTTP/1 `Expect: 100-continue` uploads complete through a streaming route.

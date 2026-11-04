@@ -6,6 +6,7 @@ const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
+const target_mod = @import("target.zig");
 
 /// Why a request did not reach a route handler. Custom fallback handlers can
 /// inspect this through `ctx.get(RouteFailure)`.
@@ -63,13 +64,13 @@ pub fn dispatch(
     body_reader: ?ctx_mod.BodyReader,
 ) !response_mod.Response {
     const target = request.target;
-    const query_index = std.mem.indexOfScalar(u8, target, '?');
-    const path = if (query_index) |index| target[0..index] else target;
-    const query = if (query_index) |index| target[index + 1 ..] else "";
+    const split_target = target_mod.split(target);
+    const path = split_target.path;
+    const query = split_target.query;
 
     var disposition: ?Disposition = null;
     const resolution = if (request.method == .OPTIONS and
-        std.mem.eql(u8, target, "*"))
+        std.mem.eql(u8, path, "*"))
     blk: {
         disposition = .{ .options_star = router.allowedMethods() };
         break :blk router_mod.Resolution.not_found;

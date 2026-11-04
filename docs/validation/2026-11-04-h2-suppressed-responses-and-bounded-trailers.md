@@ -119,6 +119,20 @@ before. The protocol-level follow-up is tracked as item 8 in
 Package test: the HTTP/2 adapter test posts to `/body-echo` and asserts that a
 non-streaming handler sees the buffered body through `Ctx.body()`.
 
+## HTTP/1 absolute-form request targets
+
+Netz accepts and validates absolute-form HTTP/1 targets and makes the target
+authority authoritative for `Host`, but weft's router previously received the
+whole `http://host/path` string and returned `404`. `src/target.zig` now
+splits origin-form and absolute-form targets into path and query for both the
+streaming-route check and dispatch. `ctx.target()` still returns the original
+wire target.
+
+Tests:
+- `target splitting handles origin and absolute forms` in `src/target.zig`
+- `package: HTTP/1 routes an absolute-form request target` sends a raw
+  `GET http://example.com/hello/absolute HTTP/1.1` and asserts the route runs.
+
 ## Verification
 
 ```sh
@@ -127,4 +141,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 157/157 tests in Debug and ReleaseFast (106 unit, 51 package).
+Results: 159/159 tests in Debug and ReleaseFast (107 unit, 52 package).

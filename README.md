@@ -524,6 +524,8 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
   trailing `*` wildcard. Precedence is decided at the leftmost differing
   segment, independent of registration order.
 - `:param` captures one segment; `*` captures the remaining path.
+- HTTP/1 absolute-form targets (`http://host/path?q=1`) are routed by their
+  path and query; `ctx.target()` still exposes the original wire target.
 - `router.any(...)` matches every method.
 - `HEAD` falls back to a `GET` route when no explicit `HEAD` route exists.
 - A path that exists for other methods returns `405` with an `Allow` field.

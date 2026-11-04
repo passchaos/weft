@@ -8,6 +8,7 @@ const stream_mod = @import("stream.zig");
 const dispatch_mod = @import("dispatch.zig");
 const drain_mod = @import("drain.zig");
 const websocket_mod = @import("websocket.zig");
+const target_mod = @import("target.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -417,8 +418,7 @@ pub fn Server(comptime H: type) type {
                     return .drained;
                 }
                 const target = head.target;
-                const query_index = std.mem.indexOfScalar(u8, target, '?');
-                const path = if (query_index) |index| target[0..index] else target;
+                const path = target_mod.split(target).path;
                 const streaming = self.app_router.isStreaming(method, path);
 
                 var body: std.ArrayListUnmanaged(u8) = .empty;
