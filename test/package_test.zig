@@ -5233,7 +5233,7 @@ test "package: HTTP/2 per-route body budget returns 413" {
                 .max_body_bytes = 4096,
                 .max_request_arena_bytes = 64 * 1024,
                 .max_response_bytes = 64 * 1024,
-                .max_streaming_window_bytes = 4096,
+                .max_streaming_window_bytes = 512,
                 .max_http2_concurrent_streams = 4,
             },
             .max_connections = 1,

@@ -401,7 +401,10 @@ pub fn Http3Server(comptime H: type) type {
             var trailers: []netz.http1.Header = &.{};
 
             if (streaming) {
-                reader = .{ .stream = stream };
+                reader = ctx_mod.H3StreamReader.init(
+                    stream,
+                    self.options.limits.max_streaming_window_bytes,
+                );
             } else {
                 body = readWholeBody(
                     arena,

@@ -566,7 +566,8 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 - `max_multipart_parts` bounds `multipart/form-data` parts.
 - `max_streaming_window_bytes` bounds the copy window used to stream request
   bodies to a handler task; the protocol layer still enforces
-  `max_body_bytes` on the total body.
+  `max_body_bytes` on the total body. HTTP/2 and HTTP/3 use the same value,
+  capped at 16 KiB per read by their stack window.
 - `max_http2_concurrent_streams` bounds simultaneously open HTTP/2 request
   streams per connection (default 16), limiting buffered DATA and concurrent
   handler tasks.

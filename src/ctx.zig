@@ -31,15 +31,30 @@ pub const ReplayReader = struct {
     }
 };
 
+/// Stack copy window used by the HTTP/2 and HTTP/3 streaming readers. The
+/// configured `max_streaming_window_bytes` may lower it, but not raise it.
+pub const stream_reader_buffer_bytes = 16 * 1024;
+
 /// Pull reader over an HTTP/2 concurrent stream.
 pub const H2StreamReader = struct {
     stream: *netz.http2.runtime.Connection.ConcurrentStream,
-    buffer: [16 * 1024]u8 = undefined,
+    buffer: [stream_reader_buffer_bytes]u8 = undefined,
+    window: usize = stream_reader_buffer_bytes,
+
+    pub fn init(
+        stream: *netz.http2.runtime.Connection.ConcurrentStream,
+        max_window: usize,
+    ) H2StreamReader {
+        return .{
+            .stream = stream,
+            .window = @max(1, @min(max_window, stream_reader_buffer_bytes)),
+        };
+    }
 
     pub fn next(self: *H2StreamReader) !?[]const u8 {
         while (true) {
             const count = (try self.stream.nextBody(
-                &self.buffer,
+                self.buffer[0..self.window],
                 null,
             )) orelse return null;
             if (count != 0) return self.buffer[0..count];
@@ -49,12 +64,23 @@ pub const H2StreamReader = struct {
 
 pub const H3StreamReader = struct {
     stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
-    buffer: [16 * 1024]u8 = undefined,
+    buffer: [stream_reader_buffer_bytes]u8 = undefined,
+    window: usize = stream_reader_buffer_bytes,
+
+    pub fn init(
+        stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
+        max_window: usize,
+    ) H3StreamReader {
+        return .{
+            .stream = stream,
+            .window = @max(1, @min(max_window, stream_reader_buffer_bytes)),
+        };
+    }
 
     pub fn next(self: *H3StreamReader) !?[]const u8 {
         while (true) {
             const count = (try self.stream.nextBody(
-                &self.buffer,
+                self.buffer[0..self.window],
                 null,
             )) orelse return null;
             if (count != 0) return self.buffer[0..count];

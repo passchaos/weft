@@ -430,7 +430,10 @@ pub fn Http2Server(comptime H: type) type {
                 .consumed = 0,
                 .must_close = false,
             };
-            var reader = ctx_mod.H2StreamReader{ .stream = stream };
+            var reader = ctx_mod.H2StreamReader.init(
+                stream,
+                self.options.limits.max_streaming_window_bytes,
+            );
             const client_info = ctx_mod.ClientInfo{
                 .address = ctx_mod.resolveClientAddress(
                     head.headers,

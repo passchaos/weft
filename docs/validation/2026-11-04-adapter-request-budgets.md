@@ -42,7 +42,14 @@ server-wide limit. `dispatch` now always wraps the effective reader with
 `max_body_bytes` to Netz's HTTP/3 stream accounting.
 
 A new HTTP/2 package test sets the server budget to 4 KiB and the route budget
-to 1 KiB, uploads 2 KiB, and expects `413`.
+to 1 KiB, uploads 2 KiB, and expects `413`. That test also sets
+`max_streaming_window_bytes = 512` so the handler pulls the body through the
+configured window.
+
+The HTTP/2 and HTTP/3 stream readers previously used a fixed 16 KiB stack
+buffer regardless of `max_streaming_window_bytes`. They now take the
+configured value as their read window, capped at 16 KiB so the stack buffer
+stays fixed and bounded.
 
 ## Upstream note
 
