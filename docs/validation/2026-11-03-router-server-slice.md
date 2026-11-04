@@ -220,10 +220,14 @@ sequential requests, batched GETs, and batched 2 KiB uploads, all 32 streams
 per batch:
 
 ```text
-server h3 sequential:      requests=10000 70560.4 ns/request 14172 requests/s
-server h3 batched:         requests=32000 134263.5 ns/request 7448 requests/s
-server h3 upload batched:  requests=32000 161383.0 ns/request 6196 requests/s
+server h3 sequential:      requests=10000 76258.5 ns/request 13113 requests/s
+server h3 batched:         requests=32000 136621.9 ns/request  7319 requests/s
+server h3 upload batched:  requests=32000 182501.8 ns/request  5479 requests/s
 ```
+
+`-Dh3-poll-us=5000` measured 89.5 µs/req sequential and 186.5 µs/req batched,
+confirming the 1 ms default is still the better trade-off after netz's
+command-wake fixes.
 
 A 5 ms poll interval measured ~10.1 ms/req sequentially before these netz
 fixes; the 1 ms default plus bounded active-command polling and the wake race
