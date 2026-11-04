@@ -145,7 +145,7 @@ processing, decoded request data, and cooperative graceful shutdown.
   trailers are serialized by the owner, HEAD/204/304 suppress the body while
   preserving `Content-Length`, and advertised request-stream concurrency is
   capped to the same bound. The package test uploads 400 KiB through a
-  64 KiB resident window to exercise owner pause/resume.
+  64 KiB resident window and issues a 32-stream GET batch.
 
 ## Verification
 

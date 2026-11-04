@@ -2773,6 +2773,8 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
                 .max_streaming_window_bytes = 64 * 1024,
             },
             .max_connections = 1,
+            .max_concurrent_streams = 32,
+            .max_concurrent_handlers = 32,
             .accept_timeout = .fromMilliseconds(500),
             .idle_timeout = .fromMilliseconds(100),
             .quic_limits = .{
@@ -2950,11 +2952,16 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
         }
     };
     var batch_context = BatchCtx{ .allocator = allocator };
-    const batch_requests = [_]netz.http3.Request{
-        .{ .method = "GET", .path = "/hello/one", .authority = "localhost" },
-        .{ .method = "GET", .path = "/hello/two", .authority = "localhost" },
-    };
-    const batch_deadlines = [_]?std.Io.Clock.Timestamp{ null, null };
+    var batch_requests: [32]netz.http3.Request = undefined;
+    for (&batch_requests, 0..) |*request, index| {
+        request.* = .{
+            .method = "GET",
+            .path = if (index % 2 == 0) "/hello/one" else "/hello/two",
+            .authority = "localhost",
+        };
+    }
+    var batch_deadlines: [32]?std.Io.Clock.Timestamp = undefined;
+    for (&batch_deadlines) |*deadline| deadline.* = null;
     try client.requestBatchWithPerStreamDeadlines(
         &batch_requests,
         &batch_deadlines,
@@ -2963,7 +2970,7 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
             .on_result = BatchCtx.onResult,
         },
     );
-    try std.testing.expectEqual(@as(usize, 2), batch_context.count);
+    try std.testing.expectEqual(@as(usize, 32), batch_context.count);
     try std.testing.expect(batch_context.ok);
 
     var info_response = try client.request(.{
