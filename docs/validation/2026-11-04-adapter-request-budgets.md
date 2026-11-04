@@ -51,14 +51,14 @@ buffer regardless of `max_streaming_window_bytes`. They now take the
 configured value as their read window, capped at 16 KiB so the stack buffer
 stays fixed and bounded.
 
-## Upstream note
+## Stream-level HTTP/2 body limit (delivered upstream)
 
-When a request's declared `Content-Length` exceeds the server-wide HTTP/2
-budget, Netz currently fails the whole connection with `MessageTooLarge`
-instead of surfacing a stream-level error, so weft cannot turn it into a
-`413` on that stream. The request for stream-level handling is tracked in
-`netz/docs/weft-integration-requests.md` section 7; per-route budgets already
-return `413`.
+Netz `ead4ce42` now accepts an oversize declared body at admission and makes
+`ConcurrentStream.nextBody` return `error.PayloadTooLarge` for that stream.
+Weft maps it to `413`, and the connection keeps serving sibling streams. The
+new package test sends a 2 KiB body against a 1 KiB server budget, asserts
+`413`, then reuses the same client connection for a normal GET and asserts
+`200`.
 
 ## Verification
 
@@ -71,8 +71,8 @@ zig build examples --global-cache-dir /tmp/weft-zig-global --summary all
 
 Results at this slice:
 
-- Debug: 151/151 (101 unit + 50 package).
-- ReleaseFast: 151/151.
+- Debug: 152/152 (101 unit + 51 package).
+- ReleaseFast: 152/152.
 - Examples: build succeeded.
 
 Coverage:
@@ -83,6 +83,8 @@ Coverage:
   sends a 64-byte path, expecting `414`. Its other paths stay below the budget.
 - `package: HTTP/2 per-route body budget returns 413` covers the streaming
   body wrapper.
+- `package: HTTP/2 server body limit returns 413 and keeps the connection`
+  covers the stream-level oversize path and connection reuse.
 - HTTP/1 keeps its end-to-end `431`/`414` coverage from the error-response
   slice.
 

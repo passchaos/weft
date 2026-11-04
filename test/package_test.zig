@@ -5388,3 +5388,76 @@ test "package: HTTP/1 CONNECT is rejected with 501" {
     server.stop();
     try group.await(io);
 }
+
+test "package: HTTP/2 server body limit returns 413 and keeps the connection" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Http2Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 1024,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .max_streaming_window_bytes = 4096,
+                .max_http2_concurrent_streams = 4,
+            },
+            .max_connections = 1,
+            .max_concurrent_handlers = 4,
+            .accept_timeout = .fromMilliseconds(100),
+            .idle_timeout = .fromMilliseconds(500),
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/", home, .{});
+    try server.router().post(
+        "/upload",
+        StreamHandlers.uploadRoute,
+        .{ .streaming = true },
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp2Server, .{&server});
+
+    var client = try netz.http2.runtime.Client.connect(
+        allocator,
+        io,
+        server.address(),
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer client.close();
+
+    const body = try allocator.alloc(u8, 2048);
+    defer allocator.free(body);
+    @memset(body, 'x');
+    var oversize = try client.request(.{
+        .method = "POST",
+        .path = "/upload",
+        .authority = "localhost",
+        .body = body,
+    });
+    defer oversize.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 413), oversize.status);
+
+    // The rejected stream must not retire the connection.
+    var sibling = try client.request(.{
+        .method = "GET",
+        .path = "/",
+        .authority = "localhost",
+    });
+    defer sibling.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), sibling.status);
+    try std.testing.expectEqualStrings("hello from weft", sibling.body);
+
+    server.stop();
+    try group.await(io);
+}

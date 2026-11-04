@@ -3,7 +3,7 @@
 Scope: verify the current tree against the repository constraints in
 `AGENTS.md`, the feature list in `README.md`, and the measured performance
 claims. Everything below is backed by files or commands in this checkout;
-the full test suite is 151/151 in Debug and ReleaseFast.
+the full test suite is 152/152 in Debug and ReleaseFast.
 
 ## 1. Repository constraints
 
@@ -68,8 +68,8 @@ zig build bench-static -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 151/151 (101 unit, 50 package/integration).
-- ReleaseFast: 151/151.
+- Debug: 152/152 (101 unit, 51 package/integration).
+- ReleaseFast: 152/152.
 - Examples build; `run-hello` and `run-upload` complete their request
   sequences (streaming upload, streaming multipart, SSE, Prometheus).
 - HTTP/1 `Expect: 100-continue` uploads complete through a streaming route.
