@@ -433,12 +433,14 @@ pub fn Http2Server(comptime H: type) type {
             const streaming = route_streaming or declared_length == null;
             var body: []const u8 = "";
             var trailers: []netz.http1.Header = &.{};
-            var reader: ?ctx_mod.H2StreamReader = null;
+            var h2_reader: ctx_mod.H2StreamReader = undefined;
+            var reader: ?ctx_mod.BodyReader = null;
             if (streaming) {
-                reader = ctx_mod.H2StreamReader.init(
+                h2_reader = ctx_mod.H2StreamReader.init(
                     stream,
                     self.options.limits.max_streaming_window_bytes,
                 );
+                reader = .{ .h2_stream = &h2_reader };
             } else if (has_declared_body) {
                 body = readWholeBody(
                     arena,
@@ -469,6 +471,9 @@ pub fn Http2Server(comptime H: type) type {
                 if (stream.trailers()) |fields| {
                     trailers = convertH2Trailers(arena, fields) catch &.{};
                 }
+            } else if (stream.trailers()) |fields| {
+                // Declared zero length: the request has no body to buffer.
+                trailers = convertH2Trailers(arena, fields) catch &.{};
             }
 
             var request = netz.http1.Request{
@@ -495,7 +500,7 @@ pub fn Http2Server(comptime H: type) type {
                 &request,
                 client_info,
                 arena,
-                if (reader) |*value| .{ .h2_stream = value } else null,
+                reader,
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;
                 std.log.scoped(.weft).warn(
