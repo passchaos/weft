@@ -109,7 +109,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   cancellations.
 - Bounded per-client `RateLimit` token buckets return `429`/`Retry-After`, use
   fixed storage, evict least-recently-seen clients, and key on the peer IP
-  without the ephemeral port so reconnects share one bucket.
+  without the ephemeral port so reconnects share one bucket. An optional
+  hashed `key_header` (for example an API key) overrides the address.
 - HTTP/3 TLS is verified with a real certificate identity and a pinned client
   public key, in addition to the synthetic QUIC handshake test.
 - HTTP/1 WebSocket upgrades validate the RFC 6455 handshake, transfer transport
@@ -189,8 +190,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 124/124 tests passed (88 unit, 36 package/integration).
-- ReleaseFast: 124/124 tests passed.
+- Debug: 125/125 tests passed (89 unit, 36 package/integration).
+- ReleaseFast: 125/125 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

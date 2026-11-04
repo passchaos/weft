@@ -445,6 +445,8 @@ Built-ins:
 - `RateLimit` — bounded per-client token buckets keyed by the peer IP address
   without the ephemeral port (IPv4-mapped IPv6 shares the IPv4 key), with `429`
   and `Retry-After`, fixed storage, and least-recently-seen eviction.
+  `Options.key_header` keys buckets on a hashed request header instead (for
+  example an API key), falling back to the peer address when it is absent.
   Reverse-proxy deployments must apply their own trusted-forwarded-address
   policy.
 

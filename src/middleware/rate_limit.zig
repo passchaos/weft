@@ -18,17 +18,24 @@ pub const RateLimit = struct {
     buckets: []Bucket,
     mutex: std.Io.Mutex = .init,
     global_bucket: Bucket = .{},
+    key_header: ?[]const u8 = null,
 
     pub const Options = struct {
         max_requests: usize = 100,
         window: std.Io.Duration = .fromSeconds(1),
         max_clients: usize = 4096,
+        /// Optional request header whose value identifies the client, such as
+        /// an API key. When the header is absent the peer address is used.
+        /// Values are hashed, so secrets are not stored in the bucket table.
+        key_header: ?[]const u8 = null,
     };
 
-    /// Client identity without the ephemeral port.
+    /// Client identity without the ephemeral port, or a hashed application
+    /// key when `Options.key_header` is configured.
     const Key = union(enum) {
         ip4: [4]u8,
         ip6: [16]u8,
+        application: u64,
     };
 
     const Bucket = struct {
@@ -58,6 +65,7 @@ pub const RateLimit = struct {
             .max_requests = options.max_requests,
             .window_ns = options.window.nanoseconds,
             .buckets = buckets,
+            .key_header = options.key_header,
         };
     }
 
@@ -73,6 +81,13 @@ pub const RateLimit = struct {
     fn call(self: *RateLimit, ctx: *ctx_mod.Ctx) anyerror!void {
         const address = ctx.clientAddress();
         const now = std.Io.Timestamp.now(ctx.io, .awake).nanoseconds;
+        const override_key: ?Key = if (self.key_header) |name|
+            if (ctx.header(name)) |value|
+                .{ .application = std.hash.Wyhash.hash(0, value) }
+            else
+                null
+        else
+            null;
 
         var limited = false;
         var retry_after: u64 = 1;
@@ -80,7 +95,7 @@ pub const RateLimit = struct {
         {
             defer self.mutex.unlock(ctx.io);
 
-            const bucket = self.bucketFor(address, now);
+            const bucket = self.bucketFor(address, override_key, now);
             self.refill(bucket, now);
             bucket.last_seen_ns = now;
             if (bucket.tokens == 0) {
@@ -107,9 +122,11 @@ pub const RateLimit = struct {
     fn bucketFor(
         self: *RateLimit,
         address: ?std.Io.net.IpAddress,
+        override_key: ?Key,
         now: i96,
     ) *Bucket {
-        const key = if (address) |value| keyFor(value) else null;
+        const key = override_key orelse
+            if (address) |value| keyFor(value) else null;
         if (key == null) {
             if (!self.global_bucket.used) {
                 self.global_bucket = .{
@@ -304,4 +321,81 @@ test "rate limit allows then rejects the same client" {
     };
     try reconnected.run();
     try std.testing.expectEqual(@as(u16, 429), reconnected.response.status);
+}
+
+test "rate limit can key on an application header" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var limiter = try RateLimit.init(allocator, .{
+        .max_requests = 1,
+        .window = .fromSeconds(1),
+        .max_clients = 4,
+        .key_header = "x-api-key",
+    });
+    defer limiter.deinit();
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "X-Api-Key",
+        .value = "alpha",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+
+    const run = struct {
+        fn once(
+            limiter_: *RateLimit,
+            arena_: std.mem.Allocator,
+            request_: *@import("netz").http1.Request,
+        ) !u16 {
+            var context = ctx_mod.Ctx{
+                .app = undefined,
+                .io = std.testing.io,
+                .arena = arena_,
+                .limits = .{},
+                .request = request_,
+                .client_info = .{
+                    .address = .{ .ip4 = .loopback(1234) },
+                },
+                .response = ctx_mod.Response.init(arena_, 1024),
+                .middleware = &.{limiter_.handler()},
+                .final_handler = ctx_mod.handler(struct {
+                    fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                        try ctx.text("ok");
+                    }
+                }.handle),
+            };
+            try context.run();
+            return context.response.status;
+        }
+    };
+
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        try run.once(&limiter, arena.allocator(), &request),
+    );
+    // Same key, same address: limited.
+    try std.testing.expectEqual(
+        @as(u16, 429),
+        try run.once(&limiter, arena.allocator(), &request),
+    );
+
+    // A different key from the same address gets its own bucket.
+    var other_headers = [_]@import("netz").http1.Header{.{
+        .name = "X-Api-Key",
+        .value = "beta",
+    }};
+    var other_request = request;
+    other_request.headers = &other_headers;
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        try run.once(&limiter, arena.allocator(), &other_request),
+    );
 }
