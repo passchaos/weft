@@ -58,6 +58,22 @@ path now cancels the producer, resets the response, and emits `406` with
 Unit test: `compress middleware returns 406 for streamed bodies when identity
 is refused` in `src/middleware/compress.zig`.
 
+## Streaming multipart boundary prefixes at window edges
+
+`multipartStream` treated a `\r\n--boundary` occurrence at the end of its
+fixed window as a delimiter without checking the following byte. A payload
+containing `\r\n--boundaryX` (where `X` is not `\r` or `-`) could therefore be
+truncated when the window ended exactly after the boundary text. The same
+ambiguity existed while scanning the preamble for the initial delimiter.
+
+The parser now keeps an ambiguous candidate in the window, returns only the
+safe prefix before it, and fills more bytes before deciding. The initial
+delimiter is also accepted only when followed by CRLF or `--`.
+
+Tests in `src/multipart_stream.zig`:
+- `streaming multipart keeps a boundary prefix at the window edge`
+- `streaming multipart keeps a boundary prefix in the preamble`
+
 ## Verification
 
 ```sh
@@ -66,4 +82,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 154/154 tests in Debug and ReleaseFast (103 unit, 51 package).
+Results: 156/156 tests in Debug and ReleaseFast (105 unit, 51 package).

@@ -179,22 +179,37 @@ pub const Stream = struct {
 
     fn consumeInitialDelimiter(self: *Stream) !void {
         while (true) {
-            if (self.end - self.start >= self.delimiter.len and
-                std.mem.startsWith(
-                    u8,
-                    self.buffer[self.start..self.end],
-                    self.delimiter,
-                ))
+            const window = self.buffer[self.start..self.end];
+            if (window.len >= self.delimiter.len and
+                std.mem.startsWith(u8, window, self.delimiter))
             {
-                self.start += self.delimiter.len;
-                return;
+                const after = self.delimiter.len;
+                if (after >= window.len) {
+                    if (!try self.fillMore()) {
+                        return error.InvalidMultipart;
+                    }
+                    continue;
+                }
+                // The initial delimiter must be followed by the first part's
+                // CRLF or by the closing `--`. Otherwise it is preamble text.
+                if (window[after] == '\r' or window[after] == '-') {
+                    self.start += after;
+                    return;
+                }
             }
-            if (findDelimiter(
-                self.buffer[self.start..self.end],
-                self.next_delimiter,
-            )) |found| {
-                self.start += found + self.next_delimiter.len;
-                return;
+            if (findDelimiter(window, self.next_delimiter)) |found| {
+                const after = found + self.next_delimiter.len;
+                if (after < window.len) {
+                    self.start += after;
+                    return;
+                }
+                // Keep the candidate and fill more so its trailing byte can
+                // be checked before consuming it.
+                self.start += found;
+                if (!try self.fillMore()) {
+                    return error.InvalidMultipart;
+                }
+                continue;
             }
             if (!try self.fillMore()) {
                 return error.InvalidMultipart;
@@ -369,10 +384,25 @@ pub const DataReader = struct {
         while (true) {
             const window = stream.buffer[stream.start..stream.end];
             if (findDelimiter(window, stream.next_delimiter)) |found| {
-                stream.start += found + stream.next_delimiter.len;
-                self.finished = true;
-                if (found == 0) return null;
-                return window[0..found];
+                const after = found + stream.next_delimiter.len;
+                if (after < window.len) {
+                    stream.start += after;
+                    self.finished = true;
+                    if (found == 0) return null;
+                    return window[0..found];
+                }
+                // The candidate ends at the window boundary, so the next byte
+                // (which decides whether this is a delimiter) is not buffered
+                // yet. Return the safe prefix and keep the candidate in place
+                // for the next fill.
+                if (found != 0) {
+                    stream.start += found;
+                    return window[0..found];
+                }
+                if (!try stream.fillMore()) {
+                    return error.InvalidMultipart;
+                }
+                continue;
             }
             const keep = stream.next_delimiter.len - 1;
             if (window.len > keep) {
@@ -555,6 +585,37 @@ test "streaming multipart matches the buffered parser across chunk sizes" {
     while (window <= 512) : (window += 64) {
         try expectStreamPartsWithWindow(body, 3, window, &expected);
     }
+}
+
+test "streaming multipart keeps a boundary prefix at the window edge" {
+    // The payload contains `\r\n--weft` followed by `X`, which is not a
+    // delimiter. With a window ending exactly after `--weft`, the parser must
+    // wait for the next byte instead of truncating the part.
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "abc\r\n--weftXdef\r\n" ++
+        "--weft--\r\n";
+    try expectStreamPartsWithWindow(body, 1, 67, &.{
+        .{ "field", "abc\r\n--weftXdef" },
+    });
+}
+
+test "streaming multipart keeps a boundary prefix in the preamble" {
+    // The preamble contains `\r\n--weft` followed by `X` and the window ends
+    // exactly after `--weft`. The parser must not consume it as the initial
+    // delimiter.
+    const body = ("a" ** 56) ++
+        "\r\n--weftXpreamble\r\n" ++
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "value\r\n" ++
+        "--weft--\r\n";
+    try expectStreamPartsWithWindow(body, 1, 64, &.{
+        .{ "field", "value" },
+    });
 }
 
 test "streaming multipart streams data larger than the window" {
