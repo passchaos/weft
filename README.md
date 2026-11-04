@@ -115,7 +115,8 @@ escaped queries decode into a single buffer.
   `ctx.decodedReader()` exposes the same decoding incrementally on streaming
   routes, with both encoded and decoded bytes bounded; a package test feeds a
   20 KiB gzip body through a 4 KiB streaming window to exercise multi-chunk
-  decoding.
+  decoding. After `decodedReader()` starts, `ctx.readBody()` continues the
+  decoded stream instead of the raw one.
 - `ctx.addTrailer(name, value)` appends a response trailer. HTTP/1 emits
   trailers only when the request sent `TE: trailers`; HTTP/2 and HTTP/3 emit
   them after the body.

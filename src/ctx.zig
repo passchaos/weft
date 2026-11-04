@@ -413,10 +413,16 @@ pub const Ctx = struct {
             self.cached_body = self.request.body;
             return self.request.body;
         };
+        // Once decoding has started, `readBody` continues the decoded stream
+        // so mixing `decodedReader()` and `readBody()` stays coherent.
+        const effective: BodyReader = if (self.cached_decoded_reader) |decoded|
+            .{ .decoded = decoded }
+        else
+            reader;
 
         var output = std.ArrayListUnmanaged(u8).empty;
         var total: usize = 0;
-        while (try reader.next()) |chunk| {
+        while (try effective.next()) |chunk| {
             const next_total = std.math.add(usize, total, chunk.len) catch
                 return error.PayloadTooLarge;
             if (next_total > self.limits.max_body_bytes or
@@ -529,6 +535,9 @@ pub const Ctx = struct {
     /// The decoded output is bounded by `Limits.max_body_bytes`. An absent or
     /// `identity` encoding borrows the original body without allocating.
     pub fn decodedBody(self: *Ctx) ![]const u8 {
+        // `readBody` already returns decoded bytes when a streaming decoder
+        // is active; decoding again would corrupt the body.
+        if (self.cached_decoded_reader != null) return self.readBody();
         const decoded = netz.http1.content_coding.decodeHeadersAlloc(
             self.arena,
             self.request.headers,
@@ -651,6 +660,9 @@ pub const Ctx = struct {
     /// decoded bytes are both bounded by `Limits.max_body_bytes`.
     pub fn decodedReader(self: *Ctx) !?*DecodedReader {
         if (self.cached_decoded_reader) |cached| return cached;
+        // Starting a decoder after the raw body was buffered would replay
+        // inconsistent bytes; reject the mix explicitly.
+        if (self.cached_body != null) return error.InvalidReaderState;
         const reader = self.body_reader orelse return null;
         const encoding = self.header("content-encoding") orelse return null;
         if (std.ascii.eqlIgnoreCase(

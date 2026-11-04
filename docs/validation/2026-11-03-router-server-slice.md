@@ -77,7 +77,10 @@ processing, decoded request data, and cooperative graceful shutdown.
   Sidecars older than the source file are ignored by default.
 - Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
   `bodyJson`/`bodyForm`, plus incremental `Ctx.decodedReader()` for streaming
-  routes (encoded and decoded bytes both bounded by `max_body_bytes`); `bodyJson` requires `application/json` or a
+  routes (encoded and decoded bytes both bounded by `max_body_bytes`).
+  `Ctx.readBody()` continues the decoded stream once a decoder is active, so
+  mixing the two APIs stays coherent; starting a decoder after a raw read is
+  rejected with `InvalidReaderState`; `bodyJson` requires `application/json` or a
   structured `+json` media type (parameters allowed), malformed JSON maps to
   `400`, unsupported media types and codings to `415`, and oversized decoded
   bodies to `413`.
@@ -199,8 +202,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 138/138 tests passed (99 unit, 39 package/integration).
-- ReleaseFast: 138/138 tests passed.
+- Debug: 139/139 tests passed (99 unit, 40 package/integration).
+- ReleaseFast: 139/139 tests passed.
 - Examples build; `zig build run-hello` and `zig build run-upload` complete
   their request sequences (streaming upload, streaming multipart, SSE, and
   Prometheus output). The upload example keeps `Metrics` behind a pointer
