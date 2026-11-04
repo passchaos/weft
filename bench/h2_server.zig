@@ -10,6 +10,14 @@ fn home(app: *App, ctx: *weft.Ctx) anyerror!void {
     try ctx.text("ok");
 }
 
+fn upload(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    const reader = ctx.bodyReader().?;
+    var total: usize = 0;
+    while (try reader.next()) |chunk| total += chunk.len;
+    try ctx.json(.{ .bytes = total });
+}
+
 fn serveServer(server: *weft.Http2Server(App)) std.Io.Cancelable!void {
     server.serve() catch |err| switch (err) {
         error.Canceled => return error.Canceled,
@@ -50,6 +58,7 @@ pub fn main(init: std.process.Init) !void {
     );
     defer server.deinit();
     try server.router().get("/", home, .{});
+    try server.router().post("/upload", upload, .{ .streaming = true });
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -101,6 +110,52 @@ pub fn main(init: std.process.Init) !void {
     elapsed = started.untilNow(io, .awake);
     printResult(
         "server h2 batched",
+        batch_size * batch_iterations,
+        elapsed,
+    );
+
+    const upload_body = try allocator.alloc(u8, 2048);
+    defer allocator.free(upload_body);
+    @memset(upload_body, 'x');
+    var upload_requests: [batch_size]netz.http2.runtime.RequestOptions = undefined;
+    for (&upload_requests) |*request| {
+        request.* = .{
+            .method = "POST",
+            .path = "/upload",
+            .body = upload_body,
+        };
+    }
+    var upload_responses: [batch_size]netz.http2.runtime.OwnedResponse = undefined;
+
+    index = 0;
+    while (index < 100) : (index += 1) {
+        try connection.requestBodyBatchInto(
+            &upload_requests,
+            4096,
+            &upload_responses,
+        );
+        for (&upload_responses) |*response| response.deinit(allocator);
+    }
+
+    started = std.Io.Timestamp.now(io, .awake);
+    index = 0;
+    while (index < batch_iterations) : (index += 1) {
+        try connection.requestBodyBatchInto(
+            &upload_requests,
+            4096,
+            &upload_responses,
+        );
+        for (&upload_responses) |*response| {
+            if (response.status != 200) return error.BenchmarkStatus;
+            if (!std.mem.eql(u8, response.body, "{\"bytes\":2048}")) {
+                return error.BenchmarkStatus;
+            }
+            response.deinit(allocator);
+        }
+    }
+    elapsed = started.untilNow(io, .awake);
+    printResult(
+        "server h2 upload batched",
         batch_size * batch_iterations,
         elapsed,
     );

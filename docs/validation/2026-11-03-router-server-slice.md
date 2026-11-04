@@ -189,13 +189,14 @@ HTTP/2 cleartext (h2c) throughput on the same host, sequential and batched
 (`2adc9c63`):
 
 ```text
-server h2 sequential: requests=100000 25988.7 ns/request 38478 requests/s
-server h2 batched:    requests=128000 14916.4 ns/request 67040 requests/s
+server h2 sequential:      requests=100000 25418.3 ns/request 39342 requests/s
+server h2 batched:         requests=128000 15159.2 ns/request 65966 requests/s
+server h2 upload batched:  requests=128000 19249.2 ns/request 51950 requests/s
 ```
 
-H2 batched throughput now exceeds HTTP/1 keep-alive; the sequential path still
-pays HTTP/2 framing. `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>` override
-the benchmark shape.
+H2 batched GET throughput now exceeds HTTP/1 keep-alive; batched 2 KiB uploads
+reach ~52k req/s, and the sequential path still pays HTTP/2 framing.
+`-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>` override the benchmark shape.
 
 HTTP/3 synthetic-handshake throughput on the same host with the default 1 ms
 weft poll interval and netz's bounded active-command polling (`b2b5e5cb`):

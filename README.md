@@ -527,14 +527,15 @@ server. On the reference host it reports roughly 8–16 µs per request (about
 60k–114k requests/s) depending on host load; this includes Netz HTTP/1 framing
 and runtime task wakeups, not just application dispatch.
 
-`bench-h2` measures one cleartext h2c connection: 100k sequential requests and
-128k requests in batches of 32 concurrent streams. With netz's pooled concurrent
-handlers, the reference host reports roughly 26 µs per request (about 38k
-requests/s) sequentially and roughly 15 µs per request (about 67k requests/s)
-batched. HTTP/1 keep-alive on the same host is about 16 µs (~61k requests/s);
-H2 batched throughput now exceeds HTTP/1, while the sequential path still pays
-HTTP/2 framing. `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>` override the
-shape.
+`bench-h2` measures one cleartext h2c connection: 100k sequential requests,
+128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32
+concurrent streams. With netz's pooled concurrent handlers, the reference host
+reports roughly 26 µs per request (about 38k requests/s) sequentially, 15 µs
+(about 67k requests/s) for batched GETs, and 19 µs (about 52k requests/s) for
+batched uploads. HTTP/1 keep-alive on the same host is about 16 µs (~61k
+requests/s); H2 batched GET throughput exceeds HTTP/1, while the sequential
+path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
+`-Dh2-batch-iterations=<n>` override the shape.
 
 `bench-h3` uses a synthetic QUIC handshake (no TLS): 10k sequential requests,
 32k batched GETs, and 32k batched 2 KiB uploads, all in batches of 32 streams.
