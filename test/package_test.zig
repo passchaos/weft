@@ -2779,9 +2779,10 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
             .address = .{ .ip4 = .loopback(0) },
             .limits = .{
                 .max_head_bytes = 4096,
-                .max_body_bytes = 4096,
+                .max_body_bytes = 512 * 1024,
                 .max_request_arena_bytes = 64 * 1024,
                 .max_response_bytes = 64 * 1024,
+                .max_streaming_window_bytes = 64 * 1024,
             },
             .max_connections = 1,
             .accept_timeout = .fromMilliseconds(500),
@@ -2872,6 +2873,27 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try std.testing.expectEqualStrings(
         "{\"bytes\":2048}",
         upload_response.response.body,
+    );
+
+    // Exceed the per-stream resident window so the owner must pause and
+    // resume reading while the handler drains the bounded queue.
+    const large_upload = try allocator.alloc(u8, 400 * 1024);
+    defer allocator.free(large_upload);
+    @memset(large_upload, 'y');
+    var large_upload_response = try client.request(.{
+        .method = "POST",
+        .path = "/upload",
+        .authority = "localhost",
+        .body = large_upload,
+    });
+    defer large_upload_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        large_upload_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":409600}",
+        large_upload_response.response.body,
     );
 
     var trailer_response = try client.request(.{

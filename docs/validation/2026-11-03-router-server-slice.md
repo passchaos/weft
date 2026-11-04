@@ -142,7 +142,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   request DATA through `.h3_stream` (bounded resident window), responses and
   trailers are serialized by the owner, HEAD/204/304 suppress the body while
   preserving `Content-Length`, and advertised request-stream concurrency is
-  capped to the same bound.
+  capped to the same bound. The package test uploads 400 KiB through a
+  64 KiB resident window to exercise owner pause/resume.
 
 ## Verification
 
