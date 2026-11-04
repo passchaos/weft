@@ -213,12 +213,17 @@ A 5 ms poll interval measured ~10.1 ms/req sequentially before these netz
 fixes; the 1 ms default plus bounded active-command polling and the wake race
 fix reduced sequential latency to ~71 µs.
 
+With `-Dh3-batch=8` the same benchmark reports 52.1 µs/req (19.2k requests/s)
+for GETs and 84.7 µs/req (11.8k requests/s) for uploads. Per-request throughput
+falls at 32 concurrent streams, so owner/worker contention above roughly eight
+streams remains a netz tuning item.
+
 ## Remaining gaps
 
 - HTTP/3 sequential latency is ~71 µs/req versus ~26 µs for HTTP/2; the gap
-  is dominated by QUIC/HTTP/3 framing and recovery, and remains a netz
-  performance follow-up. H3 batched throughput is lower than sequential
-  because of per-stream worker scheduling contention.
+  is dominated by QUIC/HTTP/3 framing and recovery. H3 batched throughput
+  falls from ~19k req/s at eight streams to ~7.4k at 32, so owner/worker
+  scheduling contention remains a netz tuning item.
 - HTTP/3 streaming compression currently covers gzip only; Brotli and zstd
   streamed bodies need a streaming encoder from vort.
 - CPU-bound handler preemption without cancellation points.
