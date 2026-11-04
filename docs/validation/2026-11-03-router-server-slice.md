@@ -220,12 +220,18 @@ cut the static path from ~97 ns to ~52 ns. The parameter case still includes
 capture-array allocation from a fixed arena. Numbers are indicative of this host, not a cross-machine
 guarantee.
 
-Static-file handler throughput (in-process, 64 KiB and 1 KiB files):
+Static-file handler throughput (in-process, 64 KiB and 1 KiB files), two
+samples on a shared host:
 
 ```text
-static large.bin: 6847.9 ns/request 146030 requests/s 9126.9 MiB/s
-static small.txt: 3275.3 ns/request 305320 requests/s  298.2 MiB/s
+static large.bin:      6655.7–10351.0 ns/request  96609–150247 requests/s
+static small.txt:      4684.5–7753.5 ns/request  128974–213469 requests/s
+static conditional 304: 1547.0–1557.4 ns/request  642099–646403 requests/s
+static range 1 KiB:    5187.4–6336.3 ns/request  157821–192774 requests/s
 ```
+
+The `304` path is stable because it validates from `stat` without opening the
+file.
 
 Application-layer middleware overhead (fixed arena, no I/O):
 

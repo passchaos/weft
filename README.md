@@ -578,12 +578,18 @@ static lookup (about 18–19M lookups/s) and about 91 ns per parameter lookup
 Capture-free routes skip the parameter allocation entirely.
 
 `bench-static` measures the `StaticFiles` handler in-process (normalization,
-stat, validators, and streamed reads) against a 64 KiB file and a 1 KiB file:
+stat, validators, and streamed reads) against a 64 KiB file and a 1 KiB file,
+plus conditional and range responses:
 
 ```text
-static large.bin: 6.85 µs/request, 146k requests/s, 9.1 GiB/s
-static small.txt: 3.28 µs/request, 305k requests/s
+static large.bin:      6.7–10.4 µs/request, 96k–150k requests/s
+static small.txt:      4.7–7.8 µs/request, 129k–213k requests/s
+static conditional 304: 1.55 µs/request, ~643k requests/s
+static range 1 KiB:    5.2–6.3 µs/request, 158k–193k requests/s
 ```
+
+Host load moves the file-read numbers; the `304` validator path is stable
+because it never opens the file.
 
 `bench-middleware` measures the application-layer chain with a fixed arena and
 no I/O, isolating weft's overhead from netz framing:
