@@ -531,19 +531,45 @@ pub fn Server(comptime H: type) type {
 
             const client_key = request.header("sec-websocket-key").?;
             const accept = netz.websocket.acceptKey(client_key);
-            var headers_buffer: [2]netz.http1.Header = undefined;
+            var headers_buffer: [3]netz.http1.Header = undefined;
             headers_buffer[0] = .{
                 .name = "Sec-WebSocket-Accept",
                 .value = &accept,
             };
             var header_count: usize = 1;
             if (upgrade.subprotocol) |protocol| {
-                headers_buffer[1] = .{
+                headers_buffer[header_count] = .{
                     .name = "Sec-WebSocket-Protocol",
                     .value = protocol,
                 };
-                header_count = 2;
+                header_count += 1;
             }
+
+            // RFC 7692 negotiation is opt-in. A malformed offer is ignored
+            // rather than rejecting the upgrade, which keeps the endpoint
+            // usable with clients that advertise unknown parameters.
+            var extension_response: ?[]u8 = null;
+            defer if (extension_response) |value| self.allocator.free(value);
+            if (upgrade.compression) {
+                extension_response = netz.websocket.ExtensionNegotiation.accept(
+                    self.allocator,
+                    request.header("sec-websocket-extensions"),
+                    true,
+                ) catch null;
+                if (extension_response) |value| {
+                    headers_buffer[header_count] = .{
+                        .name = "Sec-WebSocket-Extensions",
+                        .value = value,
+                    };
+                    header_count += 1;
+                }
+            }
+            const negotiated = if (extension_response) |value|
+                netz.websocket.ExtensionNegotiation.validateResponse(
+                    value,
+                ) catch netz.websocket.ExtensionNegotiation{}
+            else
+                netz.websocket.ExtensionNegotiation{};
 
             const tunnel = connection.acceptUpgrade(
                 request.*,
@@ -571,6 +597,14 @@ pub fn Server(comptime H: type) type {
                     .max_message_bytes = ws_limits.max_message_bytes,
                 },
                 .tls_server_conn = tunnel.tls_server_conn,
+                .permessage_deflate = negotiated.permessage_deflate,
+                .compression_send_context_takeover = negotiated.permessage_deflate and
+                    !negotiated.server_no_context_takeover,
+                .compression_receive_context_takeover = negotiated.permessage_deflate and
+                    !negotiated.client_no_context_takeover,
+                .compression_threshold = upgrade.compression_threshold,
+                .compression_send_max_window_bits = negotiated.server_max_window_bits orelse 15,
+                .compression_receive_max_window_bits = negotiated.client_max_window_bits orelse 15,
             };
 
             // Move any bytes already buffered past the HTTP request head into

@@ -332,7 +332,11 @@ The session exposes text/binary sends, ping/pong control frames,
 frame/message reads with `deinitMessage`, and explicit `sendClose(code, reason)`.
 `close()` sends a normal closure frame when one has not already been written
 and then releases the transport. An optional `subprotocol` must be offered by
-the client. HTTP/2 and HTTP/3 reject WebSocket upgrades with `400`.
+the client. Set `.compression = true` to negotiate RFC 7692
+`permessage-deflate`; the accepted parameters are echoed in
+`Sec-WebSocket-Extensions` and messages at or above
+`compression_threshold` bytes (default 32) are compressed. HTTP/2 and HTTP/3
+reject WebSocket upgrades with `400`.
 
 ## Static files
 

@@ -113,7 +113,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   public key, in addition to the synthetic QUIC handshake test.
 - HTTP/1 WebSocket upgrades validate the RFC 6455 handshake, transfer transport
   ownership, and run a concrete session with text/binary sends, ping/pong,
-  message deinit, and explicit or normal close frames; HTTP/2 and HTTP/3
+  message deinit, and explicit or normal close frames. Opt-in
+  `permessage-deflate` (RFC 7692) negotiates `Sec-WebSocket-Extensions` and
+  configures the netz session's send/receive history windows. HTTP/2 and HTTP/3
   reject upgrades.
 - `Etag` middleware derives a validator from the final buffered body and
   answers `If-None-Match` with `304`.
@@ -183,8 +185,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 120/120 tests passed (86 unit, 34 package/integration).
-- ReleaseFast: 120/120 tests passed.
+- Debug: 121/121 tests passed (86 unit, 35 package/integration).
+- ReleaseFast: 121/121 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

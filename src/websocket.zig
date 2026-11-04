@@ -70,6 +70,11 @@ pub const Upgrade = struct {
     /// Optional subprotocol selected by the server. The client must have
     /// offered it in `Sec-WebSocket-Protocol`.
     subprotocol: ?[]const u8 = null,
+    /// Negotiate RFC 7692 `permessage-deflate` when the client offers it.
+    /// The 101 response advertises the accepted parameters and the session
+    /// compresses messages at or above `compression_threshold` bytes.
+    compression: bool = false,
+    compression_threshold: usize = 32,
     /// Releases resources if the upgrade response is discarded before the
     /// session starts.
     cancel_fn: ?*const fn (?*anyopaque) void = null,
