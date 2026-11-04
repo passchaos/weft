@@ -183,3 +183,24 @@ test "accept ignores media-type parameters and malformed quality" {
     try std.testing.expect(!accepts("application/json;q=abc", "application/json"));
     try std.testing.expect(!accepts("application/json;q=2", "application/json"));
 }
+
+test "accept parsing is total for arbitrary headers" {
+    var prng = std.Random.DefaultPrng.init(0xacce_99);
+    const random = prng.random();
+
+    const candidates = [_][]const u8{
+        "application/json",
+        "text/html",
+        "image/png",
+    };
+    var buffer: [64]u8 = undefined;
+    for (0..500) |_| {
+        const length = random.intRangeAtMost(usize, 0, buffer.len);
+        random.bytes(buffer[0..length]);
+        const header = buffer[0..length];
+        _ = accepts(header, "application/json");
+        _ = accepts(header, candidates[random.intRangeLessThan(usize, 0, 3)]);
+        _ = preferred(header, &candidates);
+        _ = qualityFor(header, "text/html");
+    }
+}

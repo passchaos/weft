@@ -275,3 +275,30 @@ test "query parsing borrows plain text and decodes mixed input into one buffer" 
     defer escaped_name.deinit();
     try std.testing.expectEqualStrings("a b", escaped_name.pairs[0].name);
 }
+
+test "query parsing is total for arbitrary bytes" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x5eed_1234);
+    const random = prng.random();
+
+    var buffer: [64]u8 = undefined;
+    for (0..500) |_| {
+        const length = random.intRangeAtMost(usize, 0, buffer.len);
+        random.bytes(buffer[0..length]);
+        const text = buffer[0..length];
+
+        var parsed = parse(allocator, text, 8) catch continue;
+        defer parsed.deinit();
+        try std.testing.expect(parsed.pairs.len <= 8);
+        for (parsed.pairs) |pair| {
+            for (pair.name) |byte| {
+                try std.testing.expect(byte == '\t' or
+                    (byte >= 0x20 and byte != 0x7f));
+            }
+            for (pair.value) |byte| {
+                try std.testing.expect(byte == '\t' or
+                    (byte >= 0x20 and byte != 0x7f));
+            }
+        }
+    }
+}

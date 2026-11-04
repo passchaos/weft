@@ -583,3 +583,24 @@ test "multipart rejects missing boundaries and malformed parts" {
         ),
     );
 }
+
+test "buffered multipart parsing is total for arbitrary bytes" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x3a3a_11);
+    const random = prng.random();
+
+    var buffer: [96]u8 = undefined;
+    for (0..300) |_| {
+        const length = random.intRangeAtMost(usize, 0, buffer.len);
+        random.bytes(buffer[0..length]);
+
+        var form = parse(
+            allocator,
+            "multipart/form-data; boundary=weft",
+            buffer[0..length],
+            .{},
+        ) catch continue;
+        defer form.deinit(allocator);
+        try std.testing.expect(form.parts.len <= 64);
+    }
+}

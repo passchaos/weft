@@ -629,6 +629,10 @@ and HTTP/3 request bodies all stream incrementally. HTTP/2 and HTTP/3 requests
 run up to `max_concurrent_handlers` handler tasks concurrently through netz's
 owner-serialized stream engines.
 
+Parser totality tests feed deterministic random bytes to the query, `Accept`,
+and multipart parsers, asserting that every input either fails cleanly or
+yields values with no control bytes and bounded part counts.
+
 ## Limitations
 
 - HTTP/3 sequential latency is higher than HTTP/2 (roughly 76 µs vs 25 µs per
