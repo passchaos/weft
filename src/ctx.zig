@@ -152,6 +152,9 @@ pub const Ctx = struct {
     app: *anyopaque,
     io: std.Io,
     arena: std.mem.Allocator,
+    /// Server allocator that owns transport request metadata. Used to release
+    /// a completed HTTP/1 streaming request after taking its trailers.
+    request_allocator: ?std.mem.Allocator = null,
     limits: Limits,
     request: *const netz.http1.Request,
     /// Bounded incremental body reader for routes registered with
@@ -315,6 +318,22 @@ pub const Ctx = struct {
         if (self.cached_trailers) |cached| return cached;
         if (self.body_reader) |reader| {
             switch (reader) {
+                .pull => |pull| {
+                    if (pull.requestReady()) {
+                        const owned = pull.takeRequest() catch null;
+                        if (owned) |value| {
+                            var request_meta = value;
+                            defer if (self.request_allocator) |allocator| {
+                                request_meta.deinit(allocator);
+                            };
+                            if (request_meta.trailers.len != 0) {
+                                self.cached_trailers = self.copyTrailers(
+                                    request_meta.trailers,
+                                );
+                            }
+                        }
+                    }
+                },
                 .duplex => |duplex| {
                     if (duplex.requestTrailers()) |fields| {
                         self.cached_trailers = self.copyTrailers(fields);
@@ -350,7 +369,12 @@ pub const Ctx = struct {
     fn copyTrailers(self: *Ctx, fields: anytype) ?[]const Header {
         const copied = self.arena.alloc(Header, fields.len) catch return null;
         for (fields, copied) |field, *destination| {
-            destination.* = .{ .name = field.name, .value = field.value };
+            // The source may be released by the transport after this call
+            // (for example a completed HTTP/1 streaming request), so copy the
+            // field bytes into the request arena.
+            const name = self.arena.dupe(u8, field.name) catch return null;
+            const value = self.arena.dupe(u8, field.value) catch return null;
+            destination.* = .{ .name = name, .value = value };
         }
         return copied;
     }

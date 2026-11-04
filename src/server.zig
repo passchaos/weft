@@ -670,6 +670,7 @@ pub fn Server(comptime H: type) type {
                 request,
                 client_info,
                 arena,
+                self.allocator,
                 body_reader,
             );
         }

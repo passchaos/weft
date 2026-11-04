@@ -85,9 +85,10 @@ pub fn main(init: std.process.Init) !void {
   `+` is decoded as a space. `ctx.queryPairs()` exposes all pairs in wire order.
 - `ctx.header(name)`, `ctx.body()`, `ctx.method()`, and `ctx.target()` expose the
   parsed request. `ctx.headers()` and `ctx.headerValues(name)` expose repeated
-  fields; `ctx.trailers()` and `ctx.trailer(name)` expose HTTP/1 and buffered
-  HTTP/2/HTTP/3 request trailers, plus HTTP/2 streaming trailers after the body
-  is consumed.
+  fields; `ctx.trailers()` and `ctx.trailer(name)` expose request trailers for
+  every adapter: HTTP/1 buffered and streaming (after the body is consumed),
+  buffered HTTP/2/HTTP/3, and streaming HTTP/2/HTTP/3. Field bytes are copied
+  into the request arena, so a trailer stays valid for the rest of the request.
 - `ctx.protocol()`, `ctx.clientAddress()`, and `ctx.isTls()` expose adapter
   metadata such as HTTP version, peer address, and transport security.
 - `ctx.deadline()`, `ctx.remaining()`, and `ctx.expired()` expose the

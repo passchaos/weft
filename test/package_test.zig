@@ -95,6 +95,11 @@ fn trailerBody(_: ?*anyopaque, writer: *weft.StreamWriter) anyerror!void {
     try writer.write("body");
 }
 
+fn bufferedTrailerEcho(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.text(ctx.trailer("x-checksum") orelse "");
+}
+
 fn streamingTrailerEcho(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     const reader = ctx.bodyReader().?;
@@ -1279,6 +1284,12 @@ test "package: HTTP/1 response trailers honor TE" {
         streamingTrailerRoute,
         .{},
     );
+    try server.router().post(
+        "/upload-trailers",
+        streamingTrailerEcho,
+        .{ .streaming = true },
+    );
+    try server.router().post("/upload-buffered-trailers", bufferedTrailerEcho, .{});
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -1345,6 +1356,58 @@ test "package: HTTP/1 response trailers honor TE" {
     try std.testing.expectEqual(@as(u16, 200), refused.response.status);
     try std.testing.expectEqualStrings("body", refused.response.body);
     try std.testing.expectEqual(@as(usize, 0), refused.response.trailers.len);
+
+    const upload_uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/upload-trailers",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(upload_uri);
+    const request_trailers = [_]netz.http1.Header{.{
+        .name = "X-Checksum",
+        .value = "abc",
+    }};
+    var upload_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        upload_uri,
+        .{
+            .method = .POST,
+            .body = "payload",
+            .trailers = &request_trailers,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer upload_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), upload_response.response.status);
+    try std.testing.expectEqualStrings("abc", upload_response.response.body);
+
+    const buffered_trailer_uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/upload-buffered-trailers",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(buffered_trailer_uri);
+    var buffered_trailer_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        buffered_trailer_uri,
+        .{
+            .method = .POST,
+            .body = "payload",
+            .trailers = &request_trailers,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer buffered_trailer_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        buffered_trailer_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "abc",
+        buffered_trailer_response.response.body,
+    );
 
     server.stop();
     try group.await(io);
