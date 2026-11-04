@@ -178,8 +178,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 115/115 tests passed (82 unit, 33 package/integration).
-- ReleaseFast: 115/115 tests passed.
+- Debug: 116/116 tests passed (83 unit, 33 package/integration).
+- ReleaseFast: 116/116 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

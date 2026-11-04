@@ -54,7 +54,7 @@ pub fn parse(
     limits: ParseLimits,
 ) !Form {
     const boundary = try boundaryFromContentType(allocator, content_type);
-    errdefer allocator.free(boundary);
+    defer allocator.free(boundary);
 
     const delimiter = try std.fmt.allocPrint(allocator, "--{s}", .{boundary});
     defer allocator.free(delimiter);

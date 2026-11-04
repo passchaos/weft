@@ -395,6 +395,36 @@ const TestSource = struct {
     }
 };
 
+fn expectStreamPartsWithWindow(
+    body: []const u8,
+    chunk: usize,
+    window: usize,
+    expected: []const [2][]const u8,
+) !void {
+    var source = TestSource{ .body = body, .chunk = chunk };
+    var stream = try Stream.init(
+        std.testing.allocator,
+        source.source(),
+        "multipart/form-data; boundary=weft",
+        .{ .buffer_bytes = window },
+    );
+    defer stream.deinit();
+
+    var seen: usize = 0;
+    while (try stream.nextPart()) |part| {
+        try std.testing.expect(seen < expected.len);
+        try std.testing.expectEqualStrings(expected[seen][0], part.name);
+        var collected: std.ArrayListUnmanaged(u8) = .empty;
+        defer collected.deinit(std.testing.allocator);
+        while (try part.data.next()) |chunk_bytes| {
+            try collected.appendSlice(std.testing.allocator, chunk_bytes);
+        }
+        try std.testing.expectEqualStrings(expected[seen][1], collected.items);
+        seen += 1;
+    }
+    try std.testing.expectEqual(expected.len, seen);
+}
+
 fn expectStreamParts(
     body: []const u8,
     chunk: usize,
@@ -449,6 +479,54 @@ test "streaming multipart reads parts across chunk boundaries" {
         .{ "field", "value" },
         .{ "file", "hello world" },
     });
+}
+
+test "streaming multipart matches the buffered parser across chunk sizes" {
+    const body =
+        "preamble text\r\n" ++
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"alpha\"\r\n" ++
+        "\r\n" ++
+        "first-value\r\n" ++
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"beta\"; filename=\"b.bin\"\r\n" ++
+        "Content-Type: application/octet-stream\r\n" ++
+        "\r\n" ++
+        "--weft-inside-data\r\n" ++
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"empty\"\r\n" ++
+        "\r\n" ++
+        "\r\n" ++
+        "--weft--\r\n" ++
+        "epilogue";
+
+    // Differential oracle: the buffered parser defines the expected parts.
+    var form = try multipart.parse(
+        std.testing.allocator,
+        "multipart/form-data; boundary=weft",
+        body,
+        .{},
+    );
+    defer form.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), form.parts.len);
+
+    const expected = [_][2][]const u8{
+        .{ form.parts[0].name, form.parts[0].data },
+        .{ form.parts[1].name, form.parts[1].data },
+        .{ form.parts[2].name, form.parts[2].data },
+    };
+    try std.testing.expectEqualStrings("beta", expected[1][0]);
+    try std.testing.expectEqualStrings("--weft-inside-data", expected[1][1]);
+
+    var chunk: usize = 1;
+    while (chunk <= body.len + 1) : (chunk += 1) {
+        try expectStreamPartsWithWindow(body, chunk, 256, &expected);
+    }
+
+    var window: usize = 128;
+    while (window <= 512) : (window += 64) {
+        try expectStreamPartsWithWindow(body, 3, window, &expected);
+    }
 }
 
 test "streaming multipart streams data larger than the window" {
