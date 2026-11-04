@@ -588,9 +588,10 @@ middleware requestId+Metrics+Etag+Compress:   322 ns/request
 syscall, which cut its cost from ~505 ns to ~196 ns.
 
 `bench-server` measures one keep-alive HTTP/1 client against a one-worker
-server. On the reference host it reports roughly 8–16 µs per request (about
-60k–114k requests/s) depending on host load; this includes Netz HTTP/1 framing
-and runtime task wakeups, not just application dispatch.
+server. On the reference host it reports roughly 9–16 µs per request (about
+60k–111k requests/s) depending on host load; this includes Netz HTTP/1 framing
+and runtime task wakeups, not just application dispatch. The latest quiet-host
+run measured 9.0 µs (111k requests/s).
 
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32

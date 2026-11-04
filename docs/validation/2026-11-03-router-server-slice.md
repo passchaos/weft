@@ -234,8 +234,12 @@ all four combined:       322.0 ns/request
 HTTP/1 keep-alive server throughput on the same host:
 
 ```text
-server http1: requests=200000 16399.2 ns/request 60979 requests/s
+server http1: requests=200000 8993.9 ns/request 111187 requests/s
 ```
+
+Repeated runs measured 9.0–9.3 µs per request (108k–111k requests/s) on a quiet
+host; earlier 16 µs runs happened while sibling repositories were compiling in
+parallel, so treat these numbers as host-load dependent.
 
 HTTP/2 cleartext (h2c) throughput on the same host, sequential and batched
 (32 concurrent streams), after netz pooled its concurrent handlers
