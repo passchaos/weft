@@ -547,6 +547,7 @@ zig build run-hello
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
 zig build bench-middleware -Doptimize=ReleaseFast
+zig build bench-static -Doptimize=ReleaseFast
 zig build bench-h2 -Doptimize=ReleaseFast
 ```
 
@@ -554,6 +555,14 @@ The router benchmark registers 1024 static routes and 256 parameter routes.
 On the reference development host, ReleaseFast runs range from roughly 80–140
 ns per lookup (about 7M–12M lookups per second) depending on host load,
 including capture allocation from a fixed arena.
+
+`bench-static` measures the `StaticFiles` handler in-process (normalization,
+stat, validators, and streamed reads) against a 64 KiB file and a 1 KiB file:
+
+```text
+static large.bin: 6.85 µs/request, 146k requests/s, 9.1 GiB/s
+static small.txt: 3.28 µs/request, 305k requests/s
+```
 
 `bench-middleware` measures the application-layer chain with a fixed arena and
 no I/O, isolating weft's overhead from netz framing:

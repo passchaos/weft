@@ -161,6 +161,25 @@ pub fn build(b: *std.Build) void {
     );
     bench_h2_step.dependOn(&run_h2_benchmark.step);
 
+    const static_benchmark = b.addExecutable(.{
+        .name = "static-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/static.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    const run_static_benchmark = b.addRunArtifact(static_benchmark);
+    const bench_static_step = b.step(
+        "bench-static",
+        "Run the static-file handler benchmark",
+    );
+    bench_static_step.dependOn(&run_static_benchmark.step);
+
     const middleware_benchmark = b.addExecutable(.{
         .name = "middleware-bench",
         .root_module = b.createModule(.{
