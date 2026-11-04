@@ -88,6 +88,8 @@ allocation.
 - `ctx.param(name)` returns a **percent-decoded** path capture.
 - `ctx.queryParam(name)` returns the first **percent-decoded** query value.
   `+` is decoded as a space. `ctx.queryPairs()` exposes all pairs in wire order.
+Plain queries borrow the request target and allocate only the pair array;
+escaped queries decode into a single buffer.
 - `ctx.header(name)`, `ctx.body()`, `ctx.method()`, and `ctx.target()` expose the
   parsed request. `ctx.headers()` and `ctx.headerValues(name)` expose repeated
   fields; `ctx.trailers()` and `ctx.trailer(name)` expose request trailers for

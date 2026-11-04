@@ -17,7 +17,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   (`204` + `Allow`), and `HEAD` fallback to `GET`.
 - Route groups with owned prefixes and middleware chains, including nesting.
 - Decoded path parameters and query pairs; malformed percent encoding and
-  control bytes become `400`.
+  control bytes become `400`. Plain queries borrow the request target and
+  allocate only the pair array; escaped queries decode into one buffer.
 - Typed JSON/form body helpers, cookie lookup (including DQUOTE unwrapping) and
   validated `Set-Cookie`
   serialization.
@@ -195,8 +196,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 131/131 tests passed (93 unit, 38 package/integration).
-- ReleaseFast: 131/131 tests passed.
+- Debug: 132/132 tests passed (94 unit, 38 package/integration).
+- ReleaseFast: 132/132 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

@@ -6,18 +6,18 @@ pub const Pair = struct {
     value: []const u8,
 };
 
-/// Owned decoded query pairs. `deinit` releases every component; request
-/// handling normally allocates from the request arena and skips this call.
+/// Owned decoded query pairs. `deinit` releases the pair array and, when any
+/// component needed decoding, the single buffer holding decoded bytes.
+/// Request handling normally allocates from the request arena and skips this
+/// call. When `components` is null every pair borrows the input text.
 pub const Query = struct {
     pairs: []const Pair = &.{},
     allocator: ?std.mem.Allocator = null,
+    components: ?[]u8 = null,
 
     pub fn deinit(self: *Query) void {
         if (self.allocator) |allocator| {
-            for (self.pairs) |pair| {
-                allocator.free(pair.name);
-                allocator.free(pair.value);
-            }
+            if (self.components) |buffer| allocator.free(buffer);
             allocator.free(self.pairs);
         }
         self.* = .{};
@@ -96,41 +96,114 @@ pub fn parse(
 ) !Query {
     if (text.len == 0) return .{};
 
-    var pairs = std.ArrayListUnmanaged(Pair).empty;
-    errdefer {
-        for (pairs.items) |pair| {
-            allocator.free(pair.name);
-            allocator.free(pair.value);
-        }
-        pairs.deinit(allocator);
+    // First pass: validate every component and learn whether any of them
+    // needs `%XX`/`+` decoding. Plain queries then borrow the input text and
+    // allocate only the pair array.
+    var pair_count: usize = 0;
+    var needs_decode = false;
+    var scan = std.mem.splitScalar(u8, text, '&');
+    while (scan.next()) |part| {
+        if (part.len == 0) continue;
+        if (pair_count >= max_pairs) return error.TooManyQueryParams;
+        pair_count += 1;
+        const equals = std.mem.indexOfScalar(u8, part, '=') orelse part.len;
+        if (try scanComponent(part[0..equals])) needs_decode = true;
+        if (try scanComponent(
+            if (equals < part.len) part[equals + 1 ..] else "",
+        )) needs_decode = true;
+    }
+    if (pair_count == 0) return .{};
+
+    const pairs = try allocator.alloc(Pair, pair_count);
+    errdefer allocator.free(pairs);
+
+    var components: ?[]u8 = null;
+    if (needs_decode) {
+        // Decoded output is never longer than the input.
+        const buffer = try allocator.alloc(u8, text.len);
+        components = buffer;
+        errdefer allocator.free(buffer);
     }
 
+    var offset: usize = 0;
+    var index: usize = 0;
     var iterator = std.mem.splitScalar(u8, text, '&');
     while (iterator.next()) |part| {
         if (part.len == 0) continue;
-        if (pairs.items.len >= max_pairs) return error.TooManyQueryParams;
-
         const equals = std.mem.indexOfScalar(u8, part, '=') orelse part.len;
-        const name = try decodeComponent(allocator, part[0..equals], true);
-        const value = decodeComponent(
-            allocator,
-            if (equals < part.len) part[equals + 1 ..] else "",
-            true,
-        ) catch |err| {
-            allocator.free(name);
-            return err;
-        };
-        pairs.append(allocator, .{ .name = name, .value = value }) catch |err| {
-            allocator.free(name);
-            allocator.free(value);
-            return err;
-        };
+        const raw_name = part[0..equals];
+        const raw_value = if (equals < part.len) part[equals + 1 ..] else "";
+        if (components) |buffer| {
+            const name = decodeInto(raw_name, buffer, &offset);
+            const value = decodeInto(raw_value, buffer, &offset);
+            pairs[index] = .{ .name = name, .value = value };
+        } else {
+            pairs[index] = .{ .name = raw_name, .value = raw_value };
+        }
+        index += 1;
     }
 
     return .{
-        .pairs = try pairs.toOwnedSlice(allocator),
+        .pairs = pairs,
         .allocator = allocator,
+        .components = components,
     };
+}
+
+/// Validate one component and report whether it contains an escape.
+fn scanComponent(text: []const u8) !bool {
+    var needs_decode = false;
+    var index: usize = 0;
+    while (index < text.len) {
+        const char = text[index];
+        if (char == '%') {
+            if (index + 2 >= text.len) return error.InvalidPercentEncoding;
+            const high = hexDigit(text[index + 1]) orelse
+                return error.InvalidPercentEncoding;
+            const low = hexDigit(text[index + 2]) orelse
+                return error.InvalidPercentEncoding;
+            if (!isVisible(high * 16 + low)) {
+                return error.InvalidPercentEncoding;
+            }
+            needs_decode = true;
+            index += 3;
+            continue;
+        }
+        if (char == '+') needs_decode = true;
+        if (!isVisible(char)) return error.InvalidPercentEncoding;
+        index += 1;
+    }
+    return needs_decode;
+}
+
+/// Decode one component into `buffer` at `offset`. The caller has already
+/// validated the input with `scanComponent`.
+fn decodeInto(
+    text: []const u8,
+    buffer: []u8,
+    offset: *usize,
+) []const u8 {
+    const start = offset.*;
+    var index: usize = 0;
+    while (index < text.len) {
+        const char = text[index];
+        if (char == '%') {
+            const high = hexDigit(text[index + 1]).?;
+            const low = hexDigit(text[index + 2]).?;
+            buffer[offset.*] = high * 16 + low;
+            offset.* += 1;
+            index += 3;
+        } else if (char == '+') {
+            buffer[offset.*] = ' ';
+            offset.* += 1;
+            index += 1;
+        } else {
+            buffer[offset.*] = char;
+            offset.* += 1;
+            index += 1;
+        }
+    }
+    return buffer[start..offset.*];
 }
 
 fn hexDigit(char: u8) ?u8 {
@@ -180,4 +253,25 @@ test "query parsing rejects bounds and control bytes" {
         error.InvalidPercentEncoding,
         parse(allocator, "a=%", 8),
     );
+}
+
+test "query parsing borrows plain text and decodes mixed input into one buffer" {
+    const allocator = std.testing.allocator;
+
+    var plain = try parse(allocator, "a=1&b=two", 8);
+    defer plain.deinit();
+    try std.testing.expect(plain.components == null);
+    try std.testing.expectEqual(@as(usize, 2), plain.pairs.len);
+    try std.testing.expectEqualStrings("two", plain.pairs[1].value);
+
+    var mixed = try parse(allocator, "a=1&b=%20c&d=+e", 8);
+    defer mixed.deinit();
+    try std.testing.expect(mixed.components != null);
+    try std.testing.expectEqualStrings("1", mixed.pairs[0].value);
+    try std.testing.expectEqualStrings(" c", mixed.pairs[1].value);
+    try std.testing.expectEqualStrings(" e", mixed.pairs[2].value);
+
+    var escaped_name = try parse(allocator, "a%20b=c", 8);
+    defer escaped_name.deinit();
+    try std.testing.expectEqualStrings("a b", escaped_name.pairs[0].name);
 }
