@@ -30,6 +30,8 @@ pub const SetCookie = struct {
     same_site: ?SameSite = null,
     /// Optional preformatted `Expires` date, e.g. `Thu, 01 Jan 1970 00:00:00 GMT`.
     expires: ?[]const u8 = null,
+    /// CHIPS partitioned cookie. Requires `secure`.
+    partitioned: bool = false,
 };
 
 /// Find the first cookie with `name` across all `Cookie` request fields.
@@ -78,6 +80,10 @@ pub fn serialize(
     if (cookie.same_site == .none and !cookie.secure) {
         return error.InsecureSameSiteNone;
     }
+    if (cookie.partitioned and !cookie.secure) {
+        return error.InsecurePartitioned;
+    }
+    try validatePrefix(cookie);
 
     var output = std.ArrayListUnmanaged(u8).empty;
     errdefer output.deinit(allocator);
@@ -116,8 +122,23 @@ pub fn serialize(
         try output.appendSlice(allocator, "; SameSite=");
         try output.appendSlice(allocator, same_site.text());
     }
+    if (cookie.partitioned) try output.appendSlice(allocator, "; Partitioned");
 
     return output.toOwnedSlice(allocator);
+}
+
+/// Enforce the RFC 6265bis `__Secure-` and `__Host-` cookie prefixes.
+fn validatePrefix(cookie: SetCookie) !void {
+    if (std.mem.startsWith(u8, cookie.name, "__Host-")) {
+        if (!cookie.secure) return error.InsecureCookiePrefix;
+        if (cookie.domain != null) return error.InvalidCookiePrefix;
+        const path = cookie.path orelse return error.InvalidCookiePrefix;
+        if (!std.mem.eql(u8, path, "/")) return error.InvalidCookiePrefix;
+        return;
+    }
+    if (std.mem.startsWith(u8, cookie.name, "__Secure-")) {
+        if (!cookie.secure) return error.InsecureCookiePrefix;
+    }
 }
 
 fn validateName(name: []const u8) !void {
@@ -199,5 +220,60 @@ test "cookie validation rejects injection" {
     try std.testing.expectError(
         error.InvalidCookieName,
         serialize(allocator, .{ .name = "bad name", .value = "x" }),
+    );
+}
+
+test "cookie prefixes and partitioned attributes are enforced" {
+    const allocator = std.testing.allocator;
+
+    const secure = try serialize(allocator, .{
+        .name = "__Secure-session",
+        .value = "abc",
+        .secure = true,
+    });
+    defer allocator.free(secure);
+    try std.testing.expect(std.mem.indexOf(u8, secure, "; Secure") != null);
+
+    try std.testing.expectError(
+        error.InsecureCookiePrefix,
+        serialize(allocator, .{
+            .name = "__Secure-session",
+            .value = "abc",
+        }),
+    );
+    try std.testing.expectError(
+        error.InsecureCookiePrefix,
+        serialize(allocator, .{
+            .name = "__Host-session",
+            .value = "abc",
+        }),
+    );
+    try std.testing.expectError(
+        error.InvalidCookiePrefix,
+        serialize(allocator, .{
+            .name = "__Host-session",
+            .value = "abc",
+            .secure = true,
+            .path = "/app",
+        }),
+    );
+
+    const host = try serialize(allocator, .{
+        .name = "__Host-session",
+        .value = "abc",
+        .secure = true,
+        .path = "/",
+        .partitioned = true,
+    });
+    defer allocator.free(host);
+    try std.testing.expect(std.mem.indexOf(u8, host, "; Partitioned") != null);
+
+    try std.testing.expectError(
+        error.InsecurePartitioned,
+        serialize(allocator, .{
+            .name = "session",
+            .value = "abc",
+            .partitioned = true,
+        }),
     );
 }

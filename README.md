@@ -141,6 +141,9 @@ escaped queries decode into a single buffer.
   incrementally before parsing.
 - `ctx.cookie(name)` reads request cookies, unwrapping RFC 6265 DQUOTE
   values; `ctx.setCookie(...)` appends a validated `Set-Cookie` field.
+  `SameSite=None` and `Partitioned` require `Secure`, and the `__Secure-` /
+  `__Host-` prefixes are enforced (the latter also needs `Path=/` and no
+  `Domain`).
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
   type-based, and values live in the request arena.
 
