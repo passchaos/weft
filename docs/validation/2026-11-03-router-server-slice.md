@@ -73,8 +73,10 @@ processing, decoded request data, and cooperative graceful shutdown.
   falls back to the raw file for `Range` requests so byte offsets stay valid.
   Sidecars older than the source file are ignored by default.
 - Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
-  `bodyJson`/`bodyForm`; malformed JSON maps to `400`, unsupported codings to
-  `415`, and oversized decoded bodies to `413`.
+  `bodyJson`/`bodyForm`; `bodyJson` requires `application/json` or a
+  structured `+json` media type (parameters allowed), malformed JSON maps to
+  `400`, unsupported media types and codings to `415`, and oversized decoded
+  bodies to `413`.
 - CORS preflight validates requested headers against a configured allow list,
   and every CORS response carries `Vary: Origin` so shared caches cannot reuse
   a non-CORS response for an allowed origin.
@@ -152,8 +154,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 103/103 tests passed (70 unit, 33 package/integration).
-- ReleaseFast: 103/103 tests passed.
+- Debug: 104/104 tests passed (71 unit, 33 package/integration).
+- ReleaseFast: 104/104 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

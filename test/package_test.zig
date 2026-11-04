@@ -2210,6 +2210,44 @@ test "package: invalid JSON and unsupported encodings map to 400 and 415" {
     defer unsupported.deinit(allocator);
     try std.testing.expectEqual(@as(u16, 415), unsupported.response.status);
 
+    var wrong_type = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .body = "{}",
+            .headers = &.{.{
+                .name = "Content-Type",
+                .value = "text/plain",
+            }},
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer wrong_type.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 415), wrong_type.response.status);
+
+    var problem_json = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .body = "{\"message\":\"weft\"}",
+            .headers = &.{.{
+                .name = "Content-Type",
+                .value = "application/problem+json; charset=utf-8",
+            }},
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer problem_json.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), problem_json.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"weft\"}",
+        problem_json.response.body,
+    );
+
     server.stop();
     try group.await(io);
 }

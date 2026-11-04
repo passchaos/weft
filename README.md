@@ -97,9 +97,11 @@ pub fn main(init: std.process.Init) !void {
 - `ctx.addTrailer(name, value)` appends a response trailer. HTTP/1 emits
   trailers only when the request sent `TE: trailers`; HTTP/2 and HTTP/3 emit
   them after the body.
-- `ctx.bodyJson(T)` parses decoded JSON with the request arena. Invalid JSON
-  becomes `400`; an unsupported coding becomes `415`; an oversized decoded
-  body becomes `413`.
+- `ctx.bodyJson(T)` parses decoded JSON with the request arena. The request
+  must declare `application/json` or a structured `+json` type
+  (`application/problem+json`, including parameters); other media types
+  become `415`. Invalid JSON becomes `400`; an unsupported coding becomes
+  `415`; an oversized decoded body becomes `413`.
 - `ctx.bodyForm()` parses decoded `application/x-www-form-urlencoded` bodies.
 - `ctx.multipart()` parses `multipart/form-data` with bounded part and header
   counts; part data borrows the bounded request body, and boundaries are

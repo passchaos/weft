@@ -396,7 +396,16 @@ pub const Ctx = struct {
     }
 
     /// Parse the decoded request body as JSON using the request arena.
+    ///
+    /// The request must declare `application/json` or a structured
+    /// `+json` media type such as `application/problem+json`; otherwise
+    /// `error.UnsupportedMediaType` maps to `415`.
     pub fn bodyJson(self: *Ctx, comptime T: type) !T {
+        const content_type = self.header("content-type") orelse
+            return error.UnsupportedMediaType;
+        if (!isJsonMediaType(content_type)) {
+            return error.UnsupportedMediaType;
+        }
         return std.json.parseFromSliceLeaky(
             T,
             self.arena,
@@ -581,6 +590,16 @@ pub const Ctx = struct {
     }
 };
 
+/// Accept `application/json` and structured-suffix types such as
+/// `application/problem+json`, ignoring media-type parameters.
+fn isJsonMediaType(value: []const u8) bool {
+    const end = std.mem.indexOfScalar(u8, value, ';') orelse value.len;
+    const media = std.mem.trim(u8, value[0..end], " \t");
+    if (std.ascii.eqlIgnoreCase(media, "application/json")) return true;
+    const slash = std.mem.indexOfScalar(u8, media, '/') orelse return false;
+    return std.ascii.endsWithIgnoreCase(media[slash + 1 ..], "+json");
+}
+
 /// Wrap a compile-time route handler that receives the application context.
 pub fn handlerFor(
     comptime H: type,
@@ -696,6 +715,21 @@ test "trailers are exposed by name and as a slice" {
     try std.testing.expectEqual(@as(usize, 2), context.trailers().len);
     try std.testing.expectEqualStrings("abc", context.trailer("x-checksum").?);
     try std.testing.expect(context.trailer("missing") == null);
+}
+
+test "json media type accepts parameters and structured suffixes" {
+    try std.testing.expect(isJsonMediaType("application/json"));
+    try std.testing.expect(isJsonMediaType("Application/JSON; charset=utf-8"));
+    try std.testing.expect(isJsonMediaType(
+        "application/problem+json",
+    ));
+    try std.testing.expect(isJsonMediaType(
+        "application/vnd.api+json; profile=\"x\"",
+    ));
+    try std.testing.expect(!isJsonMediaType("text/plain"));
+    try std.testing.expect(!isJsonMediaType("application/jsonx"));
+    try std.testing.expect(!isJsonMediaType("json"));
+    try std.testing.expect(!isJsonMediaType(""));
 }
 
 test "typed locals round-trip through the request arena" {
