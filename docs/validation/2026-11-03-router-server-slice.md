@@ -137,10 +137,12 @@ processing, decoded request data, and cooperative graceful shutdown.
   UTF-8 and ISO-8859-1 (widened to UTF-8) and prefer it over `filename`.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
-  with semaphore-bounded sessions. Each session runs up to
-  `max_concurrent_handlers` handler tasks concurrently, serializes response
-  submission, and caps advertised request-stream concurrency to the same
-  bound.
+  with semaphore-bounded sessions. Each session uses netz's owner-serialized
+  concurrent engine: up to `max_concurrent_handlers` handler tasks pull
+  request DATA through `.h3_stream` (bounded resident window), responses and
+  trailers are serialized by the owner, HEAD/204/304 suppress the body while
+  preserving `Content-Length`, and advertised request-stream concurrency is
+  capped to the same bound.
 
 ## Verification
 
@@ -179,11 +181,6 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 
 ## Remaining gaps
 
-- Native step-driven DATA delivery for HTTP/3 request bodies; HTTP/2 uses
-  netz's concurrent engine and HTTP/3 handlers are already concurrent.
-- HTTP/3 adoption of `HandshakeServerSession.serveConcurrentStreams` waits on
-  netz marking suppress-body (`HEAD`/`204`/`304`) streaming responses as
-  finished, plus bounded (non-whole-body) `nextBody` delivery. Tracked in
-  `netz/docs/weft-integration-requests.md`; weft already covers the buffered
-  adapter's HEAD `Content-Length` behavior in `test/package_test.zig`.
+- HTTP/3 streaming compression currently covers gzip only; Brotli and zstd
+  streamed bodies need a streaming encoder from vort.
 - CPU-bound handler preemption without cancellation points.

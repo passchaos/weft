@@ -186,12 +186,14 @@ try router.post("/upload", upload, .{ .streaming = true });
 
 - HTTP/1 handlers pull directly from netz's bounded `RequestBodyReader`.
 - HTTP/2 handlers pull DATA through netz's `ServerDuplexStream.nextBody()`.
+- HTTP/3 handlers pull DATA through
+  `HandshakeServerSession.ConcurrentStream.nextBody()`; netz keeps only a
+  bounded resident window per stream.
 - `ctx.bodyReader()` returns a concrete `weft.BodyReader`; `ctx.readBody()`
   drains the whole body into the request arena when incremental access is not
   needed.
 - Bytes the handler does not read are drained before the response is written,
   keeping the connection reusable.
-- HTTP/3 currently exposes a one-chunk replay reader over its buffered DATA.
 
 ## TLS
 
@@ -283,11 +285,12 @@ to lowercase HTTP/3 fields. `quic_limits`, `max_concurrent_streams`,
 `max_concurrent_handlers`, and `accept_timeout` bound transport, admission, and
 handler concurrency.
 
-HTTP/3 request bodies are buffered by netz before dispatch; each session runs
-up to `max_concurrent_handlers` handler tasks concurrently and serializes
-response submission. The advertised request-stream concurrency is capped to
-`min(max_concurrent_streams, max_concurrent_handlers)` so buffered requests stay
-bounded.
+Each session runs up to `max_concurrent_handlers` handler tasks concurrently
+through netz's owner-serialized concurrent engine. Handlers pull request DATA
+incrementally with `Ctx.bodyReader()` (`.h3_stream`) while netz bounds the
+resident per-stream window with `max_streaming_window_bytes` and enforces
+`max_body_bytes` on the whole body. The advertised request-stream concurrency
+is capped to `min(max_concurrent_streams, max_concurrent_handlers)`.
 
 ## WebSockets
 
@@ -528,8 +531,7 @@ and runtime task wakeups, not just application dispatch.
 HTTP/1.1 is served through `netz.http1.runtime` with cleartext and TLS
 listeners, and mirrors HTTP/1.0 request versions with appropriate connection
 semantics. `Http2Server` and `Http3Server` provide h2c, TLS/ALPN h2, and
-QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1 and HTTP/2
-request bodies stream incrementally; HTTP/3 exposes the buffered body through
-a replay reader. HTTP/2 and HTTP/3 requests run up to
-`max_concurrent_handlers` handler tasks concurrently. Remaining work is native
-step-driven DATA delivery for HTTP/3 request bodies.
+QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1, HTTP/2,
+and HTTP/3 request bodies all stream incrementally. HTTP/2 and HTTP/3 requests
+run up to `max_concurrent_handlers` handler tasks concurrently through netz's
+owner-serialized stream engines.
