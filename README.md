@@ -624,3 +624,16 @@ QUIC/TLS HTTP/3 adapters over the same application surface. HTTP/1, HTTP/2,
 and HTTP/3 request bodies all stream incrementally. HTTP/2 and HTTP/3 requests
 run up to `max_concurrent_handlers` handler tasks concurrently through netz's
 owner-serialized stream engines.
+
+## Limitations
+
+- HTTP/3 sequential latency is higher than HTTP/2 (roughly 76 µs vs 25 µs per
+  request on the reference host); QUIC framing and recovery dominate.
+- Handlers cannot be preempted while running CPU-bound code without reaching a
+  cancellation point.
+- WebSocket upgrades are HTTP/1.1 only; HTTP/2 and HTTP/3 return `400`.
+- `ctx.multipartStream()` reads wire bytes, so `Content-Encoding`'d bodies
+  return `415`; use the buffered `ctx.multipart()` for encoded uploads.
+- `Etag` covers buffered responses; streamed bodies are not hashed.
+- `StaticFiles` sidecar (`.br`/`.zst`/`.gz`) responses are not range-addressable
+  by design; `Range` requests receive the raw file.
