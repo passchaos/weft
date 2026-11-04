@@ -38,7 +38,19 @@ pub const Compress = struct {
         if (response.stream) |body| {
             const coding = switch (negotiation) {
                 .coding => |value| value,
-                else => return,
+                .identity => return,
+                .not_acceptable => {
+                    // Identity was explicitly refused and no coding is
+                    // acceptable. A stream cannot be negotiated after the
+                    // producer has been selected, so replace it with 406.
+                    body.cancel();
+                    response.stream = null;
+                    response.reset();
+                    response.setStatus(406);
+                    response.text("Not Acceptable") catch {};
+                    try vary.add(ctx, "Accept-Encoding");
+                    return;
+                },
             };
             if (!compressible(response.header("content-type"))) return;
             if (body.length) |length| {
@@ -732,6 +744,65 @@ test "compress middleware returns 406 when identity is refused" {
     try context.run();
     try std.testing.expectEqual(@as(u16, 406), context.response.status);
     try std.testing.expectEqualStrings("Not Acceptable", context.response.body);
+    try std.testing.expect(
+        context.response.header("content-encoding") == null,
+    );
+}
+
+test "compress middleware returns 406 for streamed bodies when identity is refused" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const Producer = struct {
+        var cancelled: bool = false;
+
+        fn run(_: ?*anyopaque, _: *stream_mod.Writer) anyerror!void {}
+
+        fn cancel(_: ?*anyopaque) void {
+            cancelled = true;
+        }
+    };
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "identity;q=0",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 0 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 64 * 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.setHeader("Content-Type", "text/plain");
+                try ctx.stream(.{
+                    .write_fn = Producer.run,
+                    .cancel_fn = Producer.cancel,
+                    .length = 16,
+                });
+            }
+        }.handle),
+    };
+
+    Producer.cancelled = false;
+    try context.run();
+    try std.testing.expect(Producer.cancelled);
+    try std.testing.expectEqual(@as(u16, 406), context.response.status);
+    try std.testing.expectEqualStrings("Not Acceptable", context.response.body);
+    try std.testing.expect(context.response.stream == null);
     try std.testing.expect(
         context.response.header("content-encoding") == null,
     );

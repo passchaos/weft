@@ -529,13 +529,11 @@ pub fn Http2Server(comptime H: type) type {
                 response.status == 204 or
                 response.status == 304 or
                 (response.status >= 100 and response.status < 200);
-            var head_content_length: ?usize = null;
 
             if (response.stream) |body| {
                 if (body_forbidden) {
                     if (std.mem.eql(u8, method, "HEAD")) {
                         if (body.length) |length| {
-                            head_content_length = length;
                             response.setHeader(
                                 "Content-Length",
                                 try std.fmt.allocPrint(
@@ -558,6 +556,21 @@ pub fn Http2Server(comptime H: type) type {
                         try std.fmt.allocPrint(arena, "{d}", .{length}),
                     ) catch {};
                 }
+            } else if (body_forbidden and
+                std.mem.eql(u8, method, "HEAD") and
+                response.body.len != 0 and
+                !response.hasHeader("content-length"))
+            {
+                // A HEAD response carries the representation length even
+                // though its body is suppressed.
+                response.setHeader(
+                    "Content-Length",
+                    try std.fmt.allocPrint(
+                        arena,
+                        "{d}",
+                        .{response.body.len},
+                    ),
+                ) catch {};
             }
 
             const options = netz.http2.runtime.StreamingResponseOptions{
@@ -567,16 +580,9 @@ pub fn Http2Server(comptime H: type) type {
             };
             try stream.startResponse(options);
 
-            if (body_forbidden) {
-                if (head_content_length) |length| {
-                    const filler = try arena.alloc(u8, length);
-                    @memset(filler, 0);
-                    try stream.writeData(filler, true);
-                } else {
-                    try stream.finish();
-                }
-                return;
-            }
+            // Netz ends the stream in the response head for HEAD/204/304, so
+            // any DATA or finish command here would target a finished stream.
+            if (body_forbidden) return;
 
             if (response.stream) |body| {
                 var state = H2ConcurrentWriterState{

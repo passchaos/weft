@@ -3238,6 +3238,29 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         hello_response.body,
     );
 
+    // A buffered HEAD response preserves the representation length even
+    // though no DATA is sent.
+    var hello_head = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        hello_uri,
+        .{ .method = "HEAD" },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer hello_head.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), hello_head.status);
+    try std.testing.expectEqualStrings("", hello_head.body);
+    const hello_length = try std.fmt.allocPrint(
+        allocator,
+        "{d}",
+        .{hello_response.body.len},
+    );
+    defer allocator.free(hello_length);
+    try std.testing.expectEqualStrings(
+        hello_length,
+        h2Header(&hello_head, "content-length").?,
+    );
+
     const info_uri = try std.fmt.allocPrint(
         allocator,
         "{s}/info",
@@ -3646,6 +3669,28 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
         hello_response.response.body,
     );
 
+    var hello_head = try client.request(.{
+        .method = "HEAD",
+        .path = "/hello/weft?lang=zh",
+        .authority = "localhost",
+    });
+    defer hello_head.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        hello_head.response.status,
+    );
+    try std.testing.expectEqualStrings("", hello_head.response.body);
+    const hello_length = try std.fmt.allocPrint(
+        allocator,
+        "{d}",
+        .{hello_response.response.body.len},
+    );
+    defer allocator.free(hello_length);
+    try std.testing.expectEqualStrings(
+        hello_length,
+        h3Header(&hello_head, "content-length").?,
+    );
+
     // HTTP/3 must apply the same request-target budget as HTTP/1.
     var long_path: [64]u8 = undefined;
     @memset(&long_path, 'a');
@@ -3659,6 +3704,17 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try std.testing.expectEqual(
         @as(u16, 414),
         long_target_response.response.status,
+    );
+
+    var connect_response = try client.request(.{
+        .method = "CONNECT",
+        .path = "",
+        .authority = "example.com:443",
+    });
+    defer connect_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 501),
+        connect_response.response.status,
     );
 
     const upload_body = try allocator.alloc(u8, 2048);
@@ -5211,6 +5267,15 @@ test "package: HTTP/2 rejects an over-long request target" {
     });
     defer response.deinit(allocator);
     try std.testing.expectEqual(@as(u16, 414), response.status);
+
+    // CONNECT has no tunnel writer in weft, so it must not be routed.
+    var connect_response = try client.request(.{
+        .method = "CONNECT",
+        .path = "",
+        .authority = "example.com:443",
+    });
+    defer connect_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 501), connect_response.status);
 
     server.stop();
     try group.await(io);

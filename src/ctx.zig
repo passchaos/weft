@@ -483,9 +483,13 @@ pub const Ctx = struct {
 
     /// Request trailer fields. Streaming adapters expose trailers after the
     /// body has been consumed; buffered adapters expose them immediately.
+    ///
+    /// Budget and decoding wrappers are peeled off without replacing
+    /// `body_reader`, so reading the body after inspecting trailers still goes
+    /// through the route limit and the active content decoder.
     pub fn trailers(self: *Ctx) []const Header {
         if (self.cached_trailers) |cached| return cached;
-        if (self.body_reader) |reader| {
+        if (self.transportReader()) |reader| {
             switch (reader) {
                 .pull => |pull| {
                     if (pull.requestReady()) {
@@ -518,21 +522,24 @@ pub const Ctx = struct {
                         self.cached_trailers = self.copyTrailers(fields);
                     }
                 },
-                .limited => |limited| {
-                    // Unwrap the per-route budget wrapper; trailers belong to
-                    // the underlying transport reader.
-                    self.body_reader = limited.inner;
-                    return self.trailers();
-                },
-                .decoded => |decoded| {
-                    self.body_reader = decoded.inner;
-                    return self.trailers();
-                },
                 else => {},
             }
         }
         if (self.cached_trailers) |cached| return cached;
         return self.request.trailers;
+    }
+
+    /// The transport reader underneath any budget/decoding wrappers. This is
+    /// only a view; it does not change the reader used for body access.
+    fn transportReader(self: *const Ctx) ?BodyReader {
+        var reader = self.body_reader orelse return null;
+        while (true) {
+            reader = switch (reader) {
+                .limited => |limited| limited.inner,
+                .decoded => |decoded| decoded.inner,
+                else => return reader,
+            };
+        }
     }
 
     /// Look up a request trailer by name.
@@ -1032,6 +1039,43 @@ test "trailers are exposed by name and as a slice" {
     try std.testing.expectEqual(@as(usize, 2), context.trailers().len);
     try std.testing.expectEqualStrings("abc", context.trailer("x-checksum").?);
     try std.testing.expect(context.trailer("missing") == null);
+}
+
+test "trailer lookup keeps the bounded reader intact" {
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var replay = ReplayReader{ .body = "abcdef" };
+    var limited = LimitedReader{
+        .inner = .{ .replay = &replay },
+        .remaining = 3,
+    };
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .body_reader = .{ .limited = &limited },
+        .response = Response.init(arena.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectEqual(@as(usize, 0), context.trailers().len);
+    try std.testing.expect(context.body_reader.? == .limited);
+    try std.testing.expectError(error.PayloadTooLarge, context.readBody());
 }
 
 test "client address honors a trusted forwarded-for header" {
