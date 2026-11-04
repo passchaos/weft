@@ -458,7 +458,8 @@ pub const Ctx = struct {
             {
                 return error.PayloadTooLarge;
             }
-            try output.appendSlice(self.arena, chunk);
+            output.appendSlice(self.arena, chunk) catch
+                return error.PayloadTooLarge;
             total = next_total;
         }
         self.cached_body = output.items;
@@ -1075,6 +1076,39 @@ test "trailer lookup keeps the bounded reader intact" {
 
     try std.testing.expectEqual(@as(usize, 0), context.trailers().len);
     try std.testing.expect(context.body_reader.? == .limited);
+    try std.testing.expectError(error.PayloadTooLarge, context.readBody());
+}
+
+test "readBody maps arena exhaustion to PayloadTooLarge" {
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+    var arena_buffer: [8]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var replay = ReplayReader{ .body = "0123456789abcdef" };
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .limits = .{
+            .max_body_bytes = 64,
+            .max_request_arena_bytes = 64,
+        },
+        .request = &request,
+        .body_reader = .{ .replay = &replay },
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
     try std.testing.expectError(error.PayloadTooLarge, context.readBody());
 }
 

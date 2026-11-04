@@ -82,6 +82,17 @@ representation's `Last-Modified` value exactly. The static-file handler used
 response. The comparison is now exact, and the precondition test covers a date
 newer than the representation.
 
+## Request-body arena exhaustion
+
+Buffering a request body into the fixed per-request arena could surface
+`OutOfMemory` as a `500` when the body fit `max_body_bytes` but not
+`max_request_arena_bytes`. `Ctx.readBody()` and the HTTP/3 buffered-body path
+now treat arena exhaustion while copying body bytes as `error.PayloadTooLarge`,
+so the request receives `413` and the connection stays usable.
+
+Unit test: `readBody maps arena exhaustion to PayloadTooLarge` in
+`src/ctx.zig`.
+
 ## Verification
 
 ```sh
@@ -90,4 +101,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 156/156 tests in Debug and ReleaseFast (105 unit, 51 package).
+Results: 157/157 tests in Debug and ReleaseFast (106 unit, 51 package).

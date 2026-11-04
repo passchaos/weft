@@ -410,6 +410,7 @@ pub fn Http3Server(comptime H: type) type {
                     arena,
                     stream,
                     self.options.limits.max_body_bytes,
+                    self.options.limits.max_request_arena_bytes,
                 ) catch |err| {
                     if (err == error.Canceled) return err;
                     var response = Response.initWithLimits(
@@ -723,6 +724,7 @@ fn readWholeBody(
     arena: std.mem.Allocator,
     stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
     max_body_bytes: usize,
+    max_arena_bytes: usize,
 ) ![]const u8 {
     var output = std.ArrayListUnmanaged(u8).empty;
     var buffer: [16 * 1024]u8 = undefined;
@@ -731,8 +733,11 @@ fn readWholeBody(
         if (count == 0) continue;
         const total = std.math.add(usize, output.items.len, count) catch
             return error.PayloadTooLarge;
-        if (total > max_body_bytes) return error.PayloadTooLarge;
-        try output.appendSlice(arena, buffer[0..count]);
+        if (total > max_body_bytes or total > max_arena_bytes) {
+            return error.PayloadTooLarge;
+        }
+        output.appendSlice(arena, buffer[0..count]) catch
+            return error.PayloadTooLarge;
     }
     return output.items;
 }
