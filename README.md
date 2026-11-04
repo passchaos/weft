@@ -143,7 +143,7 @@ escaped queries decode into a single buffer.
   values; `ctx.setCookie(...)` appends a validated `Set-Cookie` field.
   `SameSite=None` and `Partitioned` require `Secure`, and the `__Secure-` /
   `__Host-` prefixes are enforced (the latter also needs `Path=/` and no
-  `Domain`).
+  `Domain`). Multiple `Set-Cookie` fields are preserved on all three adapters.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
   type-based, and values live in the request arena.
 

@@ -95,6 +95,24 @@ fn clientInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
     });
 }
 
+fn cookiesRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.setCookie(.{
+        .name = "session",
+        .value = "abc",
+        .path = "/",
+        .http_only = true,
+        .same_site = .lax,
+    });
+    try ctx.setCookie(.{
+        .name = "__Host-theme",
+        .value = "dark",
+        .path = "/",
+        .secure = true,
+    });
+    try ctx.text("ok");
+}
+
 fn certificateCount(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     try ctx.json(.{ .certs = ctx.peerCertificates().len });
@@ -3187,6 +3205,7 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         .{ .streaming = true },
     );
     try router.get("/stream/fixed", StreamHandlers.fixedRoute, .{});
+    try router.get("/cookies", cookiesRoute, .{});
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -3472,6 +3491,21 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         h2_multipart_response.body,
     );
 
+    var h2_cookies = try batch_client.request(.{
+        .method = "GET",
+        .path = "/cookies",
+        .authority = "localhost",
+    });
+    defer h2_cookies.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), h2_cookies.status);
+    var h2_cookie_count: usize = 0;
+    for (h2_cookies.headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "set-cookie")) {
+            h2_cookie_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), h2_cookie_count);
+
     const stream_uri = try std.fmt.allocPrint(
         allocator,
         "{s}/stream/fixed",
@@ -3567,6 +3601,7 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
         StreamHandlers.multipartStreamRoute,
         .{ .streaming = true },
     );
+    try router.get("/cookies", cookiesRoute, .{});
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -3688,6 +3723,21 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
         "{\"field\":\"field\",\"file_bytes\":307200}",
         h3_multipart_response.response.body,
     );
+
+    var h3_cookies = try client.request(.{
+        .method = "GET",
+        .path = "/cookies",
+        .authority = "localhost",
+    });
+    defer h3_cookies.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), h3_cookies.response.status);
+    var h3_cookie_count: usize = 0;
+    for (h3_cookies.response.headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "set-cookie")) {
+            h3_cookie_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), h3_cookie_count);
 
     var trailer_response = try client.request(.{
         .method = "GET",
@@ -4436,6 +4486,87 @@ test "package: WebSocket negotiates permessage-deflate" {
     var message = try client.receiveMessage();
     defer message.deinit(client.allocator);
     try std.testing.expectEqualSlices(u8, payload, message.payload);
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: multiple Set-Cookie headers are preserved" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 4096,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/cookies", cookiesRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/cookies",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+
+    var count: usize = 0;
+    var saw_session = false;
+    var saw_host = false;
+    for (response.response.headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "set-cookie")) continue;
+        count += 1;
+        if (std.mem.startsWith(u8, header.value, "session=abc;")) {
+            saw_session = true;
+            try std.testing.expect(std.mem.indexOf(
+                u8,
+                header.value,
+                "HttpOnly",
+            ) != null);
+            try std.testing.expect(std.mem.indexOf(
+                u8,
+                header.value,
+                "SameSite=Lax",
+            ) != null);
+        }
+        if (std.mem.startsWith(u8, header.value, "__Host-theme=dark;")) {
+            saw_host = true;
+            try std.testing.expect(std.mem.indexOf(
+                u8,
+                header.value,
+                "Secure",
+            ) != null);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(saw_session);
+    try std.testing.expect(saw_host);
 
     server.stop();
     try group.await(io);

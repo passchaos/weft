@@ -21,7 +21,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   allocate only the pair array; escaped queries decode into one buffer.
 - Typed JSON/form body helpers, cookie lookup (including DQUOTE unwrapping) and
   validated `Set-Cookie` serialization, including `__Secure-`/`__Host-` prefix
-  rules and CHIPS `Partitioned` (which requires `Secure`).
+  rules and CHIPS `Partitioned` (which requires `Secure`). Package tests assert
+  that two `Set-Cookie` fields survive HTTP/1, HTTP/2, and HTTP/3 without being
+  joined.
 - `Ctx.trailers()` and `Ctx.trailer(name)` expose request trailers for all
   adapters: HTTP/1 buffered and streaming (after the body is consumed),
   buffered HTTP/2/HTTP/3, and streaming HTTP/2/HTTP/3 via the concurrent
@@ -202,8 +204,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 140/140 tests passed (100 unit, 40 package/integration).
-- ReleaseFast: 140/140 tests passed.
+- Debug: 141/141 tests passed (100 unit, 41 package/integration).
+- ReleaseFast: 141/141 tests passed.
 - Examples build; `zig build run-hello` and `zig build run-upload` complete
   their request sequences (streaming upload, streaming multipart, SSE, and
   Prometheus output). The upload example keeps `Metrics` behind a pointer
