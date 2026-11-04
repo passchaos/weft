@@ -36,13 +36,16 @@ pub const Compress = struct {
         if (noTransform(response.header("cache-control"))) return;
 
         if (response.stream) |body| {
-            switch (negotiation) {
-                .coding => |coding| {
-                    if (coding != .gzip) return;
-                    if (!compressible(response.header("content-type"))) return;
-                    if (body.length) |length| {
-                        if (length < self.min_bytes) return;
-                    }
+            const coding = switch (negotiation) {
+                .coding => |value| value,
+                else => return,
+            };
+            if (!compressible(response.header("content-type"))) return;
+            if (body.length) |length| {
+                if (length < self.min_bytes) return;
+            }
+            switch (coding) {
+                .gzip => {
                     const wrapper = try ctx.arena.create(StreamCompress);
                     wrapper.* = .{
                         .allocator = ctx.arena,
@@ -58,6 +61,42 @@ pub const Compress = struct {
                         .context = wrapper,
                         .write_fn = StreamCompress.run,
                         .cancel_fn = StreamCompress.cancel,
+                    };
+                },
+                .br, .zstd => {
+                    const wrapper = try ctx.arena.create(
+                        ContinuousStreamCompress,
+                    );
+                    const output_buffer = try ctx.arena.alloc(
+                        u8,
+                        stream_encoder_output_bytes,
+                    );
+                    var encoder: ContinuousEncoder = undefined;
+                    switch (coding) {
+                        .br => encoder = .{ .br = vort.br.IncrementalPlannedStreamEncoder.initWithOptions(
+                            ctx.arena,
+                            .{},
+                        ) },
+                        .zstd => encoder = .{ .zstd = vort.zstd.NativeIncrementalFrameEncoder.init(
+                            ctx.arena,
+                            .{ .include_content_size = false },
+                        ) catch return },
+                        else => unreachable,
+                    }
+                    wrapper.* = .{
+                        .original = body,
+                        .encoder = encoder,
+                        .output_buffer = output_buffer,
+                    };
+                    response.setHeader(
+                        "Content-Encoding",
+                        coding.headerValue(),
+                    ) catch return;
+                    _ = response.removeHeader("content-length");
+                    response.stream = .{
+                        .context = wrapper,
+                        .write_fn = ContinuousStreamCompress.run,
+                        .cancel_fn = ContinuousStreamCompress.cancel,
                     };
                 },
                 else => {},
@@ -318,6 +357,129 @@ const ChunkCompress = struct {
         );
         defer self.allocator.free(compressed);
         try self.output.write(compressed);
+    }
+};
+
+const stream_encoder_output_bytes = 16 * 1024;
+
+/// Continuous Brotli/zstd encoders. Unlike gzip, concatenating independent
+/// members is not a valid single Content-Encoding stream, so one encoder
+/// state spans the whole response.
+const ContinuousEncoder = union(enum) {
+    br: vort.br.IncrementalPlannedStreamEncoder,
+    zstd: vort.zstd.NativeIncrementalFrameEncoder,
+
+    fn step(
+        self: *ContinuousEncoder,
+        input: []const u8,
+        output: []u8,
+    ) anyerror!vort.core.StepResult {
+        return switch (self.*) {
+            .br => |*state| state.step(input, output),
+            .zstd => |*state| state.step(input, output),
+        };
+    }
+
+    fn finish(self: *ContinuousEncoder) anyerror!void {
+        switch (self.*) {
+            .br => |*state| try state.finish(),
+            .zstd => |*state| state.finish(),
+        }
+    }
+};
+
+const ContinuousStreamCompress = struct {
+    original: stream_mod.Body,
+    encoder: ContinuousEncoder,
+    output_buffer: []u8,
+
+    fn run(raw: ?*anyopaque, output: *stream_mod.Writer) anyerror!void {
+        const self: *ContinuousStreamCompress = @ptrCast(@alignCast(raw orelse
+            return error.InvalidWriterState));
+        var chunk = ContinuousChunk{
+            .wrapper = self,
+            .output = output,
+        };
+        var writer = stream_mod.Writer{
+            .context = &chunk,
+            .write_fn = ContinuousChunk.writeChunk,
+        };
+        try self.original.run(&writer);
+        try self.finishTo(output);
+    }
+
+    fn finishTo(
+        self: *ContinuousStreamCompress,
+        output: *stream_mod.Writer,
+    ) !void {
+        try self.encoder.finish();
+        while (true) {
+            const result = try self.encoder.step(
+                &.{},
+                self.output_buffer,
+            );
+            if (result.progress.output_written != 0) {
+                try output.write(
+                    self.output_buffer[0..result.progress.output_written],
+                );
+            }
+            switch (result.status) {
+                .done => return,
+                .need_output => {
+                    if (result.progress.output_written == 0) {
+                        return error.CompressionStalled;
+                    }
+                },
+                .need_input => return error.CompressionStalled,
+            }
+        }
+    }
+
+    fn cancel(raw: ?*anyopaque) void {
+        const self: *ContinuousStreamCompress = @ptrCast(@alignCast(raw orelse
+            return));
+        self.original.cancel();
+    }
+};
+
+const ContinuousChunk = struct {
+    wrapper: *ContinuousStreamCompress,
+    output: *stream_mod.Writer,
+
+    fn writeChunk(raw: ?*anyopaque, data: []const u8) anyerror!void {
+        const self: *ContinuousChunk = @ptrCast(@alignCast(raw orelse
+            return error.InvalidWriterState));
+        var offset: usize = 0;
+        while (true) {
+            const result = try self.wrapper.encoder.step(
+                data[offset..],
+                self.wrapper.output_buffer,
+            );
+            const written = result.progress.output_written;
+            if (written != 0) {
+                try self.output.write(
+                    self.wrapper.output_buffer[0..written],
+                );
+            }
+            offset += result.progress.input_read;
+            switch (result.status) {
+                .need_input => {
+                    if (offset == data.len) return;
+                    if (result.progress.input_read == 0) {
+                        return error.CompressionStalled;
+                    }
+                },
+                .need_output => {
+                    if (written == 0) return error.CompressionStalled;
+                },
+                .done => {
+                    if (offset != data.len) {
+                        return error.CompressionStalled;
+                    }
+                    return;
+                },
+            }
+        }
     }
 };
 
@@ -787,6 +949,112 @@ test "compress middleware wraps streamed bodies with gzip" {
     );
     try std.testing.expectEqual(@as(usize, 4096), decoded.bytes.len);
     for (decoded.bytes) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
+}
+
+fn expectStreamCoding(
+    allocator: std.mem.Allocator,
+    coding: []const u8,
+    accept: []const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const Producer = struct {
+        var chunk: []const u8 = &.{};
+
+        fn run(_: ?*anyopaque, writer: *stream_mod.Writer) anyerror!void {
+            try writer.write(chunk);
+            try writer.write(chunk);
+        }
+    };
+
+    const Collector = struct {
+        allocator: std.mem.Allocator,
+        bytes: std.ArrayListUnmanaged(u8) = .empty,
+
+        fn write(raw: ?*anyopaque, data: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            try self.bytes.appendSlice(self.allocator, data);
+        }
+    };
+
+    const chunk = try allocator.alloc(u8, 2048);
+    defer allocator.free(chunk);
+    @memset(chunk, 'a');
+    Producer.chunk = chunk;
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = accept,
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 0 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 64 * 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.setHeader("Content-Type", "text/plain");
+                try ctx.setHeader("Content-Length", "4096");
+                try ctx.stream(.{
+                    .context = null,
+                    .write_fn = Producer.run,
+                    .length = 4096,
+                });
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqualStrings(
+        coding,
+        context.response.header("content-encoding").?,
+    );
+    try std.testing.expect(
+        context.response.header("content-length") == null,
+    );
+
+    var collector = Collector{ .allocator = arena.allocator() };
+    var writer = stream_mod.Writer{
+        .context = &collector,
+        .write_fn = Collector.write,
+    };
+    if (context.response.stream) |*body| {
+        try body.run(&writer);
+    } else return error.TestUnexpectedResult;
+
+    const decode_headers = [_]@import("netz").http1.Header{.{
+        .name = "Content-Encoding",
+        .value = coding,
+    }};
+    const decoded = try @import("netz").http1.content_coding.decodeHeadersAlloc(
+        arena.allocator(),
+        &decode_headers,
+        collector.bytes.items,
+        4096,
+    );
+    try std.testing.expectEqual(@as(usize, 4096), decoded.bytes.len);
+    for (decoded.bytes) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
+}
+
+test "compress middleware wraps streamed bodies with brotli" {
+    try expectStreamCoding(std.testing.allocator, "br", "br");
+}
+
+test "compress middleware wraps streamed bodies with zstd" {
+    try expectStreamCoding(std.testing.allocator, "zstd", "zstd");
 }
 
 test "compress middleware honors no-transform" {
