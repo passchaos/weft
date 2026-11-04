@@ -704,8 +704,10 @@ so the status is not lost to a TCP RST.
 
 ## Limitations
 
-- HTTP/3 sequential latency is higher than HTTP/2 (roughly 76 µs vs 25 µs per
+- HTTP/3 sequential latency is higher than HTTP/2 (roughly 61 µs vs 25 µs per
   request on the reference host); QUIC framing and recovery dominate.
+- `CONNECT` requests (HTTP/1 authority-form, HTTP/2/3 tunnel or extended
+  CONNECT) receive `501`; weft exposes no tunnel writer.
 - Handlers cannot be preempted while running CPU-bound code without reaching a
   cancellation point.
 - WebSocket upgrades are HTTP/1.1 only; HTTP/2 and HTTP/3 return `400`.

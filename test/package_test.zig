@@ -5339,3 +5339,52 @@ test "package: HTTP/1 answers Expect 100-continue for uploads" {
     server.stop();
     try group.await(io);
 }
+
+test "package: HTTP/1 CONNECT is rejected with 501" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    var client = try netz.http1.runtime.Client.connect(
+        allocator,
+        io,
+        server.address(),
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer client.close();
+
+    var response = try client.request(.{
+        .method = .CONNECT,
+        .target = "example.com:443",
+        .host = "example.com:443",
+    });
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 501), response.response.status);
+
+    server.stop();
+    try group.await(io);
+}

@@ -409,6 +409,13 @@ pub fn Server(comptime H: type) type {
                 };
 
                 const method = head.method;
+                // Weft exposes no tunnel writer, so an HTTP/1 CONNECT cannot
+                // be fulfilled. Answer explicitly instead of routing the
+                // authority-form target as an ordinary request.
+                if (method == .CONNECT) {
+                    self.respondAndDrain(connection, 501);
+                    return .drained;
+                }
                 const target = head.target;
                 const query_index = std.mem.indexOfScalar(u8, target, '?');
                 const path = if (query_index) |index| target[0..index] else target;

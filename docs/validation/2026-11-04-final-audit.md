@@ -3,7 +3,7 @@
 Scope: verify the current tree against the repository constraints in
 `AGENTS.md`, the feature list in `README.md`, and the measured performance
 claims. Everything below is backed by files or commands in this checkout;
-the full test suite is 150/150 in Debug and ReleaseFast.
+the full test suite is 151/151 in Debug and ReleaseFast.
 
 ## 1. Repository constraints
 
@@ -68,8 +68,8 @@ zig build bench-static -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 150/150 (101 unit, 49 package/integration).
-- ReleaseFast: 150/150.
+- Debug: 151/151 (101 unit, 50 package/integration).
+- ReleaseFast: 151/151.
 - Examples build; `run-hello` and `run-upload` complete their request
   sequences (streaming upload, streaming multipart, SSE, Prometheus).
 - HTTP/1 `Expect: 100-continue` uploads complete through a streaming route.
@@ -97,6 +97,8 @@ Results:
 - WebSocket upgrades are HTTP/1.1 only.
 - `Etag` covers buffered responses; streamed bodies are not hashed.
 - Precompressed static sidecars are not range-addressable by design.
+- `CONNECT` (HTTP/1 authority-form, HTTP/2/3 tunnel or extended CONNECT)
+  receives `501` because weft exposes no tunnel writer.
 - Unix sockets serve HTTP/1 and h2c; TLS on a Unix socket is rejected, and the
   HTTP/3 adapter remains TCP/UDP-addressed.
 

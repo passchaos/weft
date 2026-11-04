@@ -334,6 +334,17 @@ pub fn Http3Server(comptime H: type) type {
                 ) catch {};
                 return;
             };
+            // Weft has no CONNECT tunnel or extended-CONNECT API; reject the
+            // stream instead of routing the authority target as a request.
+            if (method == .CONNECT) {
+                return self.rejectConcurrent(
+                    stream,
+                    head.method,
+                    501,
+                    "Not Implemented",
+                    arena,
+                );
+            }
             const target = if (head.path.len == 0) "/" else head.path;
             if (target.len > self.options.limits.max_request_target_bytes) {
                 return self.rejectConcurrent(
