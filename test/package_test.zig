@@ -5027,3 +5027,93 @@ test "package: oversized request head and target return 431 and 414" {
     server.stop();
     try group.await(io);
 }
+
+test "package: HTTP/2 Unix socket serves h2c" {
+    if (comptime @import("builtin").os.tag == .windows) {
+        return error.SkipZigTest;
+    }
+
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_storage: [std.fs.max_path_bytes]u8 = undefined;
+    const directory_len = try tmp.dir.realPath(io, &path_storage);
+    const suffix = try std.fmt.bufPrint(
+        path_storage[directory_len..],
+        "/weft-h2.sock",
+        .{},
+    );
+    const full_path = path_storage[0 .. directory_len + suffix.len];
+    const address = try std.Io.net.UnixAddress.init(full_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, full_path) catch {};
+
+    var server = try weft.Http2Server(App).init(
+        io,
+        allocator,
+        .{
+            .unix_path = full_path,
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .max_http2_concurrent_streams = 8,
+            },
+            .max_connections = 1,
+            .max_concurrent_handlers = 8,
+            .accept_timeout = .fromMilliseconds(100),
+            .idle_timeout = .fromMilliseconds(500),
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try std.testing.expect(server.ipAddress() == null);
+    try std.testing.expectEqualStrings(full_path, server.unixPath().?);
+    try server.router().get("/hello/:name", hello, .{});
+    try server.router().get("/info", clientInfo, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp2Server, .{&server});
+
+    var client = try netz.http2.runtime.Client.connectUnix(
+        allocator,
+        io,
+        address,
+        "localhost",
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer client.close();
+
+    var hello_response = try client.request(.{
+        .method = "GET",
+        .path = "/hello/weft",
+    });
+    defer hello_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), hello_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"hello\",\"name\":\"weft\"}",
+        hello_response.body,
+    );
+
+    // A Unix socket has no IP peer; std's synthetic loopback must not leak.
+    var info_response = try client.request(.{
+        .method = "GET",
+        .path = "/info",
+    });
+    defer info_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), info_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"protocol\":\"http_2\",\"has_address\":false,\"tls\":false}",
+        info_response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}

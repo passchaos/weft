@@ -17,7 +17,12 @@ pub const Router = router_mod.Router;
 pub const RouteOptions = router_mod.RouteOptions;
 
 pub const Options = struct {
-    address: std.Io.net.IpAddress,
+    /// TCP listen address. Exactly one of `address` and `unix_path` must be
+    /// set.
+    address: ?std.Io.net.IpAddress = null,
+    /// Serve h2c on a Unix domain socket instead of TCP. TLS is not supported
+    /// on Unix sockets.
+    unix_path: ?[]const u8 = null,
     limits: Limits = .{},
     /// Application middleware that runs for matched routes, `404`, `405`,
     /// `400`, and automatic `OPTIONS`. The slice must outlive the server.
@@ -51,18 +56,21 @@ pub const Options = struct {
 const Listener = union(enum) {
     plain: netz.http2.runtime.Server,
     tls: netz.http2.runtime.TlsServer,
+    unix: netz.http2.runtime.UnixServer,
 
     fn deinit(self: *Listener) void {
         switch (self.*) {
             .plain => |*server| server.deinit(),
             .tls => |*server| server.deinit(),
+            .unix => |*server| server.deinit(),
         }
     }
 
-    fn address(self: *const Listener) std.Io.net.IpAddress {
+    fn address(self: *const Listener) ?std.Io.net.IpAddress {
         return switch (self.*) {
             .plain => |server| server.address(),
             .tls => |server| server.address(),
+            .unix => null,
         };
     }
 
@@ -73,6 +81,7 @@ const Listener = union(enum) {
         return switch (self.*) {
             .plain => |*server| server.acceptWithTimeout(timeout),
             .tls => |*server| server.acceptWithTimeout(timeout),
+            .unix => |*server| server.acceptWithTimeout(timeout),
         };
     }
 };
@@ -144,6 +153,14 @@ pub fn Http2Server(comptime H: type) type {
             if (options.middleware.len > options.limits.max_middleware) {
                 return error.TooMuchMiddleware;
             }
+            const has_tcp = options.address != null;
+            const has_unix = options.unix_path != null;
+            if (has_tcp == has_unix) return error.InvalidOptions;
+            if (has_unix and options.tls != null) return error.InvalidOptions;
+            const unix_address = if (options.unix_path) |path|
+                try std.Io.net.UnixAddress.init(path)
+            else
+                null;
 
             var netz_limits = options.limits.toHttp2Netz();
             netz_limits.max_concurrent_streams = @intCast(@min(
@@ -151,20 +168,25 @@ pub fn Http2Server(comptime H: type) type {
                     options.max_concurrent_handlers,
                 options.max_concurrent_handlers,
             ));
-            var netz_server: Listener = if (options.tls) |tls_options| blk: {
+            var netz_server: Listener = if (unix_address) |unix| .{ .unix = try netz.http2.runtime.UnixServer.listen(
+                allocator,
+                io,
+                unix,
+                netz_limits,
+            ) } else if (options.tls) |tls_options| blk: {
                 var tls = tls_options;
                 tls.limits = netz_limits;
                 tls.tcp_nodelay = options.limits.tcp_nodelay;
                 break :blk .{ .tls = try netz.http2.runtime.TlsServer.listen(
                     allocator,
                     io,
-                    options.address,
+                    options.address.?,
                     tls,
                 ) };
             } else .{ .plain = try netz.http2.runtime.Server.listen(
                 allocator,
                 io,
-                options.address,
+                options.address.?,
                 netz_limits,
             ) };
             errdefer netz_server.deinit();
@@ -188,8 +210,21 @@ pub fn Http2Server(comptime H: type) type {
             self.* = undefined;
         }
 
+        /// TCP listen address. Panics for a Unix-socket server; use
+        /// `ipAddress()` or `unixPath()` when the transport is not known.
         pub fn address(self: *const @This()) std.Io.net.IpAddress {
+            return self.netz_server.address() orelse
+                @panic("Unix-socket server has no TCP address");
+        }
+
+        /// TCP listen address, or null for a Unix-socket server.
+        pub fn ipAddress(self: *const @This()) ?std.Io.net.IpAddress {
             return self.netz_server.address();
+        }
+
+        /// Configured Unix socket path, or null for a TCP server.
+        pub fn unixPath(self: *const @This()) ?[]const u8 {
+            return self.options.unix_path;
         }
 
         pub fn router(self: *@This()) *router_mod.Router(H) {
@@ -280,7 +315,12 @@ pub fn Http2Server(comptime H: type) type {
             );
             var context = H2ConcurrentContext(H){
                 .server = self,
-                .address = connection.stream.socket.address,
+                // std reports a synthetic loopback address for Unix sockets,
+                // so do not expose it as a real peer.
+                .address = switch (self.netz_server) {
+                    .unix => null,
+                    else => connection.stream.socket.address,
+                },
                 .peer_certificates = connection.peerCertificates() orelse &.{},
                 .max_requests = self.options.max_requests_per_connection,
             };

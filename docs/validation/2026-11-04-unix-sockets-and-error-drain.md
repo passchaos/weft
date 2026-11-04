@@ -41,6 +41,11 @@ listener but does not unlink the path.
 can supply the client address. The Unix package test asserts both the
 `"none"` result and the header path at the unit level.
 
+The HTTP/2 adapter follows the same shape: `Http2Server.Options.unix_path`
+serves prior-knowledge h2c over a Unix socket, with the same exclusivity and
+TLS rejection rules, and `ipAddress()`/`unixPath()`/`clientAddress()` behave
+identically. HTTP/3 remains UDP/TCP-addressed.
+
 ## HTTP/1 error-response drain
 
 `serveConnection` now returns a three-state `Disposition` instead of `bool`:
@@ -83,8 +88,8 @@ zig build examples --global-cache-dir /tmp/weft-zig-global --summary all
 
 Results at this slice:
 
-- Debug: 145/145 tests passed (101 unit + 44 package).
-- ReleaseFast: 145/145 tests passed.
+- Debug: 146/146 tests passed (101 unit + 45 package).
+- ReleaseFast: 146/146 tests passed.
 - Examples: build succeeded.
 
 New package tests:
@@ -93,6 +98,9 @@ New package tests:
   `.unix_path` in a temporary directory, checks `ipAddress() == null` and
   `unixPath()`, then performs a real GET through
   `netz.http1.runtime.Client.connectUnix`.
+- `package: HTTP/2 Unix socket serves h2c` — same for `Http2Server`, using
+  `netz.http2.runtime.Client.connectUnix`, and asserts `clientAddress()` is
+  absent.
 - `package: server requires exactly one listen address` — asserts
   `error.InvalidOptions` for neither and both address forms.
 - `package: oversized request head and target return 431 and 414` — sends a
@@ -103,7 +111,7 @@ The earlier `statusForReadError` unit test remains in `src/server.zig`.
 
 ## Limits
 
-- Unix sockets are HTTP/1 cleartext only. HTTP/2 and HTTP/3 adapters still take
-  a TCP address.
+- Unix sockets serve HTTP/1 and prior-knowledge h2c; TLS on a Unix socket is
+  rejected, and the HTTP/3 adapter remains TCP/UDP-addressed.
 - The 250 ms drain budget is per error response and runs on the owning worker;
   it is bounded by `max_connections`.

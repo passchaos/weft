@@ -313,6 +313,11 @@ For HTTPS, set `Options.tls` to a `netz.http2.runtime.TlsListenOptions`; Netz
 requires ALPN `h2`, and weft applies its own `Limits` and `tcp_nodelay`.
 `tls_accept_timeout` bounds accept, TLS setup, and the HTTP/2 bootstrap.
 
+Set `Options.unix_path` instead of `Options.address` to serve prior-knowledge
+h2c over a Unix-domain socket, with the same exclusivity and TLS rules as the
+HTTP/1 adapter. `ctx.clientAddress()` is `null` on that transport, and
+`ipAddress()` / `unixPath()` report which transport is active.
+
 Netz owns frame parsing, HPACK, flow control, and stream state. Weft maps each
 completed request into the concrete `Ctx` view and maps responses back to
 lowercase HTTP/2 header fields. Response streaming, `HEAD`, `404/405/OPTIONS`,
