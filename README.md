@@ -94,7 +94,10 @@ allocation.
 Plain queries borrow the request target and allocate only the pair array;
 escaped queries decode into a single buffer.
 - `ctx.header(name)`, `ctx.body()`, `ctx.method()`, and `ctx.target()` expose the
-  parsed request. `ctx.headers()` and `ctx.headerValues(name)` expose repeated
+  parsed request. `ctx.body()` returns the buffered body on HTTP/1, HTTP/3, and
+  HTTP/2 routes whose request declared a non-zero `Content-Length`; for an
+  HTTP/2 body without a declared length, use `ctx.readBody()`.
+  `ctx.headers()` and `ctx.headerValues(name)` expose repeated
   fields; `ctx.trailers()` and `ctx.trailer(name)` expose request trailers for
   every adapter: HTTP/1 buffered and streaming (after the body is consumed),
   buffered HTTP/2/HTTP/3, and streaming HTTP/2/HTTP/3. Field bytes are copied

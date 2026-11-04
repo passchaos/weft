@@ -100,6 +100,24 @@ but `Ctx.preferredType()` returned null for the same header. Both now treat an
 absent or empty field value as `*/*`, so a handler cannot see a 406-worthy
 preference from an empty header.
 
+## HTTP/2 buffered request bodies
+
+Non-streaming HTTP/2 routes previously always received a streaming reader, so
+`Ctx.body()` was empty even though the route had not opted into streaming.
+The adapter now buffers a request with a declared non-zero `Content-Length`
+into the request arena and passes no reader, matching the HTTP/1 and HTTP/3
+buffered-route behavior. A declared zero length yields an empty body without
+waiting for DATA.
+
+Requests without a declared length keep the streaming reader: netz's
+concurrent engine publishes body completion only while draining a stream, so a
+bodyless request with no DATA frames cannot be read to completion from the
+handler. Those handlers must use `Ctx.readBody()` / `Ctx.bodyReader()` as
+before.
+
+Package test: the HTTP/2 adapter test posts to `/body-echo` and asserts that a
+non-streaming handler sees the buffered body through `Ctx.body()`.
+
 ## Verification
 
 ```sh

@@ -169,6 +169,11 @@ fn echoJson(app: *App, ctx: *weft.Ctx) anyerror!void {
     try ctx.json(.{ .message = payload.message });
 }
 
+fn echoBufferedBody(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.text(ctx.body());
+}
+
 fn gzipAlloc(
     allocator: std.mem.Allocator,
     body: []const u8,
@@ -3187,6 +3192,7 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     try router.get("/hello/:name", hello, .{});
     try router.get("/info", clientInfo, .{});
     try router.post("/echo", echoJson, .{});
+    try router.post("/body-echo", echoBufferedBody, .{});
     try router.post(
         "/upload",
         StreamHandlers.uploadRoute,
@@ -3324,6 +3330,30 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     try std.testing.expectEqualStrings(
         "{\"message\":\"weft\"}",
         echo_response.body,
+    );
+
+    // Non-streaming routes expose the buffered request through Ctx.body().
+    const body_echo_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/body-echo",
+        .{base},
+    );
+    defer allocator.free(body_echo_uri);
+    var body_echo_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        body_echo_uri,
+        .{
+            .method = "POST",
+            .body = "buffered request body",
+        },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer body_echo_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), body_echo_response.status);
+    try std.testing.expectEqualStrings(
+        "buffered request body",
+        body_echo_response.body,
     );
 
     const upload_uri = try std.fmt.allocPrint(

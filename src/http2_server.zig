@@ -420,20 +420,67 @@ pub fn Http2Server(comptime H: type) type {
                 return;
             };
 
+            // The concurrent engine only publishes body completion while it is
+            // draining a stream, so a request with no DATA frames cannot be
+            // read to completion from the handler. Use the declared length to
+            // avoid waiting for a body that cannot arrive, and keep the
+            // streaming reader for routes that opted in or for unknown-length
+            // bodies.
+            const route_streaming = self.app_router.isStreaming(method, target);
+            const declared_length = head.content_length;
+            const has_declared_body = declared_length != null and
+                declared_length.? != 0;
+            const streaming = route_streaming or declared_length == null;
+            var body: []const u8 = "";
+            var trailers: []netz.http1.Header = &.{};
+            var reader: ?ctx_mod.H2StreamReader = null;
+            if (streaming) {
+                reader = ctx_mod.H2StreamReader.init(
+                    stream,
+                    self.options.limits.max_streaming_window_bytes,
+                );
+            } else if (has_declared_body) {
+                body = readWholeBody(
+                    arena,
+                    stream,
+                    self.options.limits.max_body_bytes,
+                    self.options.limits.max_request_arena_bytes,
+                ) catch |err| {
+                    if (err == error.Canceled) return err;
+                    var response = Response.initWithLimits(
+                        arena,
+                        self.options.limits,
+                    );
+                    if (err == error.PayloadTooLarge) {
+                        response.setStatus(413);
+                        response.text("Payload Too Large") catch {};
+                    } else {
+                        response.setStatus(500);
+                        response.text("Internal Server Error") catch {};
+                    }
+                    try self.respondConcurrent(
+                        stream,
+                        head.method,
+                        &response,
+                        arena,
+                    );
+                    return;
+                };
+                if (stream.trailers()) |fields| {
+                    trailers = convertH2Trailers(arena, fields) catch &.{};
+                }
+            }
+
             var request = netz.http1.Request{
                 .method = method,
                 .target = target,
                 .version = .http_1_1,
                 .headers = headers,
-                .body = "",
-                .trailers = &.{},
+                .body = body,
+                .trailers = trailers,
                 .consumed = 0,
                 .must_close = false,
             };
-            var reader = ctx_mod.H2StreamReader.init(
-                stream,
-                self.options.limits.max_streaming_window_bytes,
-            );
             const client_info = ctx_mod.ClientInfo{
                 .address = ctx_mod.resolveClientAddress(
                     head.headers,
@@ -448,7 +495,7 @@ pub fn Http2Server(comptime H: type) type {
                 &request,
                 client_info,
                 arena,
-                .{ .h2_stream = &reader },
+                if (reader) |*value| .{ .h2_stream = value } else null,
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;
                 std.log.scoped(.weft).warn(
@@ -685,6 +732,28 @@ fn writeConcurrentWithBudget(
     if (data.len > state.remaining) return error.ResponseTooLarge;
     state.remaining -= data.len;
     try state.stream.writeData(data, false);
+}
+
+fn readWholeBody(
+    arena: std.mem.Allocator,
+    stream: *netz.http2.runtime.Connection.ConcurrentStream,
+    max_body_bytes: usize,
+    max_arena_bytes: usize,
+) ![]const u8 {
+    var output = std.ArrayListUnmanaged(u8).empty;
+    var buffer: [16 * 1024]u8 = undefined;
+    while (true) {
+        const count = (try stream.nextBody(&buffer, null)) orelse break;
+        if (count == 0) continue;
+        const total = std.math.add(usize, output.items.len, count) catch
+            return error.PayloadTooLarge;
+        if (total > max_body_bytes or total > max_arena_bytes) {
+            return error.PayloadTooLarge;
+        }
+        output.appendSlice(arena, buffer[0..count]) catch
+            return error.PayloadTooLarge;
+    }
+    return output.items;
 }
 
 fn convertH2Trailers(
