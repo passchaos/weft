@@ -64,8 +64,8 @@ zig build examples --global-cache-dir /tmp/weft-zig-global --summary all
 
 Results at this slice:
 
-- Debug: 149/149 (101 unit + 48 package).
-- ReleaseFast: 149/149.
+- Debug: 150/150 (101 unit + 49 package).
+- ReleaseFast: 150/150.
 - Examples: build succeeded.
 
 Coverage:
