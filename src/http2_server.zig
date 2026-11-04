@@ -303,6 +303,9 @@ pub fn Http2Server(comptime H: type) type {
                 },
             ) catch |err| {
                 if (err == error.Canceled) return err;
+                // Idle connections close through `idle_timeout`; that is a
+                // normal lifecycle event, not a connection failure.
+                if (err == error.Timeout) return;
                 std.log.scoped(.weft).warn(
                     "http2 serve failed: {s}",
                     .{@errorName(err)},
