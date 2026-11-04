@@ -10,6 +10,14 @@ fn home(app: *App, ctx: *weft.Ctx) anyerror!void {
     try ctx.text("ok");
 }
 
+fn upload(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    const reader = ctx.bodyReader().?;
+    var total: usize = 0;
+    while (try reader.next()) |chunk| total += chunk.len;
+    try ctx.json(.{ .bytes = total });
+}
+
 fn serveServer(server: *weft.Http3Server(App)) std.Io.Cancelable!void {
     server.serve() catch |err| switch (err) {
         error.Canceled => return error.Canceled,
@@ -22,6 +30,7 @@ fn serveServer(server: *weft.Http3Server(App)) std.Io.Cancelable!void {
 
 const BatchCtx = struct {
     allocator: std.mem.Allocator,
+    expected_body: ?[]const u8 = null,
     count: usize = 0,
     ok: bool = true,
 
@@ -37,6 +46,15 @@ const BatchCtx = struct {
                 defer response.deinit(self.allocator);
                 self.count += 1;
                 if (response.response.status != 200) self.ok = false;
+                if (self.expected_body) |expected| {
+                    if (!std.mem.eql(
+                        u8,
+                        response.response.body,
+                        expected,
+                    )) {
+                        self.ok = false;
+                    }
+                }
             },
             .err => self.ok = false,
         }
@@ -48,6 +66,7 @@ pub fn main(init: std.process.Init) !void {
     const sequential_iterations: usize = 10_000;
     const batch_size: usize = build_options.batch_size;
     const batch_iterations: usize = build_options.batch_iterations;
+    const warmup_iterations: usize = build_options.warmup_iterations;
 
     var backend = try netz.runtime.Backend.init(allocator);
     defer backend.deinit();
@@ -94,6 +113,7 @@ pub fn main(init: std.process.Init) !void {
     );
     defer server.deinit();
     try server.router().get("/", home, .{});
+    try server.router().post("/upload", upload, .{ .streaming = true });
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -159,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
     var context = BatchCtx{ .allocator = allocator };
 
     index = 0;
-    while (index < 100) : (index += 1) {
+    while (index < warmup_iterations) : (index += 1) {
         context.count = 0;
         context.ok = true;
         try client.requestBatchWithPerStreamDeadlines(
@@ -191,6 +211,63 @@ pub fn main(init: std.process.Init) !void {
     }
     elapsed = started.untilNow(io, .awake);
     printResult("server h3 batched", batch_size * batch_iterations, elapsed);
+
+    const upload_body = try allocator.alloc(u8, 2048);
+    defer allocator.free(upload_body);
+    @memset(upload_body, 'x');
+    var upload_requests: [batch_size]netz.http3.Request = undefined;
+    for (&upload_requests) |*request| {
+        request.* = .{
+            .method = "POST",
+            .path = "/upload",
+            .authority = "localhost",
+            .body = upload_body,
+        };
+    }
+    var upload_deadlines: [batch_size]?std.Io.Clock.Timestamp = undefined;
+    for (&upload_deadlines) |*deadline| deadline.* = null;
+    var upload_context = BatchCtx{
+        .allocator = allocator,
+        .expected_body = "{\"bytes\":2048}",
+    };
+
+    index = 0;
+    while (index < warmup_iterations) : (index += 1) {
+        upload_context.count = 0;
+        upload_context.ok = true;
+        try client.requestBatchWithPerStreamDeadlines(
+            &upload_requests,
+            &upload_deadlines,
+            .{
+                .context = &upload_context,
+                .on_result = BatchCtx.onResult,
+            },
+        );
+    }
+
+    started = std.Io.Timestamp.now(io, .awake);
+    index = 0;
+    while (index < batch_iterations) : (index += 1) {
+        upload_context.count = 0;
+        upload_context.ok = true;
+        try client.requestBatchWithPerStreamDeadlines(
+            &upload_requests,
+            &upload_deadlines,
+            .{
+                .context = &upload_context,
+                .on_result = BatchCtx.onResult,
+            },
+        );
+        if (!upload_context.ok or upload_context.count != batch_size) {
+            return error.BenchmarkStatus;
+        }
+    }
+    elapsed = started.untilNow(io, .awake);
+    printResult(
+        "server h3 upload batched",
+        batch_size * batch_iterations,
+        elapsed,
+    );
 
     server.stop();
     try group.await(io);

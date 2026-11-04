@@ -176,10 +176,16 @@ pub fn build(b: *std.Build) void {
         "h3-poll-us",
         "HTTP/3 handler poll interval override in microseconds (0 uses the weft default)",
     ) orelse 0;
+    const h3_warmup = b.option(
+        u32,
+        "h3-warmup",
+        "HTTP/3 benchmark batch warmup iterations (default 100)",
+    ) orelse 100;
     const h3_bench_options = b.addOptions();
     h3_bench_options.addOption(u32, "batch_size", h3_batch);
     h3_bench_options.addOption(u32, "batch_iterations", h3_batch_iterations);
     h3_bench_options.addOption(u32, "poll_us", h3_poll_us);
+    h3_bench_options.addOption(u32, "warmup_iterations", h3_warmup);
 
     const h3_benchmark = b.addExecutable(.{
         .name = "h3-server-bench",
