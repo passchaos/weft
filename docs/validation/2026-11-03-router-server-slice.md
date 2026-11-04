@@ -113,6 +113,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   reject upgrades.
 - `Etag` middleware derives a validator from the final buffered body and
   answers `If-None-Match` with `304`.
+- `AltSvc` middleware advertises an HTTP/3 endpoint on HTTP/1.1 and HTTP/2
+  responses and skips the header on HTTP/3 requests.
 - Lock-free `Metrics` middleware exposes total, active, status-class, and
   latency counters through a snapshot API; handler errors use the dispatcher's
   status mapping and canceled requests are excluded from status classes.
@@ -155,8 +157,8 @@ zig build bench-server -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 107/107 tests passed (74 unit, 33 package/integration).
-- ReleaseFast: 107/107 tests passed.
+- Debug: 108/108 tests passed (75 unit, 33 package/integration).
+- ReleaseFast: 108/108 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

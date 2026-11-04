@@ -402,6 +402,9 @@ Built-ins:
 - `Etag` — content-derived `ETag` for buffered `200` responses, answering
   `If-None-Match` with `304`. Register it outside `Compress` so the tag covers
   the final encoded representation.
+- `AltSvc` — advertises an HTTP/3 endpoint (`Alt-Svc: h3=":443"; ma=86400` by
+  default) on HTTP/1.1 and HTTP/2 responses, and skips the header when the
+  request already arrived over HTTP/3.
 - `Metrics` — lock-free total, active, status-class, and latency counters with a
   `snapshot()` API for health or metrics endpoints. Handler errors are
   classified with the same status mapping dispatch uses, and canceled requests
