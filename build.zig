@@ -130,13 +130,13 @@ pub fn build(b: *std.Build) void {
     const h2_batch = b.option(
         u32,
         "h2-batch",
-        "Concurrent streams per HTTP/2 benchmark batch (default 8)",
-    ) orelse 8;
+        "Concurrent streams per HTTP/2 benchmark batch (default 32)",
+    ) orelse 32;
     const h2_batch_iterations = b.option(
         u32,
         "h2-batch-iterations",
-        "HTTP/2 benchmark batch iterations (default 8000)",
-    ) orelse 8_000;
+        "HTTP/2 benchmark batch iterations (default 4000)",
+    ) orelse 4_000;
     const h2_bench_options = b.addOptions();
     h2_bench_options.addOption(u32, "batch_size", h2_batch);
     h2_bench_options.addOption(u32, "batch_iterations", h2_batch_iterations);

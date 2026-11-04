@@ -528,14 +528,13 @@ server. On the reference host it reports roughly 8–16 µs per request (about
 and runtime task wakeups, not just application dispatch.
 
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests and
-64k requests in batches of eight concurrent streams. On the reference host the
-sequential path reports roughly 44–46 µs per request (about 22k requests/s)
-and the batched path roughly 36 µs per request (about 28k requests/s). The gap
-against HTTP/1 is dominated by netz's per-stream handler task creation and
-HTTP/2 framing; it is tracked as a netz performance follow-up, not an
-application-layer limit. `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>`
-override the batch shape; `-Dh2-batch=32` reproduces the current netz H2
-concurrent write timeout.
+128k requests in batches of 32 concurrent streams. With netz's pooled concurrent
+handlers, the reference host reports roughly 26 µs per request (about 38k
+requests/s) sequentially and roughly 15 µs per request (about 67k requests/s)
+batched. HTTP/1 keep-alive on the same host is about 16 µs (~61k requests/s);
+H2 batched throughput now exceeds HTTP/1, while the sequential path still pays
+HTTP/2 framing. `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>` override the
+shape.
 
 ## Status
 

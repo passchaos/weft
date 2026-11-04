@@ -183,18 +183,17 @@ server http1: requests=200000 16399.2 ns/request 60979 requests/s
 ```
 
 HTTP/2 cleartext (h2c) throughput on the same host, sequential and batched
-(eight concurrent streams):
+(32 concurrent streams), after netz pooled its concurrent handlers
+(`2adc9c63`):
 
 ```text
-server h2 sequential: requests=100000 45794.3 ns/request 21837 requests/s
-server h2 batched:    requests=64000  35901.2 ns/request 27854 requests/s
+server h2 sequential: requests=100000 25988.7 ns/request 38478 requests/s
+server h2 batched:    requests=128000 14916.4 ns/request 67040 requests/s
 ```
 
-The H2 gap against HTTP/1 is dominated by netz's per-stream handler task
-creation and HTTP/2 framing. A 32-stream batch also exposed occasional
-`Timeout`/`ConnectionResetByPeer` responses in the netz H2 engine; the
-benchmark therefore uses eight streams until that is fixed upstream.
-`-Dh2-batch=32` reproduces that path without editing the benchmark source.
+H2 batched throughput now exceeds HTTP/1 keep-alive; the sequential path still
+pays HTTP/2 framing. `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>` override
+the benchmark shape.
 
 ## Remaining gaps
 
