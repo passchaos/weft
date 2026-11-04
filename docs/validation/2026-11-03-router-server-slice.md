@@ -134,6 +134,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   concurrent write and request-body paths.
 - All three server adapters bound per-request allocations with the same
   `max_request_arena_bytes` fixed budget.
+- `RouteOptions.max_body_bytes` adds a per-route body budget: buffered bodies
+  above it are rejected with `413` before dispatch, and streaming readers are
+  wrapped so `Ctx.bodyReader()`/`Ctx.readBody()` stop at the route limit.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both
   adapters.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part

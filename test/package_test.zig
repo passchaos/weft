@@ -1450,6 +1450,16 @@ test "package: streaming request bodies reach handlers incrementally" {
         StreamHandlers.rejectUpload,
         .{ .streaming = true },
     );
+    try router.post(
+        "/upload-limited",
+        StreamHandlers.uploadRoute,
+        .{ .streaming = true, .max_body_bytes = 4096 },
+    );
+    try router.post(
+        "/upload-limited-buffered",
+        StreamHandlers.readBodyRoute,
+        .{ .max_body_bytes = 4096 },
+    );
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -1522,6 +1532,79 @@ test "package: streaming request bodies reach handlers incrementally" {
     defer reject_response.deinit(allocator);
     try std.testing.expectEqual(@as(u16, 413), reject_response.response.status);
     try std.testing.expectEqualStrings("too large", reject_response.response.body);
+
+    const small_body = try allocator.alloc(u8, 1024);
+    defer allocator.free(small_body);
+    @memset(small_body, 'y');
+
+    const limited_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload-limited",
+        .{base},
+    );
+    defer allocator.free(limited_uri);
+    var limited_ok = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        limited_uri,
+        .{ .method = .POST, .body = small_body },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer limited_ok.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), limited_ok.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":1024}",
+        limited_ok.response.body,
+    );
+
+    var limited_reject = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        limited_uri,
+        .{ .method = .POST, .body = body },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer limited_reject.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 413),
+        limited_reject.response.status,
+    );
+
+    const limited_buffered_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload-limited-buffered",
+        .{base},
+    );
+    defer allocator.free(limited_buffered_uri);
+    var limited_buffered_ok = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        limited_buffered_uri,
+        .{ .method = .POST, .body = small_body },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer limited_buffered_ok.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        limited_buffered_ok.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":1024}",
+        limited_buffered_ok.response.body,
+    );
+
+    var limited_buffered_reject = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        limited_buffered_uri,
+        .{ .method = .POST, .body = body },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer limited_buffered_reject.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 413),
+        limited_buffered_reject.response.status,
+    );
 
     server.stop();
     try group.await(io);

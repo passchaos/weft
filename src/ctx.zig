@@ -60,6 +60,20 @@ pub const H3StreamReader = struct {
     }
 };
 
+/// Per-route body budget wrapper. Returns `error.PayloadTooLarge` before
+/// handing out a chunk that would exceed the route's limit.
+pub const LimitedReader = struct {
+    inner: BodyReader,
+    remaining: usize,
+
+    pub fn next(self: *LimitedReader) !?[]const u8 {
+        const chunk = (try self.inner.next()) orelse return null;
+        if (chunk.len > self.remaining) return error.PayloadTooLarge;
+        self.remaining -= chunk.len;
+        return chunk;
+    }
+};
+
 /// Incremental request-body source. HTTP/1 uses netz's pull reader, HTTP/2
 /// pulls from a duplex/concurrent stream, and HTTP/3 pulls from the concurrent
 /// stream engine (or replays a buffered body on the legacy adapter).
@@ -69,6 +83,7 @@ pub const BodyReader = union(enum) {
     h2_stream: *H2StreamReader,
     h3_stream: *H3StreamReader,
     replay: *ReplayReader,
+    limited: *LimitedReader,
 
     pub fn next(self: BodyReader) !?[]const u8 {
         return switch (self) {
@@ -77,6 +92,7 @@ pub const BodyReader = union(enum) {
             .h2_stream => |reader| reader.next(),
             .h3_stream => |reader| reader.next(),
             .replay => |reader| reader.next(),
+            .limited => |reader| reader.next(),
         };
     }
 };
@@ -348,6 +364,12 @@ pub const Ctx = struct {
                     if (h3_stream.stream.trailers()) |fields| {
                         self.cached_trailers = self.copyTrailers(fields);
                     }
+                },
+                .limited => |limited| {
+                    // Unwrap the per-route budget wrapper; trailers belong to
+                    // the underlying transport reader.
+                    self.body_reader = limited.inner;
+                    return self.trailers();
                 },
                 else => {},
             }

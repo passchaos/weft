@@ -22,6 +22,11 @@ pub const RouteOptions = struct {
     /// routes must consume or ignore the reader; the server drains any
     /// remainder before writing the response.
     streaming: bool = false,
+    /// Optional per-route request-body budget. Null inherits
+    /// `Limits.max_body_bytes`. A smaller value rejects buffered bodies with
+    /// `413` and bounds streaming reads through `Ctx.bodyReader()` and
+    /// `Ctx.readBody()`.
+    max_body_bytes: ?usize = null,
 };
 
 pub const GroupOptions = struct {
@@ -37,6 +42,8 @@ pub const Route = struct {
     middleware: []const Handler,
     /// True when the server should stream the request body to the handler.
     streaming: bool = false,
+    /// Optional per-route body budget; null inherits the server limit.
+    max_body_bytes: ?usize = null,
     /// Segment weights used for diagnostics and tie-breaking documentation.
     /// Matching itself walks the trie, where precedence is structural.
     specificity: u32,
@@ -204,6 +211,7 @@ pub fn Router(comptime H: type) type {
                     .{
                         .middleware = combined_middleware,
                         .streaming = route_options.streaming,
+                        .max_body_bytes = route_options.max_body_bytes,
                     },
                 );
             }
@@ -441,6 +449,7 @@ pub fn Router(comptime H: type) type {
                 .handler = handler,
                 .middleware = middleware_copy,
                 .streaming = route_options.streaming,
+                .max_body_bytes = route_options.max_body_bytes,
                 .specificity = computeSpecificity(pattern),
                 .capture_count = info.captures,
             };

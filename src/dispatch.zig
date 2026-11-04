@@ -77,6 +77,7 @@ pub fn dispatch(
     var query_params: []const query_mod.Pair = &.{};
     var params: []const ctx_mod.Param = &.{};
     var route_middleware: []const ctx_mod.Handler = &.{};
+    var route_max_body: ?usize = null;
     var final_handler: ctx_mod.Handler = ctx_mod.handler(respondDisposition);
 
     const parsed_query = query_mod.parse(
@@ -95,6 +96,7 @@ pub fn dispatch(
                 if (decodeParams(arena, matched.params) catch null) |decoded| {
                     params = decoded;
                     route_middleware = matched.route.middleware;
+                    route_max_body = matched.route.max_body_bytes;
                     final_handler = matched.route.handler;
                 } else {
                     disposition = .bad_request;
@@ -113,6 +115,31 @@ pub fn dispatch(
 
     if (disposition) |value| {
         final_handler = fallbackHandler(fallbacks, value);
+    }
+
+    var effective_limits = limits;
+    if (route_max_body) |route_limit| {
+        effective_limits.max_body_bytes = route_limit;
+        if (disposition == null and request.body.len > route_limit) {
+            // A buffered body was already read under the server-wide limit;
+            // reject it before any handler sees it.
+            disposition = .bad_request;
+            final_handler = ctx_mod.handler(respondPayloadTooLarge);
+        }
+    }
+
+    var effective_reader = body_reader;
+    if (disposition == null) {
+        if (effective_reader) |reader| {
+            if (effective_limits.max_body_bytes < limits.max_body_bytes) {
+                const limited = try arena.create(ctx_mod.LimitedReader);
+                limited.* = .{
+                    .inner = reader,
+                    .remaining = effective_limits.max_body_bytes,
+                };
+                effective_reader = .{ .limited = limited };
+            }
+        }
     }
 
     var middleware = app_middleware;
@@ -140,15 +167,18 @@ pub fn dispatch(
         .io = io,
         .arena = arena,
         .request_allocator = request_allocator,
-        .limits = limits,
+        .limits = effective_limits,
         .request = request,
-        .body_reader = body_reader,
+        .body_reader = effective_reader,
         .client_info = client_info,
         .request_deadline = request_deadline,
         .query = query,
         .query_params = query_params,
         .params = params,
-        .response = response_mod.Response.initWithLimits(arena, limits),
+        .response = response_mod.Response.initWithLimits(
+            arena,
+            effective_limits,
+        ),
         .middleware = middleware,
         .final_handler = final_handler,
     };
@@ -222,6 +252,11 @@ fn fallbackHandler(
             ctx_mod.handler(respondDisposition),
         .options_star => ctx_mod.handler(respondDisposition),
     };
+}
+
+fn respondPayloadTooLarge(ctx: *ctx_mod.Ctx) anyerror!void {
+    ctx.setStatus(413);
+    try ctx.text("Payload Too Large");
 }
 
 fn respondDisposition(ctx: *ctx_mod.Ctx) anyerror!void {

@@ -195,6 +195,10 @@ try router.post("/upload", upload, .{ .streaming = true });
   needed.
 - Bytes the handler does not read are drained before the response is written,
   keeping the connection reusable.
+- `RouteOptions.max_body_bytes` sets a per-route body budget below the server
+  limit. A buffered body above it is rejected with `413` before the handler
+  runs; streaming reads return `413` through `Ctx.bodyReader()` and
+  `Ctx.readBody()`.
 
 ## TLS
 
