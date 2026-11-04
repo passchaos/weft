@@ -3560,6 +3560,7 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
             .address = .{ .ip4 = .loopback(0) },
             .limits = .{
                 .max_head_bytes = 4096,
+                .max_request_target_bytes = 32,
                 .max_body_bytes = 512 * 1024,
                 .max_request_arena_bytes = 64 * 1024,
                 .max_response_bytes = 64 * 1024,
@@ -3643,6 +3644,21 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try std.testing.expectEqualStrings(
         "{\"message\":\"hello\",\"name\":\"weft\"}",
         hello_response.response.body,
+    );
+
+    // HTTP/3 must apply the same request-target budget as HTTP/1.
+    var long_path: [64]u8 = undefined;
+    @memset(&long_path, 'a');
+    long_path[0] = '/';
+    var long_target_response = try client.request(.{
+        .method = "GET",
+        .path = &long_path,
+        .authority = "localhost",
+    });
+    defer long_target_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 414),
+        long_target_response.response.status,
     );
 
     const upload_body = try allocator.alloc(u8, 2048);
@@ -5141,4 +5157,61 @@ test "package: HTTP/2 server requires exactly one listen address" {
             .{},
         ),
     );
+}
+
+test "package: HTTP/2 rejects an over-long request target" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Http2Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_request_target_bytes = 32,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .max_http2_concurrent_streams = 4,
+            },
+            .max_connections = 1,
+            .max_concurrent_handlers = 4,
+            .accept_timeout = .fromMilliseconds(100),
+            .idle_timeout = .fromMilliseconds(500),
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp2Server, .{&server});
+
+    var client = try netz.http2.runtime.Client.connect(
+        allocator,
+        io,
+        server.address(),
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer client.close();
+
+    var long_path: [64]u8 = undefined;
+    @memset(&long_path, 'a');
+    long_path[0] = '/';
+    var response = try client.request(.{
+        .method = "GET",
+        .path = &long_path,
+        .authority = "localhost",
+    });
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 414), response.status);
+
+    server.stop();
+    try group.await(io);
 }

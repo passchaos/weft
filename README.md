@@ -542,6 +542,11 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 
 `weft.Limits` maps Netz's HTTP/1 limits and adds weft-owned budgets:
 
+- `max_head_bytes`, `max_request_headers`, and `max_request_target_bytes`
+  bound the request head, field count, and target on every adapter. HTTP/1 and
+  HTTP/2 enforce them in Netz; the HTTP/3 adapter additionally checks the
+  non-pseudo field count, QPACK field-section size, and target length before
+  converting headers. Over-budget requests receive `431` or `414`.
 - `max_request_arena_bytes` bounds per-request headers, bodies, params,
   decoded query values, response headers, and middleware locals. HTTP/1,
   HTTP/2, and HTTP/3 adapters all enforce it with a fixed arena.
@@ -559,8 +564,8 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
   bodies to a handler task; the protocol layer still enforces
   `max_body_bytes` on the total body.
 - `max_http2_concurrent_streams` bounds simultaneously open HTTP/2 request
-  streams per connection (default 16), limiting buffered DATA while a
-  connection is processed serially.
+  streams per connection (default 16), limiting buffered DATA and concurrent
+  handler tasks.
 - `max_http2_frame_payload` bounds the local HTTP/2 frame payload allocation
   ceiling (default 1 MiB).
 - `request_timeout` optionally races the handler/middleware chain against a

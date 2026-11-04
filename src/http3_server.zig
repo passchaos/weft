@@ -335,6 +335,44 @@ pub fn Http3Server(comptime H: type) type {
                 return;
             };
             const target = if (head.path.len == 0) "/" else head.path;
+            if (target.len > self.options.limits.max_request_target_bytes) {
+                return self.rejectConcurrent(
+                    stream,
+                    head.method,
+                    414,
+                    "URI Too Long",
+                    arena,
+                );
+            }
+            // Netz's HTTP/3 limits bound the reassembled stream, not the field
+            // count or QPACK field-section size, so enforce the same budgets
+            // the HTTP/1 and HTTP/2 adapters apply.
+            var field_count: usize = 0;
+            var field_bytes: usize = 0;
+            for (head.headers) |field| {
+                if (isPseudoHeader(field.name)) continue;
+                field_count += 1;
+                field_bytes = field_bytes +| field.name.len +|
+                    field.value.len +| 32;
+            }
+            if (head.authority) |authority| {
+                if (findHeader(head.headers, "host") == null) {
+                    field_count += 1;
+                    field_bytes = field_bytes +| "host".len +|
+                        authority.len +| 32;
+                }
+            }
+            if (field_count > self.options.limits.max_request_headers or
+                field_bytes > self.options.limits.max_head_bytes)
+            {
+                return self.rejectConcurrent(
+                    stream,
+                    head.method,
+                    431,
+                    "Request Header Fields Too Large",
+                    arena,
+                );
+            }
             const headers = convertH3HeadHeaders(
                 arena,
                 head.headers,
@@ -480,6 +518,22 @@ pub fn Http3Server(comptime H: type) type {
                 self.allocator,
                 body_reader,
             );
+        }
+
+        /// Answer a request that exceeded an adapter budget without running
+        /// the router.
+        fn rejectConcurrent(
+            self: *@This(),
+            stream: *ConcurrentStream,
+            method: []const u8,
+            status: u16,
+            message: []const u8,
+            arena: std.mem.Allocator,
+        ) !void {
+            var response = Response.initWithLimits(arena, self.options.limits);
+            response.setStatus(status);
+            response.text(message) catch {};
+            return self.respondConcurrent(stream, method, &response, arena);
         }
 
         fn respondConcurrent(

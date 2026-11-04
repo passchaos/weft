@@ -391,6 +391,15 @@ pub fn Http2Server(comptime H: type) type {
                 return;
             };
             const target = if (head.path.len == 0) "/" else head.path;
+            if (target.len > self.options.limits.max_request_target_bytes) {
+                return self.rejectConcurrent(
+                    stream,
+                    head.method,
+                    414,
+                    "URI Too Long",
+                    arena,
+                );
+            }
             const headers = convertH2Headers(
                 arena,
                 head.headers,
@@ -469,6 +478,22 @@ pub fn Http2Server(comptime H: type) type {
                 }
                 stream.reset(.internal_error) catch {};
             };
+        }
+
+        /// Answer a request that exceeded an adapter budget without running
+        /// the router.
+        fn rejectConcurrent(
+            self: *@This(),
+            stream: *ConcurrentStream,
+            method: []const u8,
+            status: u16,
+            message: []const u8,
+            arena: std.mem.Allocator,
+        ) !void {
+            var response = Response.initWithLimits(arena, self.options.limits);
+            response.setStatus(status);
+            response.text(message) catch {};
+            return self.respondConcurrent(stream, method, &response, arena);
         }
 
         fn respondConcurrent(

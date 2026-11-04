@@ -2,8 +2,8 @@
 
 Scope: verify the current tree against the repository constraints in
 `AGENTS.md`, the feature list in `README.md`, and the measured performance
-claims. Everything below is backed by files or commands in this checkout at
-`9df1a32`; the full test suite is 147/147 in Debug and ReleaseFast.
+claims. Everything below is backed by files or commands in this checkout;
+the full test suite is 148/148 in Debug and ReleaseFast.
 
 ## 1. Repository constraints
 
@@ -27,6 +27,9 @@ claims. Everything below is backed by files or commands in this checkout at
 - HTTP/1 protocol-error responses (`400/408/413/414/431`) are written through
   `Connection.respondAndClose`, which permits one final write after a failed
   read, then half-closes and drains within a 250 ms budget.
+- Request-head budgets (`max_head_bytes`, `max_request_headers`,
+  `max_request_target_bytes`) are enforced on all adapters; HTTP/3 also checks
+  the decoded QPACK field-section size before header conversion.
 - Incremental request bodies on all three adapters (`.pull`, `.duplex`/
   `.h2_stream`, `.h3_stream`), including per-route body budgets and
   `Content-Encoding` decoding via `Ctx.decodedReader()`.
@@ -65,8 +68,8 @@ zig build bench-static -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 147/147 (101 unit, 46 package/integration).
-- ReleaseFast: 147/147.
+- Debug: 148/148 (101 unit, 47 package/integration).
+- ReleaseFast: 148/148.
 - Examples build; `run-hello` and `run-upload` complete their request
   sequences (streaming upload, streaming multipart, SSE, Prometheus).
 - Parser totality tests feed deterministic random bytes to the query,
