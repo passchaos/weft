@@ -2668,43 +2668,29 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         ) != null);
     }
 
-    const upload_batch_requests = [_]netz.http2.runtime.RequestOptions{
-        .{
+    var upload_batch_requests: [32]netz.http2.runtime.RequestOptions = undefined;
+    for (&upload_batch_requests) |*request| {
+        request.* = .{
             .method = "POST",
             .path = "/upload",
             .authority = "localhost",
             .body = upload_body,
-        },
-        .{
-            .method = "POST",
-            .path = "/upload",
-            .authority = "localhost",
-            .body = upload_body,
-        },
-    };
-    var upload_batch_responses: [2]netz.http2.runtime.OwnedResponse = undefined;
+        };
+    }
+    var upload_batch_responses: [32]netz.http2.runtime.OwnedResponse = undefined;
     try batch_client.requestBodyBatchInto(
         &upload_batch_requests,
         4096,
         &upload_batch_responses,
     );
     defer for (&upload_batch_responses) |*response| response.deinit(allocator);
-    try std.testing.expectEqual(
-        @as(u16, 200),
-        upload_batch_responses[0].status,
-    );
-    try std.testing.expectEqual(
-        @as(u16, 200),
-        upload_batch_responses[1].status,
-    );
-    try std.testing.expectEqualStrings(
-        "{\"bytes\":2048}",
-        upload_batch_responses[0].body,
-    );
-    try std.testing.expectEqualStrings(
-        "{\"bytes\":2048}",
-        upload_batch_responses[1].body,
-    );
+    for (&upload_batch_responses) |*response| {
+        try std.testing.expectEqual(@as(u16, 200), response.status);
+        try std.testing.expectEqualStrings(
+            "{\"bytes\":2048}",
+            response.body,
+        );
+    }
 
     const upload_trailer_headers = [_]netz.http2.Hpack.HeaderField{.{
         .name = "x-checksum",

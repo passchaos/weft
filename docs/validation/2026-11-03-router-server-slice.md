@@ -126,7 +126,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   All requests run in up to `max_concurrent_handlers` tasks; handlers pull
   DATA from bounded per-stream buffers while the connection owner serializes
   frame, HPACK, write, and response state. The package test issues a
-  32-stream batch to cover the concurrent write path.
+  32-stream GET batch and a 32-stream POST upload batch to cover the
+  concurrent write and request-body paths.
 - All three server adapters bound per-request allocations with the same
   `max_request_arena_bytes` fixed budget.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both
