@@ -63,6 +63,7 @@ pub const Compress = struct {
                         .allocator = ctx.arena,
                         .original = body,
                         .level = self.level,
+                        .max_chunk_bytes = ctx.limits.max_response_bytes,
                     };
                     response.setHeader(
                         "Content-Encoding",
@@ -332,6 +333,9 @@ const StreamCompress = struct {
     allocator: std.mem.Allocator,
     original: stream_mod.Body,
     level: flate.Compress.Options,
+    /// Bound for one producer chunk; the compressed copy is allocated before
+    /// the transport writer sees the response budget.
+    max_chunk_bytes: usize,
 
     fn run(raw: ?*anyopaque, output: *stream_mod.Writer) anyerror!void {
         const self: *StreamCompress = @ptrCast(@alignCast(raw orelse
@@ -340,6 +344,7 @@ const StreamCompress = struct {
             .allocator = self.allocator,
             .output = output,
             .level = self.level,
+            .max_chunk_bytes = self.max_chunk_bytes,
         };
         var writer = stream_mod.Writer{
             .context = &chunk,
@@ -359,10 +364,12 @@ const ChunkCompress = struct {
     allocator: std.mem.Allocator,
     output: *stream_mod.Writer,
     level: flate.Compress.Options,
+    max_chunk_bytes: usize,
 
     fn writeChunk(raw: ?*anyopaque, data: []const u8) anyerror!void {
         const self: *ChunkCompress = @ptrCast(@alignCast(raw orelse
             return error.InvalidWriterState));
+        if (data.len > self.max_chunk_bytes) return error.ResponseTooLarge;
         const compressed = try compressBody(
             self.allocator,
             data,
@@ -1124,6 +1131,68 @@ fn expectStreamCoding(
     );
     try std.testing.expectEqual(@as(usize, 4096), decoded.bytes.len);
     for (decoded.bytes) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
+}
+
+test "compress middleware bounds one streamed chunk" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const Producer = struct {
+        fn run(_: ?*anyopaque, writer: *stream_mod.Writer) anyerror!void {
+            try writer.write("0123456789abcdef");
+        }
+    };
+    const Collector = struct {
+        bytes: std.ArrayListUnmanaged(u8) = .empty,
+
+        fn write(raw: ?*anyopaque, data: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            try self.bytes.appendSlice(allocator, data);
+        }
+    };
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "gzip",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 0 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{ .max_response_bytes = 8 },
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.setHeader("Content-Type", "text/plain");
+                try ctx.stream(.{ .write_fn = Producer.run });
+            }
+        }.handle),
+    };
+
+    try context.run();
+    var collector = Collector{};
+    defer collector.bytes.deinit(allocator);
+    var writer = stream_mod.Writer{
+        .context = &collector,
+        .write_fn = Collector.write,
+    };
+    try std.testing.expectError(
+        error.ResponseTooLarge,
+        context.response.stream.?.run(&writer),
+    );
+    try std.testing.expectEqual(@as(usize, 0), collector.bytes.items.len);
 }
 
 test "compress middleware wraps streamed bodies with deflate" {

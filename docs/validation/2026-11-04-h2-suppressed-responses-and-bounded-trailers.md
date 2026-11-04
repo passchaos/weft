@@ -151,6 +151,17 @@ the two accessors stay coherent.
 
 Unit test: `body returns the cached streaming body` in `src/ctx.zig`.
 
+## Streamed compression chunk bound
+
+Streamed gzip compression copied each producer chunk into a fresh compressed
+allocation before the transport writer enforced `max_response_bytes`. A
+producer that wrote a chunk larger than the response budget could therefore
+cause an oversized intermediate allocation. `ChunkCompress` now rejects such a
+chunk with `error.ResponseTooLarge` before compressing it.
+
+Unit test: `compress middleware bounds one streamed chunk` in
+`src/middleware/compress.zig`.
+
 ## Verification
 
 ```sh
@@ -159,4 +170,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 161/161 tests in Debug and ReleaseFast (109 unit, 52 package).
+Results: 162/162 tests in Debug and ReleaseFast (110 unit, 52 package).
