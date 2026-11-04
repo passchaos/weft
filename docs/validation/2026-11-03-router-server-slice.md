@@ -182,6 +182,7 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build examples
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
+zig build bench-middleware -Doptimize=ReleaseFast
 zig build bench-h2 -Doptimize=ReleaseFast
 zig build bench-h3 -Doptimize=ReleaseFast
 ```
@@ -201,6 +202,20 @@ router param:  routes=256  lookups=1000000 111.8 ns/lookup 8941462 lookups/s
 The benchmark includes capture-array allocation from a fixed arena for the
 parameter case. Numbers are indicative of this host, not a cross-machine
 guarantee.
+
+Application-layer middleware overhead (fixed arena, no I/O):
+
+```text
+baseline (handler only):  75.3 ns/request
+requestId:               195.8 ns/request
+Metrics:                 141.4 ns/request
+Etag:                    151.9 ns/request
+Compress:                 96.4 ns/request
+all four combined:       322.0 ns/request
+```
+
+`requestId` now seeds a per-thread PRNG once instead of calling
+`randomSecure` per request (504.5 → 195.8 ns).
 
 HTTP/1 keep-alive server throughput on the same host:
 

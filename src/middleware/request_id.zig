@@ -28,9 +28,21 @@ pub fn from(ctx: *ctx_mod.Ctx) ?[]const u8 {
     return id.value;
 }
 
+/// Per-thread PRNG. Seeding is the only secure-random syscall; ids themselves
+/// only need to be unique, so a fast PRNG keeps the hot path allocation- and
+/// syscall-free.
+threadlocal var generator: ?std.Random.DefaultPrng = null;
+
 fn generate(ctx: *ctx_mod.Ctx) ![]const u8 {
+    if (generator == null) {
+        var seed: [8]u8 = undefined;
+        try std.Io.randomSecure(ctx.io, &seed);
+        generator = std.Random.DefaultPrng.init(
+            std.mem.readInt(u64, &seed, .little),
+        );
+    }
     var bytes: [16]u8 = undefined;
-    try std.Io.randomSecure(ctx.io, &bytes);
+    generator.?.random().bytes(&bytes);
     const hex = std.fmt.bytesToHex(bytes, .lower);
     return ctx.arena.dupe(u8, &hex);
 }

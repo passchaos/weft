@@ -161,6 +161,25 @@ pub fn build(b: *std.Build) void {
     );
     bench_h2_step.dependOn(&run_h2_benchmark.step);
 
+    const middleware_benchmark = b.addExecutable(.{
+        .name = "middleware-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/middleware.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    const run_middleware_benchmark = b.addRunArtifact(middleware_benchmark);
+    const bench_middleware_step = b.step(
+        "bench-middleware",
+        "Run the middleware-chain overhead benchmark",
+    );
+    bench_middleware_step.dependOn(&run_middleware_benchmark.step);
+
     const h3_batch = b.option(
         u32,
         "h3-batch",

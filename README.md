@@ -544,6 +544,7 @@ zig build test
 zig build run-hello
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
+zig build bench-middleware -Doptimize=ReleaseFast
 zig build bench-h2 -Doptimize=ReleaseFast
 ```
 
@@ -551,6 +552,21 @@ The router benchmark registers 1024 static routes and 256 parameter routes.
 On the reference development host, ReleaseFast runs range from roughly 80–140
 ns per lookup (about 7M–12M lookups per second) depending on host load,
 including capture allocation from a fixed arena.
+
+`bench-middleware` measures the application-layer chain with a fixed arena and
+no I/O, isolating weft's overhead from netz framing:
+
+```text
+middleware baseline (handler only):            75 ns/request
+middleware requestId:                         196 ns/request
+middleware Metrics:                           141 ns/request
+middleware Etag:                              152 ns/request
+middleware Compress:                           96 ns/request
+middleware requestId+Metrics+Etag+Compress:   322 ns/request
+```
+
+`requestId` seeds a per-thread PRNG once and then generates ids without a
+syscall, which cut its cost from ~505 ns to ~196 ns.
 
 `bench-server` measures one keep-alive HTTP/1 client against a one-worker
 server. On the reference host it reports roughly 8–16 µs per request (about
