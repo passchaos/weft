@@ -192,6 +192,7 @@ The H2 gap against HTTP/1 is dominated by netz's per-stream handler task
 creation and HTTP/2 framing. A 32-stream batch also exposed occasional
 `Timeout`/`ConnectionResetByPeer` responses in the netz H2 engine; the
 benchmark therefore uses eight streams until that is fixed upstream.
+`-Dh2-batch=32` reproduces that path without editing the benchmark source.
 
 ## Remaining gaps
 

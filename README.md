@@ -533,7 +533,9 @@ sequential path reports roughly 44–46 µs per request (about 22k requests/s)
 and the batched path roughly 36 µs per request (about 28k requests/s). The gap
 against HTTP/1 is dominated by netz's per-stream handler task creation and
 HTTP/2 framing; it is tracked as a netz performance follow-up, not an
-application-layer limit.
+application-layer limit. `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>`
+override the batch shape; `-Dh2-batch=32` reproduces the current netz H2
+concurrent write timeout.
 
 ## Status
 

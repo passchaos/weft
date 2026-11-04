@@ -127,6 +127,20 @@ pub fn build(b: *std.Build) void {
     );
     bench_server_step.dependOn(&run_server_benchmark.step);
 
+    const h2_batch = b.option(
+        u32,
+        "h2-batch",
+        "Concurrent streams per HTTP/2 benchmark batch (default 8)",
+    ) orelse 8;
+    const h2_batch_iterations = b.option(
+        u32,
+        "h2-batch-iterations",
+        "HTTP/2 benchmark batch iterations (default 8000)",
+    ) orelse 8_000;
+    const h2_bench_options = b.addOptions();
+    h2_bench_options.addOption(u32, "batch_size", h2_batch);
+    h2_bench_options.addOption(u32, "batch_iterations", h2_batch_iterations);
+
     const h2_benchmark = b.addExecutable(.{
         .name = "h2-server-bench",
         .root_module = b.createModule(.{
@@ -136,6 +150,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "weft", .module = weft_mod },
                 .{ .name = "netz", .module = netz_mod },
+                .{ .name = "build_options", .module = h2_bench_options.createModule() },
             },
         }),
     });

@@ -1,6 +1,7 @@
 const std = @import("std");
 const netz = @import("netz");
 const weft = @import("weft");
+const build_options = @import("build_options");
 
 const App = struct {};
 
@@ -22,8 +23,8 @@ fn serveServer(server: *weft.Http2Server(App)) std.Io.Cancelable!void {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const sequential_iterations: usize = 100_000;
-    const batch_size: usize = 8;
-    const batch_iterations: usize = 8_000;
+    const batch_size: usize = build_options.batch_size;
+    const batch_iterations: usize = build_options.batch_iterations;
 
     var backend = try netz.runtime.Backend.init(allocator);
     defer backend.deinit();
