@@ -206,7 +206,7 @@ fn findDelimiter(
     return null;
 }
 
-fn boundaryFromContentType(
+pub fn boundaryFromContentType(
     allocator: std.mem.Allocator,
     content_type: []const u8,
 ) ![]const u8 {
@@ -247,7 +247,7 @@ fn boundaryFromContentType(
     return error.MissingBoundary;
 }
 
-fn parseDisposition(
+pub fn parseDisposition(
     allocator: std.mem.Allocator,
     value: []const u8,
     name: *?[]const u8,

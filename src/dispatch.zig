@@ -309,13 +309,22 @@ fn decodeParams(
 }
 
 fn applyHandlerError(context: *ctx_mod.Ctx, err: anyerror) void {
-    std.log.scoped(.weft).warn(
-        "handler failed: {s}",
-        .{@errorName(err)},
-    );
     // Nothing has reached the wire yet, so a failed handler can always be
     // replaced with a clean response.
     const status = errors_mod.statusForHandlerError(err);
+    // Client errors such as a per-route body budget are expected outcomes;
+    // only server-side failures deserve a warning.
+    if (status >= 500) {
+        std.log.scoped(.weft).warn(
+            "handler failed: {s}",
+            .{@errorName(err)},
+        );
+    } else {
+        std.log.scoped(.weft).debug(
+            "handler rejected: {s}",
+            .{@errorName(err)},
+        );
+    }
     context.response.reset();
     context.response.setStatus(status);
     context.response.text(response_mod.reasonFor(status)) catch {};

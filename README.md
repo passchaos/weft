@@ -109,6 +109,11 @@ pub fn main(init: std.process.Init) !void {
   matched only at line starts so field data containing boundary text is safe.
   Filenames honor RFC 5987 `filename*` (UTF-8 and ISO-8859-1, widened to
   UTF-8) and prefer it over the plain `filename` fallback.
+- `ctx.multipartStream()` parses `multipart/form-data` incrementally from a
+  streaming route. It keeps one fixed window
+  (`Limits.max_streaming_window_bytes`), yields one part at a time with a
+  `DataReader`, and enforces `Limits.max_body_bytes` across the whole body, so
+  large uploads never need to fit in the request arena.
 - `ctx.cookie(name)` reads request cookies, unwrapping RFC 6265 DQUOTE
   values; `ctx.setCookie(...)` appends a validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are

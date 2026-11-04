@@ -690,6 +690,24 @@ const StreamHandlers = struct {
         try ctx.json(.{ .bytes = total });
     }
 
+    fn multipartStreamRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        var stream = try ctx.multipartStream();
+        defer stream.deinit();
+        var field: []const u8 = "";
+        var file_bytes: usize = 0;
+        while (try stream.nextPart()) |part| {
+            var total: usize = 0;
+            while (try part.data.next()) |chunk| total += chunk.len;
+            if (std.mem.eql(u8, part.name, "field")) {
+                field = try ctx.arena.dupe(u8, part.name);
+            } else if (std.mem.eql(u8, part.name, "file")) {
+                file_bytes = total;
+            }
+        }
+        try ctx.json(.{ .field = field, .file_bytes = file_bytes });
+    }
+
     fn readBodyRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
         _ = app;
         const body = try ctx.readBody();
@@ -1427,7 +1445,9 @@ test "package: streaming request bodies reach handlers incrementally" {
             .address = .{ .ip4 = .loopback(0) },
             .limits = .{
                 .max_head_bytes = 4096,
-                .max_body_bytes = 64 * 1024,
+                // The multipart case uploads 200 KiB while the request arena
+                // stays at 64 KiB, proving the parser streams.
+                .max_body_bytes = 512 * 1024,
                 .max_request_arena_bytes = 64 * 1024,
                 .max_response_bytes = 64 * 1024,
                 .max_streaming_window_bytes = 32 * 1024,
@@ -1459,6 +1479,11 @@ test "package: streaming request bodies reach handlers incrementally" {
         "/upload-limited-buffered",
         StreamHandlers.readBodyRoute,
         .{ .max_body_bytes = 4096 },
+    );
+    try router.post(
+        "/upload-multipart-stream",
+        StreamHandlers.multipartStreamRoute,
+        .{ .streaming = true },
     );
 
     var group: std.Io.Group = .init;
@@ -1604,6 +1629,57 @@ test "package: streaming request bodies reach handlers incrementally" {
     try std.testing.expectEqual(
         @as(u16, 413),
         limited_buffered_reject.response.status,
+    );
+
+    const payload = try allocator.alloc(u8, 200 * 1024);
+    defer allocator.free(payload);
+    @memset(payload, 'q');
+    const multipart_body = try std.fmt.allocPrint(
+        allocator,
+        "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"field\"\r\n" ++
+            "\r\n" ++
+            "value\r\n" ++
+            "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"file\"; " ++
+            "filename=\"big.bin\"\r\n" ++
+            "Content-Type: application/octet-stream\r\n" ++
+            "\r\n" ++
+            "{s}\r\n" ++
+            "--weft--\r\n",
+        .{payload},
+    );
+    defer allocator.free(multipart_body);
+
+    const multipart_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload-multipart-stream",
+        .{base},
+    );
+    defer allocator.free(multipart_uri);
+    const multipart_headers = [_]netz.http1.Header{.{
+        .name = "Content-Type",
+        .value = "multipart/form-data; boundary=weft",
+    }};
+    var multipart_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        multipart_uri,
+        .{
+            .method = .POST,
+            .headers = &multipart_headers,
+            .body = multipart_body,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 512 * 1024 },
+    );
+    defer multipart_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        multipart_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"field\":\"field\",\"file_bytes\":204800}",
+        multipart_response.response.body,
     );
 
     server.stop();

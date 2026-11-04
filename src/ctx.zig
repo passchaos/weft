@@ -6,6 +6,7 @@ const query_mod = @import("query.zig");
 const cookie_mod = @import("cookie.zig");
 const stream_mod = @import("stream.zig");
 const multipart_mod = @import("multipart.zig");
+const multipart_stream_mod = @import("multipart_stream.zig");
 const sse_mod = @import("sse.zig");
 const websocket_mod = @import("websocket.zig");
 
@@ -521,6 +522,38 @@ pub const Ctx = struct {
             try self.decodedBody(),
             .{ .max_parts = self.limits.max_multipart_parts },
         );
+    }
+
+    /// Incrementally parse a `multipart/form-data` body from the streaming
+    /// reader. Requires a streaming route; the parser keeps a fixed window
+    /// bounded by `Limits.max_streaming_window_bytes` and enforces
+    /// `Limits.max_body_bytes` across the whole body.
+    pub fn multipartStream(self: *Ctx) !multipart_stream_mod.Stream {
+        const reader = self.body_reader orelse
+            return error.NotStreamingRoute;
+        const content_type = self.header("content-type") orelse
+            return error.UnsupportedMediaType;
+
+        // The source closure needs a stable address; keep the reader copy in
+        // the request arena.
+        const holder = try self.arena.create(BodyReader);
+        holder.* = reader;
+        return multipart_stream_mod.Stream.init(
+            self.arena,
+            .{ .context = holder, .next_fn = bodyReaderNext },
+            content_type,
+            .{
+                .max_parts = self.limits.max_multipart_parts,
+                .max_body_bytes = self.limits.max_body_bytes,
+                .buffer_bytes = self.limits.max_streaming_window_bytes,
+            },
+        );
+    }
+
+    fn bodyReaderNext(raw: ?*anyopaque) anyerror!?[]const u8 {
+        const reader: *BodyReader = @ptrCast(@alignCast(raw orelse
+            return error.InvalidReaderState));
+        return reader.next();
     }
 
     /// Read a request cookie by name. Cookie names are case-sensitive.
