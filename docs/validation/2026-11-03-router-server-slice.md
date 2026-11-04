@@ -147,6 +147,10 @@ processing, decoded request data, and cooperative graceful shutdown.
   the start of the body or after CRLF, so boundary text inside field data is
   not treated as a delimiter. Filenames decode RFC 5987 `filename*` for
   UTF-8 and ISO-8859-1 (widened to UTF-8) and prefer it over `filename`.
+- `Ctx.multipartStream()` parses `multipart/form-data` incrementally over a
+  streaming body reader with a fixed window, one part at a time, and a
+  whole-body budget. The package test streams a 200 KiB file through a 64 KiB
+  request arena and a 32 KiB window.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
   with semaphore-bounded sessions. Each session uses netz's owner-serialized
@@ -174,8 +178,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 111/111 tests passed (78 unit, 33 package/integration).
-- ReleaseFast: 111/111 tests passed.
+- Debug: 115/115 tests passed (82 unit, 33 package/integration).
+- ReleaseFast: 115/115 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
