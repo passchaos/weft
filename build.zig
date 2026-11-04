@@ -126,4 +126,23 @@ pub fn build(b: *std.Build) void {
         "Run the HTTP/1 server throughput benchmark",
     );
     bench_server_step.dependOn(&run_server_benchmark.step);
+
+    const h2_benchmark = b.addExecutable(.{
+        .name = "h2-server-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/h2_server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    const run_h2_benchmark = b.addRunArtifact(h2_benchmark);
+    const bench_h2_step = b.step(
+        "bench-h2",
+        "Run the HTTP/2 sequential and batched throughput benchmark",
+    );
+    bench_h2_step.dependOn(&run_h2_benchmark.step);
 }

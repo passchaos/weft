@@ -179,6 +179,19 @@ HTTP/1 keep-alive server throughput on the same host:
 server http1: requests=200000 16399.2 ns/request 60979 requests/s
 ```
 
+HTTP/2 cleartext (h2c) throughput on the same host, sequential and batched
+(eight concurrent streams):
+
+```text
+server h2 sequential: requests=100000 45794.3 ns/request 21837 requests/s
+server h2 batched:    requests=64000  35901.2 ns/request 27854 requests/s
+```
+
+The H2 gap against HTTP/1 is dominated by netz's per-stream handler task
+creation and HTTP/2 framing. A 32-stream batch also exposed occasional
+`Timeout`/`ConnectionResetByPeer` responses in the netz H2 engine; the
+benchmark therefore uses eight streams until that is fixed upstream.
+
 ## Remaining gaps
 
 - HTTP/3 streaming compression currently covers gzip only; Brotli and zstd

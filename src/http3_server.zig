@@ -281,8 +281,7 @@ pub fn Http3Server(comptime H: type) type {
                     .idle_timeout = self.options.idle_timeout,
                     .shutdown = &context.session_shutdown,
                     .poll_interval = self.options.handler_poll_interval,
-                    .max_buffered_body_bytes =
-                        self.options.limits.max_streaming_window_bytes,
+                    .max_buffered_body_bytes = self.options.limits.max_streaming_window_bytes,
                 },
             ) catch |err| {
                 if (err == error.Canceled) return err;

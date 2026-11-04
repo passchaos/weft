@@ -514,6 +514,7 @@ zig build test
 zig build run-hello
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
+zig build bench-h2 -Doptimize=ReleaseFast
 ```
 
 The router benchmark registers 1024 static routes and 256 parameter routes.
@@ -525,6 +526,14 @@ including capture allocation from a fixed arena.
 server. On the reference host it reports roughly 8–16 µs per request (about
 60k–114k requests/s) depending on host load; this includes Netz HTTP/1 framing
 and runtime task wakeups, not just application dispatch.
+
+`bench-h2` measures one cleartext h2c connection: 100k sequential requests and
+64k requests in batches of eight concurrent streams. On the reference host the
+sequential path reports roughly 44–46 µs per request (about 22k requests/s)
+and the batched path roughly 36 µs per request (about 28k requests/s). The gap
+against HTTP/1 is dominated by netz's per-stream handler task creation and
+HTTP/2 framing; it is tracked as a netz performance follow-up, not an
+application-layer limit.
 
 ## Status
 
