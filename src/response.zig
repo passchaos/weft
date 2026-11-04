@@ -190,6 +190,9 @@ pub const Response = struct {
 
     /// Set the body directly. The slice must remain valid until the response
     /// has been written; the request arena is the normal owner.
+    /// Replace the response body with a borrowed slice. The bytes must outlive
+    /// the response; allocate them in the request arena (or use `json`, which
+    /// owns its allocation).
     pub fn setBody(self: *Response, body: []const u8) !void {
         if (self.stream != null) return error.StreamAlreadySet;
         if (self.upgrade != null) return error.UpgradeAlreadySet;
@@ -208,6 +211,8 @@ pub const Response = struct {
         self.body_owned = false;
     }
 
+    /// Set a text body. Like `setBody`, the slice is borrowed and must outlive
+    /// the response (a literal, arena memory, or `ctx.arena.dupe`).
     pub fn text(self: *Response, body: []const u8) !void {
         if (self.stream != null) return error.StreamAlreadySet;
         if (self.upgrade != null) return error.UpgradeAlreadySet;

@@ -4088,6 +4088,113 @@ test "package: WebSocket negotiates permessage-deflate" {
     try group.await(io);
 }
 
+test "package: metrics endpoint renders Prometheus text" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    const MetricsRoute = struct {
+        metrics: *weft.middleware.Metrics,
+
+        fn handle(self: *@This(), ctx: *weft.Ctx) anyerror!void {
+            var buffer: [2048]u8 = undefined;
+            var writer = std.Io.Writer.fixed(&buffer);
+            try self.metrics.snapshot().writePrometheus(&writer, "weft");
+            try ctx.setHeader(
+                "Content-Type",
+                "text/plain; version=0.0.4; charset=utf-8",
+            );
+            try ctx.text(try ctx.arena.dupe(u8, writer.buffered()));
+        }
+    };
+
+    var counters = weft.middleware.Metrics{};
+    var metrics_route = MetricsRoute{ .metrics = &counters };
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .middleware = &.{counters.handler()},
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/", home, .{});
+    try server.router().addRaw(
+        .GET,
+        "/metrics",
+        weft.withContext(MetricsRoute, &metrics_route, MetricsRoute.handle),
+        .{},
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+
+    const home_uri = try std.fmt.allocPrint(allocator, "{s}/", .{base});
+    defer allocator.free(home_uri);
+    var home_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        home_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer home_response.deinit(allocator);
+
+    const metrics_uri = try std.fmt.allocPrint(allocator, "{s}/metrics", .{base});
+    defer allocator.free(metrics_uri);
+    var metrics_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        metrics_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer metrics_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        metrics_response.response.status,
+    );
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        metrics_response.response.header("content-type").?,
+        "text/plain",
+    ));
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        metrics_response.response.body,
+        "# TYPE weft_requests_total counter",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        metrics_response.response.body,
+        "weft_responses_total{status_class=\"2xx\"}",
+    ) != null);
+
+    server.stop();
+    try group.await(io);
+}
+
 test "package: response header budget failure becomes 500" {
     const allocator = std.testing.allocator;
 

@@ -76,6 +76,11 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
+Response bodies set with `ctx.text`, `ctx.setBody`, or `Response.setBody` are
+borrowed slices: pass a literal or arena memory (for example
+`ctx.arena.dupe(u8, bytes)`), not a stack buffer. `ctx.json` owns its
+allocation.
+
 ## Request API
 
 `Ctx` is a concrete request context; handlers never see protocol framing types.
