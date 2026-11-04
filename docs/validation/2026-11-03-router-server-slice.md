@@ -37,6 +37,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Cooperative shutdown: workers poll accepts, in-flight requests finish, idle
   keep-alive reads are bounded by `request_head_timeout`, and responses carry
   `Connection: close` once shutdown starts.
+- Read errors map to protocol statuses: `431` for oversized/many headers,
+  `414` for an over-long target, `413` for a body over the limit, `408` for a
+  head timeout, and `400` for malformed framing.
 - HTTP/1.0 request versions are mirrored in responses with appropriate
   connection semantics.
 - Middleware: request-id propagation/validation, request-id-aware logging
@@ -204,8 +207,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 141/141 tests passed (100 unit, 41 package/integration).
-- ReleaseFast: 141/141 tests passed.
+- Debug: 142/142 tests passed (101 unit, 41 package/integration).
+- ReleaseFast: 142/142 tests passed.
 - Examples build; `zig build run-hello` and `zig build run-upload` complete
   their request sequences (streaming upload, streaming multipart, SSE, and
   Prometheus output). The upload example keeps `Metrics` behind a pointer

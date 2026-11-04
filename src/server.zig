@@ -768,7 +768,7 @@ fn internalErrorResponse(
     return response;
 }
 
-fn statusForReadError(err: anyerror) ?u16 {
+pub fn statusForReadError(err: anyerror) ?u16 {
     if (err == error.HeadersTooLarge or err == error.TooManyHeaders) {
         return 431;
     }
@@ -793,4 +793,31 @@ fn statusForReadError(err: anyerror) ?u16 {
         return 400;
     }
     return null;
+}
+
+test "read errors map to their protocol statuses" {
+    try std.testing.expectEqual(@as(?u16, 431), statusForReadError(
+        error.HeadersTooLarge,
+    ));
+    try std.testing.expectEqual(@as(?u16, 431), statusForReadError(
+        error.TooManyHeaders,
+    ));
+    try std.testing.expectEqual(@as(?u16, 414), statusForReadError(
+        error.UriTooLong,
+    ));
+    try std.testing.expectEqual(@as(?u16, 413), statusForReadError(
+        error.BodyTooLarge,
+    ));
+    try std.testing.expectEqual(@as(?u16, 408), statusForReadError(
+        error.Timeout,
+    ));
+    try std.testing.expectEqual(@as(?u16, 400), statusForReadError(
+        error.MalformedHeader,
+    ));
+    try std.testing.expectEqual(@as(?u16, 400), statusForReadError(
+        error.ConflictingContentLength,
+    ));
+    try std.testing.expectEqual(@as(?u16, null), statusForReadError(
+        error.ConnectionClosed,
+    ));
 }

@@ -102,6 +102,8 @@ escaped queries decode into a single buffer.
 - `ctx.accepts(media_type)` and `ctx.preferredType(candidates)` implement
   `Accept` negotiation (wildcards, q-values, and the most-specific-range rule,
   so `text/*;q=0, */*;q=1` still rejects `text/html`).
+- Malformed or oversized request heads map to `400`, `431`, `414`, `413`, or
+  `408` before any handler runs.
 - `ctx.protocol()`, `ctx.clientAddress()`, `ctx.isTls()`, and
   `ctx.peerCertificates()` expose adapter metadata such as HTTP version, peer
   address, transport security, and the verified mTLS client chain (leaf
