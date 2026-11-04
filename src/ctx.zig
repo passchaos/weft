@@ -422,6 +422,9 @@ pub const Ctx = struct {
     }
 
     pub fn body(self: *const Ctx) []const u8 {
+        // After `readBody` a streaming request is buffered in the arena; keep
+        // `body()` coherent with the bytes the handler has already consumed.
+        if (self.cached_body) |cached| return cached;
         return self.request.body;
     }
 
@@ -1110,6 +1113,38 @@ test "readBody maps arena exhaustion to PayloadTooLarge" {
     };
 
     try std.testing.expectError(error.PayloadTooLarge, context.readBody());
+}
+
+test "body returns the cached streaming body" {
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var replay = ReplayReader{ .body = "hello" };
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .body_reader = .{ .replay = &replay },
+        .response = Response.init(arena.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectEqualStrings("", context.body());
+    try std.testing.expectEqualStrings("hello", try context.readBody());
+    try std.testing.expectEqualStrings("hello", context.body());
 }
 
 test "client address honors a trusted forwarded-for header" {

@@ -142,6 +142,15 @@ empty form for a closing delimiter with no parts.
 
 Unit test: `multipart accepts an empty form` in `src/multipart.zig`.
 
+## Cached streaming body
+
+`Ctx.readBody()` caches a streaming request body in the arena, but `Ctx.body()`
+still returned only the adapter-provided `request.body` slice. `body()` now
+returns the cached bytes when `readBody()` has already consumed the stream, so
+the two accessors stay coherent.
+
+Unit test: `body returns the cached streaming body` in `src/ctx.zig`.
+
 ## Verification
 
 ```sh
@@ -150,4 +159,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 160/160 tests in Debug and ReleaseFast (108 unit, 52 package).
+Results: 161/161 tests in Debug and ReleaseFast (109 unit, 52 package).
