@@ -41,6 +41,12 @@ fn websocketRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
     try ctx.upgradeWebSocket(.{ .run_fn = websocketEcho });
 }
 
+fn clientAddressText(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    const address = ctx.clientAddress() orelse return ctx.text("none");
+    try ctx.text(try std.fmt.allocPrint(ctx.arena, "{f}", .{address}));
+}
+
 fn deadlineInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     try ctx.json(.{
@@ -1426,6 +1432,80 @@ test "package: HTTP/1 response trailers honor TE" {
         "abc",
         buffered_trailer_response.response.body,
     );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: trusted forwarded-for overrides the peer address" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 4096,
+                .trust_forwarded_for = true,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/peer", clientAddressText, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/peer",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    const forwarded_headers = [_]netz.http1.Header{.{
+        .name = "X-Forwarded-For",
+        .value = "203.0.113.9, 10.0.0.1",
+    }};
+    var forwarded = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .headers = &forwarded_headers },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer forwarded.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), forwarded.response.status);
+    try std.testing.expectEqualStrings(
+        "203.0.113.9:0",
+        forwarded.response.body,
+    );
+
+    var direct = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer direct.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), direct.response.status);
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        direct.response.body,
+        "127.0.0.1:",
+    ));
 
     server.stop();
     try group.await(io);

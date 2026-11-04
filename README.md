@@ -90,7 +90,9 @@ pub fn main(init: std.process.Init) !void {
   buffered HTTP/2/HTTP/3, and streaming HTTP/2/HTTP/3. Field bytes are copied
   into the request arena, so a trailer stays valid for the rest of the request.
 - `ctx.protocol()`, `ctx.clientAddress()`, and `ctx.isTls()` expose adapter
-  metadata such as HTTP version, peer address, and transport security.
+  metadata such as HTTP version, peer address, and transport security. With
+  `Limits.trust_forwarded_for`, the leftmost `X-Forwarded-For` entry replaces
+  the peer address; enable it only behind a proxy that sanitizes the header.
 - `ctx.deadline()`, `ctx.remaining()`, and `ctx.expired()` expose the
   `Limits.request_timeout` budget for cooperative handlers.
 - `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,

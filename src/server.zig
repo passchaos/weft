@@ -316,7 +316,11 @@ pub fn Server(comptime H: type) type {
                 };
 
                 const client_info = ctx_mod.ClientInfo{
-                    .address = connection.stream.socket.address,
+                    .address = ctx_mod.resolveClientAddress(
+                        head.headers,
+                        connection.stream.socket.address,
+                        self.options.limits.trust_forwarded_for,
+                    ),
                     .protocol = switch (head.version) {
                         .http_1_0 => .http_1_0,
                         .http_1_1 => .http_1_1,

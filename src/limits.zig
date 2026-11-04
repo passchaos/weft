@@ -50,6 +50,11 @@ pub const Limits = struct {
     request_head_timeout: ?std.Io.Duration = .fromSeconds(30),
     /// Disable Nagle for application-driven writes.
     tcp_nodelay: bool = true,
+    /// Treat the leftmost `X-Forwarded-For` entry as the client address.
+    /// Enable only when every request arrives through a trusted proxy that
+    /// sanitizes the header; otherwise clients can spoof their address in
+    /// logs, rate-limit buckets, and `Ctx.clientAddress()`.
+    trust_forwarded_for: bool = false,
     /// Emit a Date field when the response does not contain one.
     auto_date_header: bool = true,
     /// Permit persistent HTTP/1 connections.

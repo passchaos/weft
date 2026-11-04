@@ -389,7 +389,11 @@ pub fn Http3Server(comptime H: type) type {
                 .consumed = 0,
             };
             const client_info = ctx_mod.ClientInfo{
-                .address = stream.from(),
+                .address = ctx_mod.resolveClientAddress(
+                    head.headers,
+                    stream.from(),
+                    self.options.limits.trust_forwarded_for,
+                ),
                 .protocol = .http_3,
                 .tls = true,
             };

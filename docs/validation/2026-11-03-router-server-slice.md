@@ -140,8 +140,10 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `RouteOptions.timeout` overrides `Limits.request_timeout` per route and
   drives both `Ctx.deadline()` and the `503` cancellation race; zero values
   are rejected at registration.
-- `Ctx` exposes protocol, peer address, and TLS metadata populated by both
-  adapters.
+- `Ctx` exposes protocol, peer address, and TLS metadata populated by every
+  adapter. `Limits.trust_forwarded_for` optionally replaces the peer address
+  with the leftmost `X-Forwarded-For` entry; it is off by default so clients
+  cannot spoof logs or rate-limit buckets.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part
   count, header count, and header-byte limits. Boundaries are matched only at
   the start of the body or after CRLF, so boundary text inside field data is
@@ -180,8 +182,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 116/116 tests passed (83 unit, 33 package/integration).
-- ReleaseFast: 116/116 tests passed.
+- Debug: 119/119 tests passed (85 unit, 34 package/integration).
+- ReleaseFast: 119/119 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

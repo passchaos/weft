@@ -366,7 +366,11 @@ pub fn Http2Server(comptime H: type) type {
             };
             var reader = ctx_mod.H2StreamReader{ .stream = stream };
             const client_info = ctx_mod.ClientInfo{
-                .address = peer_address,
+                .address = ctx_mod.resolveClientAddress(
+                    head.headers,
+                    peer_address,
+                    self.options.limits.trust_forwarded_for,
+                ),
                 .protocol = .http_2,
                 .tls = self.options.tls != null,
             };

@@ -120,6 +120,35 @@ pub const ClientInfo = struct {
     tls: bool = false,
 };
 
+/// Resolve the client address, optionally honoring the leftmost
+/// `X-Forwarded-For` entry. The header is only consulted when the caller
+/// explicitly trusts its proxy.
+pub fn resolveClientAddress(
+    headers: anytype,
+    peer: ?std.Io.net.IpAddress,
+    trust_forwarded_for: bool,
+) ?std.Io.net.IpAddress {
+    if (!trust_forwarded_for or peer == null) return peer;
+    for (headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "x-forwarded-for")) continue;
+        var entries = std.mem.splitScalar(u8, header.value, ',');
+        while (entries.next()) |raw| {
+            var candidate = std.mem.trim(u8, raw, " \t");
+            if (candidate.len >= 2 and candidate[0] == '"' and
+                candidate[candidate.len - 1] == '"')
+            {
+                candidate = candidate[1 .. candidate.len - 1];
+            }
+            if (candidate.len == 0) continue;
+            const parsed = std.Io.net.IpAddress.parse(candidate, 0) catch
+                continue;
+            return parsed;
+        }
+        return peer;
+    }
+    return peer;
+}
+
 /// Maximum path parameters captured for one route. The bound keeps the matcher
 /// allocation-free until a route actually matches.
 pub const max_params = 16;
@@ -822,6 +851,36 @@ test "trailers are exposed by name and as a slice" {
     try std.testing.expectEqual(@as(usize, 2), context.trailers().len);
     try std.testing.expectEqualStrings("abc", context.trailer("x-checksum").?);
     try std.testing.expect(context.trailer("missing") == null);
+}
+
+test "client address honors a trusted forwarded-for header" {
+    const peer = try std.Io.net.IpAddress.parse("127.0.0.1", 8080);
+    var headers = [_]netz.http1.Header{.{
+        .name = "X-Forwarded-For",
+        .value = "203.0.113.7, 10.0.0.1",
+    }};
+
+    const trusted = resolveClientAddress(&headers, peer, true).?;
+    const expected = try std.Io.net.IpAddress.parse("203.0.113.7", 0);
+    try std.testing.expect(trusted.eql(&expected));
+
+    const untrusted = resolveClientAddress(&headers, peer, false).?;
+    try std.testing.expect(untrusted.eql(&peer));
+
+    var invalid = [_]netz.http1.Header{.{
+        .name = "X-Forwarded-For",
+        .value = "not-an-ip",
+    }};
+    const fallback = resolveClientAddress(&invalid, peer, true).?;
+    try std.testing.expect(fallback.eql(&peer));
+
+    var quoted = [_]netz.http1.Header{.{
+        .name = "X-Forwarded-For",
+        .value = "\"2001:db8::1\"",
+    }};
+    const ipv6 = resolveClientAddress(&quoted, peer, true).?;
+    const expected6 = try std.Io.net.IpAddress.parse("2001:db8::1", 0);
+    try std.testing.expect(ipv6.eql(&expected6));
 }
 
 test "json media type accepts parameters and structured suffixes" {
