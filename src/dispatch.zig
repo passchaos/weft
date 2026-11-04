@@ -133,14 +133,16 @@ pub fn dispatch(
     var effective_reader = body_reader;
     if (disposition == null) {
         if (effective_reader) |reader| {
-            if (effective_limits.max_body_bytes < limits.max_body_bytes) {
-                const limited = try arena.create(ctx_mod.LimitedReader);
-                limited.* = .{
-                    .inner = reader,
-                    .remaining = effective_limits.max_body_bytes,
-                };
-                effective_reader = .{ .limited = limited };
-            }
+            // HTTP/1's pull reader enforces the server-wide budget itself,
+            // but Netz's HTTP/2 concurrent stream and HTTP/3 stream readers
+            // do not. Apply the effective budget here for every adapter so a
+            // streaming handler cannot read past it.
+            const limited = try arena.create(ctx_mod.LimitedReader);
+            limited.* = .{
+                .inner = reader,
+                .remaining = effective_limits.max_body_bytes,
+            };
+            effective_reader = .{ .limited = limited };
         }
     }
 

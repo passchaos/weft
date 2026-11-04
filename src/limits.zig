@@ -96,6 +96,7 @@ pub const Limits = struct {
                 self.max_body_bytes,
                 self.max_head_bytes,
             ) catch std.math.maxInt(usize),
+            .max_body_bytes = self.max_body_bytes,
             .auto_date_header = self.auto_date_header,
         };
     }

@@ -547,6 +547,10 @@ try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
   HTTP/2 enforce them in Netz; the HTTP/3 adapter additionally checks the
   non-pseudo field count, QPACK field-section size, and target length before
   converting headers. Over-budget requests receive `431` or `414`.
+- `max_body_bytes` bounds decoded request bodies on every adapter. Buffered
+  reads and streaming `BodyReader` pulls share the same effective budget, so a
+  handler cannot read past it; `RouteOptions.max_body_bytes` lowers it per
+  route.
 - `max_request_arena_bytes` bounds per-request headers, bodies, params,
   decoded query values, response headers, and middleware locals. HTTP/1,
   HTTP/2, and HTTP/3 adapters all enforce it with a fixed arena.
