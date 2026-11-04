@@ -94,6 +94,9 @@ allocation.
   every adapter: HTTP/1 buffered and streaming (after the body is consumed),
   buffered HTTP/2/HTTP/3, and streaming HTTP/2/HTTP/3. Field bytes are copied
   into the request arena, so a trailer stays valid for the rest of the request.
+- `ctx.accepts(media_type)` and `ctx.preferredType(candidates)` implement
+  `Accept` negotiation (wildcards, q-values, and the most-specific-range rule,
+  so `text/*;q=0, */*;q=1` still rejects `text/html`).
 - `ctx.protocol()`, `ctx.clientAddress()`, and `ctx.isTls()` expose adapter
   metadata such as HTTP version, peer address, and transport security. With
   `Limits.trust_forwarded_for`, the leftmost `X-Forwarded-For` entry replaces

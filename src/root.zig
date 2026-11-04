@@ -38,6 +38,7 @@ pub const withContext = @import("ctx.zig").withContext;
 pub const RouteFailure = @import("dispatch.zig").RouteFailure;
 pub const query = @import("query.zig");
 pub const cookie = @import("cookie.zig");
+pub const accept = @import("accept.zig");
 pub const multipart = @import("multipart.zig");
 pub const MultipartPart = @import("multipart.zig").Part;
 pub const MultipartForm = @import("multipart.zig").Form;
@@ -77,6 +78,7 @@ comptime {
     _ = @import("websocket.zig");
     _ = @import("query.zig");
     _ = @import("cookie.zig");
+    _ = @import("accept.zig");
     _ = @import("multipart.zig");
     _ = @import("multipart_stream.zig");
     _ = @import("precondition.zig");

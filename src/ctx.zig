@@ -5,6 +5,7 @@ const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
 const cookie_mod = @import("cookie.zig");
 const stream_mod = @import("stream.zig");
+const accept_mod = @import("accept.zig");
 const multipart_mod = @import("multipart.zig");
 const multipart_stream_mod = @import("multipart_stream.zig");
 const sse_mod = @import("sse.zig");
@@ -356,6 +357,22 @@ pub const Ctx = struct {
         }
         self.cached_body = output.items;
         return output.items;
+    }
+
+    /// True when the request's `Accept` header allows `media_type`
+    /// (`type/subtype`). A missing header accepts anything; the most specific
+    /// matching range wins, so an explicit `q=0` rejects.
+    pub fn accepts(self: *const Ctx, media_type: []const u8) bool {
+        return accept_mod.accepts(self.header("accept"), media_type);
+    }
+
+    /// Choose the candidate with the highest accepted quality, keeping the
+    /// earliest candidate on ties. Returns null when none is acceptable.
+    pub fn preferredType(
+        self: *const Ctx,
+        candidates: []const []const u8,
+    ) ?[]const u8 {
+        return accept_mod.preferred(self.header("accept"), candidates);
     }
 
     /// Request trailer fields. Streaming adapters expose trailers after the

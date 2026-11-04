@@ -146,6 +146,8 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `RouteOptions.timeout` overrides `Limits.request_timeout` per route and
   drives both `Ctx.deadline()` and the `503` cancellation race; zero values
   are rejected at registration.
+- `Ctx.accepts`/`Ctx.preferredType` negotiate the `Accept` header with
+  wildcards, q-values, and most-specific-range precedence.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by every
   adapter. `Limits.trust_forwarded_for` optionally replaces the peer address
   with the leftmost `X-Forwarded-For` entry; it is off by default so clients
@@ -191,8 +193,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 125/125 tests passed (89 unit, 36 package/integration).
-- ReleaseFast: 125/125 tests passed.
+- Debug: 129/129 tests passed (93 unit, 36 package/integration).
+- ReleaseFast: 129/129 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 
