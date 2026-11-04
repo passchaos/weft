@@ -36,7 +36,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   `Connection: close` once shutdown starts.
 - HTTP/1.0 request versions are mirrored in responses with appropriate
   connection semantics.
-- Middleware: request-id propagation/validation, request-id-aware logging,
+- Middleware: request-id propagation/validation, request-id-aware logging
+  (plain text or compact JSON per request),
   constant-time Basic auth, security headers, CORS with preflight, recovery, and
   bounded gzip compression.
 - Recovery middleware maps uncommitted failures through the dispatcher's
@@ -185,8 +186,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 121/121 tests passed (86 unit, 35 package/integration).
-- ReleaseFast: 121/121 tests passed.
+- Debug: 122/122 tests passed (87 unit, 35 package/integration).
+- ReleaseFast: 122/122 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

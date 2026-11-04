@@ -405,9 +405,10 @@ Built-ins:
 - `requestId` — preserves a validated incoming `X-Request-Id` or generates a
   128-bit hex id, and always echoes it in the response.
 - `serverHeader` — adds `Server` unless already set.
-- `log` — logs method, target, protocol, remote address, request id, status,
-  and elapsed nanoseconds. Handler failures report the status dispatch will
-  emit, and client cancellations log as `499`.
+- `log` / `Log` — logs method, target, protocol, remote address, request id,
+  status, and elapsed nanoseconds. Handler failures report the status dispatch
+  will emit, and client cancellations log as `499`. `Log{ .format = .json }`
+  emits one compact JSON object per request with JSON-escaped values.
 - `securityHeaders` / `SecurityHeaders` — configurable browser hardening fields.
 - `BasicAuth` — constant-time Basic credential check with a challenge response.
 - `Cors` — exact-origin allow list, credential support, preflight handling,
