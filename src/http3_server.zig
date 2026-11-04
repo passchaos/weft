@@ -3,6 +3,7 @@ const netz = @import("netz");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
+const errors_mod = @import("errors.zig");
 const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
@@ -427,10 +428,17 @@ pub fn Http3Server(comptime H: type) type {
                 arena,
             ) catch |err| {
                 if (err == error.Canceled) return err;
-                std.log.scoped(.weft).warn(
-                    "http3 response failed: {s}",
-                    .{@errorName(err)},
-                );
+                if (errors_mod.isPeerDisconnect(err)) {
+                    std.log.scoped(.weft).debug(
+                        "http3 response failed: {s}",
+                        .{@errorName(err)},
+                    );
+                } else {
+                    std.log.scoped(.weft).warn(
+                        "http3 response failed: {s}",
+                        .{@errorName(err)},
+                    );
+                }
                 stream.reset(
                     netz.http3.ApplicationErrorCode.internal_error,
                 ) catch {};

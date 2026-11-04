@@ -20,6 +20,24 @@ pub fn statusForHandlerError(err: anyerror) u16 {
     return 500;
 }
 
+/// True when the failure means the peer closed or reset the connection.
+/// Adapters log these at debug level: a client hanging up is a normal
+/// lifecycle event, not a server fault.
+pub fn isPeerDisconnect(err: anyerror) bool {
+    return err == error.ConnectionClosed or
+        err == error.ConnectionResetByPeer or
+        err == error.BrokenPipe or
+        err == error.NotOpenForReading or
+        err == error.NotOpenForWriting or
+        err == error.UnexpectedStream;
+}
+
+test "peer disconnect classification" {
+    try std.testing.expect(isPeerDisconnect(error.ConnectionClosed));
+    try std.testing.expect(isPeerDisconnect(error.ConnectionResetByPeer));
+    try std.testing.expect(!isPeerDisconnect(error.OutOfMemory));
+}
+
 test "handler errors map to protocol statuses" {
     try std.testing.expectEqual(@as(u16, 415), statusForHandlerError(
         error.UnsupportedMediaType,
