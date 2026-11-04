@@ -42,6 +42,10 @@ pub fn preferred(
         candidates[0]
     else
         null;
+    // Match `accepts`: an empty Accept field value accepts anything.
+    if (std.mem.trim(u8, header, " \t").len == 0) {
+        return if (candidates.len != 0) candidates[0] else null;
+    }
 
     var best: ?[]const u8 = null;
     var best_quality: f64 = 0;
@@ -172,6 +176,15 @@ test "accept preferred picks the highest quality" {
     try std.testing.expectEqualStrings(
         "application/json",
         preferred(null, &candidates).?,
+    );
+    // An empty field value accepts anything, matching `accepts`.
+    try std.testing.expectEqualStrings(
+        "application/json",
+        preferred("", &candidates).?,
+    );
+    try std.testing.expectEqualStrings(
+        "application/json",
+        preferred(" \t ", &candidates).?,
     );
 }
 

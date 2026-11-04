@@ -93,6 +93,13 @@ so the request receives `413` and the connection stays usable.
 Unit test: `readBody maps arena exhaustion to PayloadTooLarge` in
 `src/ctx.zig`.
 
+## Empty Accept negotiation
+
+`Ctx.accepts()` treated an empty `Accept` field value as accepting anything,
+but `Ctx.preferredType()` returned null for the same header. Both now treat an
+absent or empty field value as `*/*`, so a handler cannot see a 406-worthy
+preference from an empty header.
+
 ## Verification
 
 ```sh
