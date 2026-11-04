@@ -154,7 +154,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   whole-body budget. The window is capped at half the request arena. Package
   tests cover 200 KiB over HTTP/1, 1 KiB over HTTP/2, and 300 KiB over HTTP/3,
   and a differential test compares it with the buffered parser across every
-  source chunk size.
+  source chunk size. `DataReader.readAll(allocator, max_bytes)` drains one part
+  with its own bound, and `nextPart` skips any unread remainder.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
   with semaphore-bounded sessions. Each session uses netz's owner-serialized
@@ -182,8 +183,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 119/119 tests passed (85 unit, 34 package/integration).
-- ReleaseFast: 119/119 tests passed.
+- Debug: 120/120 tests passed (86 unit, 34 package/integration).
+- ReleaseFast: 120/120 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

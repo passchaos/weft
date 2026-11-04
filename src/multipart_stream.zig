@@ -55,6 +55,8 @@ pub const Stream = struct {
     part_count: usize = 0,
     need_initial: bool = true,
     finished: bool = false,
+    /// True while the caller owns the current part's data reader.
+    in_part: bool = false,
     data_reader: DataReader = undefined,
     part_name: ?[]const u8 = null,
     part_filename: ?[]const u8 = null,
@@ -114,6 +116,12 @@ pub const Stream = struct {
     /// Advance to the next part. Returns null after the closing delimiter.
     pub fn nextPart(self: *Stream) !?Part {
         if (self.finished) return null;
+        if (self.in_part) {
+            // A caller may stop reading part data early (for example after a
+            // bound violation). Skip the remainder so the next part starts at
+            // a delimiter.
+            while (try self.data_reader.next()) |_| {}
+        }
         self.freePart();
 
         if (self.need_initial) {
@@ -144,6 +152,7 @@ pub const Stream = struct {
         self.part_count += 1;
 
         self.data_reader = .{ .stream = self };
+        self.in_part = true;
         return .{
             .name = self.part_name.?,
             .filename = self.part_filename,
@@ -334,6 +343,25 @@ pub const Stream = struct {
 pub const DataReader = struct {
     stream: *Stream,
     finished: bool = false,
+
+    /// Drain this part into an owned buffer, bounded by `max_bytes`.
+    pub fn readAll(
+        self: *DataReader,
+        allocator: std.mem.Allocator,
+        max_bytes: usize,
+    ) ![]u8 {
+        var output = std.ArrayListUnmanaged(u8).empty;
+        errdefer output.deinit(allocator);
+        var total: usize = 0;
+        while (try self.next()) |chunk| {
+            const next_total = std.math.add(usize, total, chunk.len) catch
+                return error.PayloadTooLarge;
+            if (next_total > max_bytes) return error.PayloadTooLarge;
+            try output.appendSlice(allocator, chunk);
+            total = next_total;
+        }
+        return output.toOwnedSlice(allocator);
+    }
 
     pub fn next(self: *DataReader) !?[]const u8 {
         if (self.finished) return null;
@@ -557,6 +585,43 @@ test "streaming multipart streams data larger than the window" {
     var total: usize = 0;
     while (try part.data.next()) |chunk_bytes| total += chunk_bytes.len;
     try std.testing.expectEqual(@as(usize, 4096), total);
+    try std.testing.expect((try stream.nextPart()) == null);
+}
+
+test "streaming multipart readAll enforces its own bound" {
+    const allocator = std.testing.allocator;
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"small\"\r\n" ++
+        "\r\n" ++
+        "tiny\r\n" ++
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"big\"\r\n" ++
+        "\r\n" ++
+        "0123456789\r\n" ++
+        "--weft--\r\n";
+
+    var source = TestSource{ .body = body, .chunk = 3 };
+    var stream = try Stream.init(
+        allocator,
+        source.source(),
+        "multipart/form-data; boundary=weft",
+        .{ .buffer_bytes = 128 },
+    );
+    defer stream.deinit();
+
+    const small = (try stream.nextPart()) orelse
+        return error.TestUnexpectedResult;
+    const small_bytes = try small.data.readAll(allocator, 16);
+    defer allocator.free(small_bytes);
+    try std.testing.expectEqualStrings("tiny", small_bytes);
+
+    const big = (try stream.nextPart()) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectError(
+        error.PayloadTooLarge,
+        big.data.readAll(allocator, 4),
+    );
     try std.testing.expect((try stream.nextPart()) == null);
 }
 
