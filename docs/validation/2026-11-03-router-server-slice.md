@@ -137,6 +137,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - `RouteOptions.max_body_bytes` adds a per-route body budget: buffered bodies
   above it are rejected with `413` before dispatch, and streaming readers are
   wrapped so `Ctx.bodyReader()`/`Ctx.readBody()` stop at the route limit.
+- `RouteOptions.timeout` overrides `Limits.request_timeout` per route and
+  drives both `Ctx.deadline()` and the `503` cancellation race; zero values
+  are rejected at registration.
 - `Ctx` exposes protocol, peer address, and TLS metadata populated by both
   adapters.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part

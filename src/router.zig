@@ -27,6 +27,9 @@ pub const RouteOptions = struct {
     /// `413` and bounds streaming reads through `Ctx.bodyReader()` and
     /// `Ctx.readBody()`.
     max_body_bytes: ?usize = null,
+    /// Optional per-route handler budget. Null inherits
+    /// `Limits.request_timeout`; zero is rejected by the router.
+    timeout: ?std.Io.Duration = null,
 };
 
 pub const GroupOptions = struct {
@@ -44,6 +47,8 @@ pub const Route = struct {
     streaming: bool = false,
     /// Optional per-route body budget; null inherits the server limit.
     max_body_bytes: ?usize = null,
+    /// Optional per-route handler budget; null inherits the server timeout.
+    timeout: ?std.Io.Duration = null,
     /// Segment weights used for diagnostics and tie-breaking documentation.
     /// Matching itself walks the trie, where precedence is structural.
     specificity: u32,
@@ -212,6 +217,7 @@ pub fn Router(comptime H: type) type {
                         .middleware = combined_middleware,
                         .streaming = route_options.streaming,
                         .max_body_bytes = route_options.max_body_bytes,
+                        .timeout = route_options.timeout,
                     },
                 );
             }
@@ -431,6 +437,12 @@ pub fn Router(comptime H: type) type {
             if (route_options.middleware.len > self.max_middleware) {
                 return error.TooMuchMiddleware;
             }
+            if (route_options.timeout) |timeout| {
+                if (timeout.nanoseconds <= 0) return error.InvalidTimeout;
+            }
+            if (route_options.max_body_bytes) |limit| {
+                if (limit == 0) return error.InvalidBodyLimit;
+            }
             try self.checkConflict(pattern, method);
 
             const route = try self.allocator.create(Route);
@@ -450,6 +462,7 @@ pub fn Router(comptime H: type) type {
                 .middleware = middleware_copy,
                 .streaming = route_options.streaming,
                 .max_body_bytes = route_options.max_body_bytes,
+                .timeout = route_options.timeout,
                 .specificity = computeSpecificity(pattern),
                 .capture_count = info.captures,
             };

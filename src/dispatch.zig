@@ -78,6 +78,7 @@ pub fn dispatch(
     var params: []const ctx_mod.Param = &.{};
     var route_middleware: []const ctx_mod.Handler = &.{};
     var route_max_body: ?usize = null;
+    var route_timeout: ?std.Io.Duration = null;
     var final_handler: ctx_mod.Handler = ctx_mod.handler(respondDisposition);
 
     const parsed_query = query_mod.parse(
@@ -97,6 +98,7 @@ pub fn dispatch(
                     params = decoded;
                     route_middleware = matched.route.middleware;
                     route_max_body = matched.route.max_body_bytes;
+                    route_timeout = matched.route.timeout;
                     final_handler = matched.route.handler;
                 } else {
                     disposition = .bad_request;
@@ -154,7 +156,8 @@ pub fn dispatch(
         middleware = combined;
     }
 
-    const request_deadline = if (limits.request_timeout) |duration|
+    const effective_timeout = route_timeout orelse limits.request_timeout;
+    const request_deadline = if (effective_timeout) |duration|
         std.Io.Clock.Timestamp.fromNow(io, .{
             .raw = duration,
             .clock = .awake,
@@ -205,7 +208,7 @@ pub fn dispatch(
         }
     }
 
-    if (limits.request_timeout) |duration| {
+    if (effective_timeout) |duration| {
         var run = HandlerRun{ .context = &context };
         var race_buffer: [2]HandlerRace = undefined;
         var select = std.Io.Select(HandlerRace).init(io, &race_buffer);

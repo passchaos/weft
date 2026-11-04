@@ -199,6 +199,9 @@ try router.post("/upload", upload, .{ .streaming = true });
   limit. A buffered body above it is rejected with `413` before the handler
   runs; streaming reads return `413` through `Ctx.bodyReader()` and
   `Ctx.readBody()`.
+- `RouteOptions.timeout` overrides `Limits.request_timeout` for one route.
+  The route budget drives both the `Ctx.deadline()` value and the `503`
+  cancellation race.
 
 ## TLS
 

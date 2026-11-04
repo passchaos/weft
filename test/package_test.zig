@@ -2498,6 +2498,16 @@ test "package: request timeout cancels slow handlers and allows fast ones" {
     try router.get("/slow", slowHandler, .{});
     try router.get("/fast", home, .{});
     try router.get("/deadline", deadlineInfo, .{});
+    try router.get(
+        "/slow-route-timeout",
+        slowHandler,
+        .{ .timeout = .fromMilliseconds(500) },
+    );
+    try router.get(
+        "/slow-no-timeout",
+        slowHandler,
+        .{ .timeout = .fromSeconds(30) },
+    );
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -2547,6 +2557,48 @@ test "package: request timeout cancels slow handlers and allows fast ones" {
         .{server.address().ip4.port},
     );
     defer allocator.free(deadline_uri);
+    const route_timeout_uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/slow-route-timeout",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(route_timeout_uri);
+    var route_timeout_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        route_timeout_uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer route_timeout_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        route_timeout_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "slow",
+        route_timeout_response.response.body,
+    );
+
+    const route_timeout_uri2 = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/slow-no-timeout",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(route_timeout_uri2);
+    var route_timeout_response2 = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        route_timeout_uri2,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer route_timeout_response2.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        route_timeout_response2.response.status,
+    );
+
     var deadline_response = try netz.http1.runtime.Client.requestUri(
         allocator,
         io,
