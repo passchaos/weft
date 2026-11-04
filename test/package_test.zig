@@ -4195,6 +4195,104 @@ test "package: metrics endpoint renders Prometheus text" {
     try group.await(io);
 }
 
+test "package: handlers negotiate the Accept header" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    const negotiate = struct {
+        fn handle(ctx: *weft.Ctx) anyerror!void {
+            if (ctx.accepts("application/json")) {
+                return ctx.json(.{ .kind = "json" });
+            }
+            try ctx.text("plain");
+        }
+    };
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 4096,
+            },
+            .max_connections = 1,
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().addRaw(
+        .GET,
+        "/negotiate",
+        weft.handler(negotiate.handle),
+        .{},
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/negotiate",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    const json_headers = [_]netz.http1.Header{.{
+        .name = "Accept",
+        .value = "application/json",
+    }};
+    var json_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .headers = &json_headers },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer json_response.deinit(allocator);
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"json\"}",
+        json_response.response.body,
+    );
+
+    const text_headers = [_]netz.http1.Header{.{
+        .name = "Accept",
+        .value = "text/plain",
+    }};
+    var text_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{ .headers = &text_headers },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer text_response.deinit(allocator);
+    try std.testing.expectEqualStrings("plain", text_response.response.body);
+
+    var any_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer any_response.deinit(allocator);
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"json\"}",
+        any_response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
 test "package: response header budget failure becomes 500" {
     const allocator = std.testing.allocator;
 
