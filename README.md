@@ -630,8 +630,9 @@ run up to `max_concurrent_handlers` handler tasks concurrently through netz's
 owner-serialized stream engines.
 
 Parser totality tests feed deterministic random bytes to the query, `Accept`,
-and multipart parsers, asserting that every input either fails cleanly or
-yields values with no control bytes and bounded part counts.
+buffered/streaming multipart, and HTTP-date/precondition parsers, asserting
+that every input either fails cleanly or yields bounded, control-byte-free
+results.
 
 ## Limitations
 

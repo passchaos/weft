@@ -654,3 +654,38 @@ test "streaming multipart enforces the total body budget" {
     defer stream.deinit();
     try std.testing.expectError(error.PayloadTooLarge, stream.nextPart());
 }
+
+test "streaming multipart parsing is total for arbitrary bytes" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x57ea_11);
+    const random = prng.random();
+    var buffer: [96]u8 = undefined;
+
+    for (0..200) |_| {
+        const length = random.intRangeAtMost(usize, 0, buffer.len);
+        random.bytes(buffer[0..length]);
+
+        var source = TestSource{
+            .body = buffer[0..length],
+            .chunk = random.intRangeAtMost(usize, 1, 16),
+        };
+        var stream = Stream.init(
+            allocator,
+            source.source(),
+            "multipart/form-data; boundary=weft",
+            .{ .buffer_bytes = 128 },
+        ) catch continue;
+        defer stream.deinit();
+
+        var parts: usize = 0;
+        while (stream.nextPart() catch break) |part| {
+            parts += 1;
+            var total: usize = 0;
+            while (part.data.next() catch break) |chunk| {
+                total += chunk.len;
+                if (total > 4096) break;
+            }
+        }
+        try std.testing.expect(parts <= 64);
+    }
+}

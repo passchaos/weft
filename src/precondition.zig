@@ -417,3 +417,23 @@ test "precondition gates If-Range on the current validator" {
         .if_range = "\"other\"",
     }, etag, modified).range_allowed);
 }
+
+test "date parsing and precondition evaluation are total for arbitrary input" {
+    var prng = std.Random.DefaultPrng.init(0xda7e_42);
+    const random = prng.random();
+    var buffer: [48]u8 = undefined;
+    for (0..500) |_| {
+        const length = random.intRangeAtMost(usize, 0, buffer.len);
+        random.bytes(buffer[0..length]);
+        const text = buffer[0..length];
+        _ = parseDate(text);
+        _ = evaluate(.{
+            .if_match = text,
+            .if_none_match = text,
+            .if_modified_since = text,
+            .if_unmodified_since = text,
+            .if_range = text,
+            .range = text,
+        }, "\"tag\"", 1_700_000_000);
+    }
+}
