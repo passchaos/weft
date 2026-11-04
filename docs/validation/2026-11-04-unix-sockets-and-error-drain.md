@@ -88,8 +88,8 @@ zig build examples --global-cache-dir /tmp/weft-zig-global --summary all
 
 Results at this slice:
 
-- Debug: 146/146 tests passed (101 unit + 45 package).
-- ReleaseFast: 146/146 tests passed.
+- Debug: 147/147 tests passed (101 unit + 46 package).
+- ReleaseFast: 147/147 tests passed.
 - Examples: build succeeded.
 
 New package tests:
@@ -103,6 +103,8 @@ New package tests:
   absent.
 - `package: server requires exactly one listen address` — asserts
   `error.InvalidOptions` for neither and both address forms.
+- `package: HTTP/2 server requires exactly one listen address` — the same
+  exclusivity check for the h2 adapter.
 - `package: oversized request head and target return 431 and 414` — sends a
   head over `max_head_bytes` and a target over `max_request_target_bytes`
   through a real client, asserting the protocol status survives the close.

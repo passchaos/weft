@@ -33,7 +33,7 @@ pub const Options = struct {
     max_connections: usize = 256,
     max_requests_per_connection: usize = 1000,
     /// Maximum buffered-request handler tasks running concurrently per
-    /// connection. Streaming routes are still served serially.
+    /// connection. Buffered and streaming routes share this bound.
     max_concurrent_handlers: usize = 8,
     /// Poll interval used while handlers are active.
     handler_poll_interval: std.Io.Duration = .fromMilliseconds(5),

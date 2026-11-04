@@ -5117,3 +5117,28 @@ test "package: HTTP/2 Unix socket serves h2c" {
     server.stop();
     try group.await(io);
 }
+
+test "package: HTTP/2 server requires exactly one listen address" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Http2Server(App).init(io, allocator, .{}, .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Http2Server(App).init(
+            io,
+            allocator,
+            .{
+                .address = .{ .ip4 = .loopback(0) },
+                .unix_path = "/tmp/weft-h2-conflict.sock",
+            },
+            .{},
+        ),
+    );
+}

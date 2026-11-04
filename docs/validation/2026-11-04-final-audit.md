@@ -3,7 +3,7 @@
 Scope: verify the current tree against the repository constraints in
 `AGENTS.md`, the feature list in `README.md`, and the measured performance
 claims. Everything below is backed by files or commands in this checkout at
-`22b3e3c`; the full test suite is 142/142 in Debug and ReleaseFast.
+`9df1a32`; the full test suite is 147/147 in Debug and ReleaseFast.
 
 ## 1. Repository constraints
 
@@ -21,6 +21,12 @@ claims. Everything below is backed by files or commands in this checkout at
 
 - HTTP/1.1 cleartext, HTTP/1.1 TLS, h2c, TLS/ALPN `h2`, and QUIC/TLS HTTP/3
   share one router, middleware chain, limits, error mapping, and `Ctx`.
+- HTTP/1 and prior-knowledge h2c also serve over Unix-domain sockets via
+  `unix_path`; TLS is rejected there, and `clientAddress()` is `null` unless a
+  trusted `X-Forwarded-For` supplies one.
+- HTTP/1 protocol-error responses (`400/408/413/414/431`) are written through
+  `Connection.respondAndClose`, which permits one final write after a failed
+  read, then half-closes and drains within a 250 ms budget.
 - Incremental request bodies on all three adapters (`.pull`, `.duplex`/
   `.h2_stream`, `.h3_stream`), including per-route body budgets and
   `Content-Encoding` decoding via `Ctx.decodedReader()`.
@@ -59,8 +65,8 @@ zig build bench-static -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 142/142 (101 unit, 41 package/integration).
-- ReleaseFast: 142/142.
+- Debug: 147/147 (101 unit, 46 package/integration).
+- ReleaseFast: 147/147.
 - Examples build; `run-hello` and `run-upload` complete their request
   sequences (streaming upload, streaming multipart, SSE, Prometheus).
 - Parser totality tests feed deterministic random bytes to the query,
@@ -87,13 +93,12 @@ Results:
 - WebSocket upgrades are HTTP/1.1 only.
 - `Etag` covers buffered responses; streamed bodies are not hashed.
 - Precompressed static sidecars are not range-addressable by design.
-- Reported upstream: HTTP/1 error responses (431/414/413) are written and then
-  closed with unread request bytes, so a peer may observe an RST before the
-  response. Tracked in `netz/docs/weft-integration-requests.md`.
+- Unix sockets serve HTTP/1 and h2c; TLS on a Unix socket is rejected, and the
+  HTTP/3 adapter remains TCP/UDP-addressed.
 
 ## 6. Upstream coordination
 
-`netz/docs/weft-integration-requests.md` records the remaining protocol-level
-requests (H3 error-response drain, optional `trailers()` locking) and the
-before/after measurements that netz used for its concurrent-engine and QUIC
-improvements.
+`netz/docs/weft-integration-requests.md` records the protocol-level requests
+and their outcomes: H3 concurrent bodies/streams, streaming trailers,
+`drainAndClose`, and `respondAndClose` are delivered; only optional
+`ConcurrentStream.trailers()` locking remains.
