@@ -281,6 +281,7 @@ pub fn Http2Server(comptime H: type) type {
             var context = H2ConcurrentContext(H){
                 .server = self,
                 .address = connection.stream.socket.address,
+                .peer_certificates = connection.peerCertificates() orelse &.{},
                 .max_requests = self.options.max_requests_per_connection,
             };
             var watcher = self.io.async(
@@ -319,7 +320,11 @@ pub fn Http2Server(comptime H: type) type {
             context: *H2ConcurrentContext(H),
             stream: *ConcurrentStream,
         ) anyerror!void {
-            try context.server.serveConcurrentStream(stream, context.address);
+            try context.server.serveConcurrentStream(
+                stream,
+                context.address,
+                context.peer_certificates,
+            );
             const completed = context.completed.fetchAdd(1, .monotonic) + 1;
             if (completed >= context.max_requests) {
                 context.session_shutdown.set(context.server.io);
@@ -330,6 +335,7 @@ pub fn Http2Server(comptime H: type) type {
             self: *@This(),
             stream: *ConcurrentStream,
             peer_address: ?std.Io.net.IpAddress,
+            peer_certificates: []const []const u8,
         ) !void {
             const arena_buffer = try self.allocator.alloc(
                 u8,
@@ -371,6 +377,7 @@ pub fn Http2Server(comptime H: type) type {
                     peer_address,
                     self.options.limits.trust_forwarded_for,
                 ),
+                .peer_certificates = peer_certificates,
                 .protocol = .http_2,
                 .tls = self.options.tls != null,
             };
@@ -561,6 +568,7 @@ fn H2ConcurrentContext(comptime H: type) type {
     return struct {
         server: *Http2Server(H),
         address: ?std.Io.net.IpAddress = null,
+        peer_certificates: []const []const u8 = &.{},
         session_shutdown: std.Io.Event = .unset,
         completed: std.atomic.Value(usize) = .init(0),
         max_requests: usize = 0,

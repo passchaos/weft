@@ -119,6 +119,9 @@ pub const ClientInfo = struct {
     address: ?std.Io.net.IpAddress = null,
     protocol: Protocol = .http_1_1,
     tls: bool = false,
+    /// Verified client certificate chain for mutual TLS, leaf first. Empty
+    /// when the listener does not request client certificates.
+    peer_certificates: []const []const u8 = &.{},
 };
 
 /// Resolve the client address, optionally honoring the leftmost
@@ -272,6 +275,12 @@ pub const Ctx = struct {
 
     pub fn isTls(self: *const Ctx) bool {
         return self.client_info.tls;
+    }
+
+    /// Verified client certificate chain for mutual TLS, leaf first. Empty
+    /// when the listener did not request a client certificate.
+    pub fn peerCertificates(self: *const Ctx) []const []const u8 {
+        return self.client_info.peer_certificates;
     }
 
     pub fn deadline(self: *const Ctx) ?std.Io.Clock.Timestamp {

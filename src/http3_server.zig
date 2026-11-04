@@ -264,6 +264,7 @@ pub fn Http3Server(comptime H: type) type {
             );
             var context = H3ConcurrentContext(H){
                 .server = self,
+                .peer_certificates = session.peerCertificates() orelse &.{},
                 .max_requests = self.options.max_requests_per_connection,
             };
             var watcher = self.io.async(
@@ -303,7 +304,10 @@ pub fn Http3Server(comptime H: type) type {
             context: *H3ConcurrentContext(H),
             stream: *ConcurrentStream,
         ) anyerror!void {
-            try context.server.serveConcurrentStream(stream);
+            try context.server.serveConcurrentStream(
+                stream,
+                context.peer_certificates,
+            );
             const completed = context.completed.fetchAdd(1, .monotonic) + 1;
             if (completed >= context.max_requests) {
                 context.session_shutdown.set(context.server.io);
@@ -313,6 +317,7 @@ pub fn Http3Server(comptime H: type) type {
         fn serveConcurrentStream(
             self: *@This(),
             stream: *ConcurrentStream,
+            peer_certificates: []const []const u8,
         ) !void {
             const arena_buffer = try self.allocator.alloc(
                 u8,
@@ -394,6 +399,7 @@ pub fn Http3Server(comptime H: type) type {
                     stream.from(),
                     self.options.limits.trust_forwarded_for,
                 ),
+                .peer_certificates = peer_certificates,
                 .protocol = .http_3,
                 .tls = true,
             };
@@ -611,6 +617,7 @@ pub fn Http3Server(comptime H: type) type {
 fn H3ConcurrentContext(comptime H: type) type {
     return struct {
         server: *Http3Server(H),
+        peer_certificates: []const []const u8 = &.{},
         session_shutdown: std.Io.Event = .unset,
         completed: std.atomic.Value(usize) = .init(0),
         max_requests: usize = 0,

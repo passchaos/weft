@@ -148,8 +148,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   are rejected at registration.
 - `Ctx.accepts`/`Ctx.preferredType` negotiate the `Accept` header with
   wildcards, q-values, and most-specific-range precedence.
-- `Ctx` exposes protocol, peer address, and TLS metadata populated by every
-  adapter. `Limits.trust_forwarded_for` optionally replaces the peer address
+- `Ctx` exposes protocol, peer address, TLS metadata, and the verified client
+  certificate chain for mutual TLS, populated by every adapter. The package
+  test completes a real pinned mTLS handshake and asserts the chain length. `Limits.trust_forwarded_for` optionally replaces the peer address
   with the leftmost `X-Forwarded-For` entry; it is off by default so clients
   cannot spoof logs or rate-limit buckets.
 - Bounded `multipart/form-data` parsing through `Ctx.multipart`, with part
@@ -193,8 +194,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 130/130 tests passed (93 unit, 37 package/integration).
-- ReleaseFast: 130/130 tests passed.
+- Debug: 131/131 tests passed (93 unit, 38 package/integration).
+- ReleaseFast: 131/131 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

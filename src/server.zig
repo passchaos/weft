@@ -321,6 +321,7 @@ pub fn Server(comptime H: type) type {
                         connection.stream.socket.address,
                         self.options.limits.trust_forwarded_for,
                     ),
+                    .peer_certificates = connection.peerCertificates() orelse &.{},
                     .protocol = switch (head.version) {
                         .http_1_0 => .http_1_0,
                         .http_1_1 => .http_1_1,

@@ -95,6 +95,11 @@ fn clientInfo(app: *App, ctx: *weft.Ctx) anyerror!void {
     });
 }
 
+fn certificateCount(app: *App, ctx: *weft.Ctx) anyerror!void {
+    _ = app;
+    try ctx.json(.{ .certs = ctx.peerCertificates().len });
+}
+
 fn etagRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
     _ = app;
     try ctx.text("hello");
@@ -2626,6 +2631,94 @@ test "package: TLS server serves HTTPS requests" {
     try std.testing.expectEqual(@as(u16, 200), response.response.status);
     try std.testing.expectEqualStrings(
         "hello from weft",
+        response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: mutual TLS exposes the client certificate chain" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var certificate_der: [netz.tls.testing.certificate_der_len]u8 = undefined;
+    try std.base64.standard.Decoder.decode(
+        &certificate_der,
+        netz.tls.testing.certificate_base64,
+    );
+    const key_pair = try netz.tls.testing.serverKeyPair();
+    const public_key = key_pair.public_key.toUncompressedSec1();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .tls = .{
+                .identity = .{
+                    .certificate_chain = &.{&certificate_der},
+                    .signer = .{ .ecdsa_p256_sha256 = .{
+                        .key_pair = key_pair,
+                    } },
+                },
+                .client_auth = .{ .verifier = .{
+                    .pinned_ecdsa_p256_public_key = public_key,
+                } },
+                .alpn_protocols = &.{"http/1.1"},
+                .cipher_suites = &.{.aes_256_gcm_sha384},
+            },
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/certs", certificateCount, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    var client = try netz.http1.runtime.Client.connectVailTlsHost(
+        allocator,
+        io,
+        "localhost",
+        server.address().ip4.port,
+        .{},
+        .{
+            .server_verifier = .{
+                .pinned_ecdsa_p256_public_key = public_key,
+            },
+            .client_identity = .{
+                .certificate_chain = &.{&certificate_der},
+                .signer = .{ .ecdsa_p256_sha256 = .{
+                    .key_pair = key_pair,
+                } },
+            },
+            .alpn_protocols = &.{"http/1.1"},
+            .cipher_suites = &.{.aes_256_gcm_sha384},
+        },
+    );
+    defer client.close();
+
+    var response = try client.request(.{
+        .method = .GET,
+        .target = "/certs",
+        .host = "localhost",
+    });
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "{\"certs\":1}",
         response.response.body,
     );
 

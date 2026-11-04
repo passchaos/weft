@@ -97,8 +97,10 @@ allocation.
 - `ctx.accepts(media_type)` and `ctx.preferredType(candidates)` implement
   `Accept` negotiation (wildcards, q-values, and the most-specific-range rule,
   so `text/*;q=0, */*;q=1` still rejects `text/html`).
-- `ctx.protocol()`, `ctx.clientAddress()`, and `ctx.isTls()` expose adapter
-  metadata such as HTTP version, peer address, and transport security. With
+- `ctx.protocol()`, `ctx.clientAddress()`, `ctx.isTls()`, and
+  `ctx.peerCertificates()` expose adapter metadata such as HTTP version, peer
+  address, transport security, and the verified mTLS client chain (leaf
+  first). With
   `Limits.trust_forwarded_for`, the leftmost `X-Forwarded-For` entry replaces
   the peer address; enable it only behind a proxy that sanitizes the header.
 - `ctx.deadline()`, `ctx.remaining()`, and `ctx.expired()` expose the
