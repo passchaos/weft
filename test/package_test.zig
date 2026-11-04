@@ -709,6 +709,17 @@ const StreamHandlers = struct {
         try ctx.json(.{ .bytes = total });
     }
 
+    fn decodedUploadRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        const reader = if (try ctx.decodedReader()) |decoded|
+            weft.BodyReader{ .decoded = decoded }
+        else
+            ctx.bodyReader().?;
+        var total: usize = 0;
+        while (try reader.next()) |chunk| total += chunk.len;
+        try ctx.json(.{ .bytes = total });
+    }
+
     fn multipartStreamRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
         _ = app;
         var stream = try ctx.multipartStream();
@@ -1574,6 +1585,11 @@ test "package: streaming request bodies reach handlers incrementally" {
         .{ .max_body_bytes = 4096 },
     );
     try router.post(
+        "/upload-decoded",
+        StreamHandlers.decodedUploadRoute,
+        .{ .streaming = true },
+    );
+    try router.post(
         "/upload-multipart-stream",
         StreamHandlers.multipartStreamRoute,
         .{ .streaming = true },
@@ -1775,8 +1791,46 @@ test "package: streaming request bodies reach handlers incrementally" {
         multipart_response.response.body,
     );
 
-    // A Content-Encoding'd body cannot be parsed incrementally; the handler
-    // must return 415 instead of misparsing compressed bytes.
+    // A Content-Encoding'd body can be decoded incrementally without
+    // buffering the whole upload.
+    const decoded_payload = try allocator.alloc(u8, 10 * 1024);
+    defer allocator.free(decoded_payload);
+    @memset(decoded_payload, 'd');
+    const compressed_upload = try gzipAlloc(allocator, decoded_payload);
+    defer allocator.free(compressed_upload);
+    const decoded_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/upload-decoded",
+        .{base},
+    );
+    defer allocator.free(decoded_uri);
+    const decoded_headers = [_]netz.http1.Header{.{
+        .name = "Content-Encoding",
+        .value = "gzip",
+    }};
+    var decoded_response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        decoded_uri,
+        .{
+            .method = .POST,
+            .headers = &decoded_headers,
+            .body = compressed_upload,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 512 * 1024 },
+    );
+    defer decoded_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        decoded_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"bytes\":10240}",
+        decoded_response.response.body,
+    );
+
+    // A Content-Encoding'd body is decoded incrementally before multipart
+    // parsing, so the same handler accepts a gzip-compressed upload.
     const compressed_multipart = try gzipAlloc(allocator, multipart_body);
     defer allocator.free(compressed_multipart);
     const encoded_headers = [_]netz.http1.Header{
@@ -1799,8 +1853,12 @@ test "package: streaming request bodies reach handlers incrementally" {
     );
     defer encoded_multipart.deinit(allocator);
     try std.testing.expectEqual(
-        @as(u16, 415),
+        @as(u16, 200),
         encoded_multipart.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"field\":\"field\",\"file_bytes\":204800}",
+        encoded_multipart.response.body,
     );
 
     server.stop();

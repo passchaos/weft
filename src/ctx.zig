@@ -79,6 +79,65 @@ pub const LimitedReader = struct {
 /// Incremental request-body source. HTTP/1 uses netz's pull reader, HTTP/2
 /// pulls from a duplex/concurrent stream, and HTTP/3 pulls from the concurrent
 /// stream engine (or replays a buffered body on the legacy adapter).
+/// Incremental `Content-Encoding` decoder over a streaming body reader.
+/// Encoded bytes are bounded by `max_body_bytes` and decoded output by the
+/// same budget, so large compressed uploads never need whole-body buffering.
+pub const DecodedReader = struct {
+    inner: BodyReader,
+    decoder: netz.http.content_coding.StreamDecoder,
+    output: []u8,
+    pending: []const u8 = &.{},
+    inner_done: bool = false,
+    finished: bool = false,
+    max_decoded: usize,
+    decoded_total: usize = 0,
+
+    pub fn next(self: *DecodedReader) !?[]const u8 {
+        while (!self.finished) {
+            if (!self.inner_done and self.pending.len == 0) {
+                if (try self.inner.next()) |chunk| {
+                    self.pending = chunk;
+                } else {
+                    self.inner_done = true;
+                }
+            }
+            if (self.pending.len != 0) {
+                const result = self.decoder.step(
+                    self.pending,
+                    self.output,
+                ) catch return error.InvalidContentEncoding;
+                self.pending = self.pending[result.input_read..];
+                if (result.output_written != 0) {
+                    return try self.commit(result.output_written);
+                }
+                continue;
+            }
+            const result = self.decoder.finish(self.output) catch
+                return error.InvalidContentEncoding;
+            if (result.output_written != 0) {
+                return try self.commit(result.output_written);
+            }
+            if (result.status == .done) {
+                self.finished = true;
+                return null;
+            }
+            return error.InvalidContentEncoding;
+        }
+        return null;
+    }
+
+    fn commit(self: *DecodedReader, count: usize) ![]const u8 {
+        const next_total = std.math.add(
+            usize,
+            self.decoded_total,
+            count,
+        ) catch return error.PayloadTooLarge;
+        if (next_total > self.max_decoded) return error.PayloadTooLarge;
+        self.decoded_total = next_total;
+        return self.output[0..count];
+    }
+};
+
 pub const BodyReader = union(enum) {
     pull: *netz.http1.runtime.RequestBodyReader,
     duplex: *netz.http2.runtime.ServerDuplexStream,
@@ -86,6 +145,7 @@ pub const BodyReader = union(enum) {
     h3_stream: *H3StreamReader,
     replay: *ReplayReader,
     limited: *LimitedReader,
+    decoded: *DecodedReader,
 
     pub fn next(self: BodyReader) !?[]const u8 {
         return switch (self) {
@@ -95,6 +155,7 @@ pub const BodyReader = union(enum) {
             .h3_stream => |reader| reader.next(),
             .replay => |reader| reader.next(),
             .limited => |reader| reader.next(),
+            .decoded => |reader| reader.next(),
         };
     }
 };
@@ -214,6 +275,8 @@ pub const Ctx = struct {
     cached_body: ?[]const u8 = null,
     /// Trailer view cached after a streaming read.
     cached_trailers: ?[]const Header = null,
+    /// Cached incremental `Content-Encoding` decoder for this request.
+    cached_decoded_reader: ?*DecodedReader = null,
     client_info: ClientInfo = .{},
     /// Absolute handler deadline when `Limits.request_timeout` is configured.
     request_deadline: ?std.Io.Clock.Timestamp = null,
@@ -427,6 +490,10 @@ pub const Ctx = struct {
                     self.body_reader = limited.inner;
                     return self.trailers();
                 },
+                .decoded => |decoded| {
+                    self.body_reader = decoded.inner;
+                    return self.trailers();
+                },
                 else => {},
             }
         }
@@ -579,6 +646,48 @@ pub const Ctx = struct {
         );
     }
 
+    /// Incremental request-body decoder for `Content-Encoding`. Returns null
+    /// when the body is not encoded or the route is not streaming. Encoded and
+    /// decoded bytes are both bounded by `Limits.max_body_bytes`.
+    pub fn decodedReader(self: *Ctx) !?*DecodedReader {
+        if (self.cached_decoded_reader) |cached| return cached;
+        const reader = self.body_reader orelse return null;
+        const encoding = self.header("content-encoding") orelse return null;
+        if (std.ascii.eqlIgnoreCase(
+            std.mem.trim(u8, encoding, " \t"),
+            "identity",
+        )) return null;
+
+        const chain = netz.http.content_coding.parseHeaders(
+            self.request.headers,
+        ) catch return error.UnsupportedMediaType;
+        const decoder = chain.streamDecoder(self.arena, .{
+            .max_encoded_bytes = self.limits.max_body_bytes,
+            .max_decoded_bytes = self.limits.max_body_bytes,
+            .intermediate_buffer_bytes = @max(
+                1,
+                @min(self.limits.max_streaming_window_bytes, 4 * 1024),
+            ),
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.UnsupportedMediaType,
+        };
+        const chunk = @max(
+            1,
+            @min(self.limits.max_streaming_window_bytes, 4 * 1024),
+        );
+        const output = try self.arena.alloc(u8, chunk);
+        const decoded = try self.arena.create(DecodedReader);
+        decoded.* = .{
+            .inner = reader,
+            .decoder = decoder,
+            .output = output,
+            .max_decoded = self.limits.max_body_bytes,
+        };
+        self.cached_decoded_reader = decoded;
+        return decoded;
+    }
+
     /// Incrementally parse a `multipart/form-data` body from the streaming
     /// reader. Requires a streaming route; the parser keeps a fixed window
     /// bounded by `Limits.max_streaming_window_bytes` and enforces
@@ -588,19 +697,20 @@ pub const Ctx = struct {
             return error.NotStreamingRoute;
         const content_type = self.header("content-type") orelse
             return error.UnsupportedMediaType;
-        // Streaming multipart parses the wire bytes directly, so encoded
-        // bodies must use the buffered `multipart()` path instead.
-        if (self.header("content-encoding")) |encoding| {
-            const trimmed = std.mem.trim(u8, encoding, " \t");
-            if (!std.ascii.eqlIgnoreCase(trimmed, "identity")) {
-                return error.UnsupportedMediaType;
-            }
-        }
-
         // The source closure needs a stable address; keep the reader copy in
-        // the request arena.
+        // the request arena. Encoded bodies are decoded incrementally, and the
+        // parse window shrinks so decoder state still fits the arena.
+        const decoded = try self.decodedReader();
         const holder = try self.arena.create(BodyReader);
-        holder.* = reader;
+        if (decoded) |value| {
+            holder.* = .{ .decoded = value };
+        } else {
+            holder.* = reader;
+        }
+        const window_cap = if (decoded != null)
+            self.limits.max_request_arena_bytes / 4
+        else
+            self.limits.max_request_arena_bytes / 2;
         return multipart_stream_mod.Stream.init(
             self.arena,
             .{ .context = holder, .next_fn = bodyReaderNext },
@@ -608,12 +718,9 @@ pub const Ctx = struct {
             .{
                 .max_parts = self.limits.max_multipart_parts,
                 .max_body_bytes = self.limits.max_body_bytes,
-                // The window comes from the request arena, so keep at least
-                // half of it available for headers, names, and the stream
-                // state itself.
                 .buffer_bytes = @min(
                     self.limits.max_streaming_window_bytes,
-                    self.limits.max_request_arena_bytes / 2,
+                    window_cap,
                 ),
             },
         );

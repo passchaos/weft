@@ -76,7 +76,8 @@ processing, decoded request data, and cooperative graceful shutdown.
   falls back to the raw file for `Range` requests so byte offsets stay valid.
   Sidecars older than the source file are ignored by default.
 - Request `Content-Encoding` decoding through `Ctx.decodedBody`, used by
-  `bodyJson`/`bodyForm`; `bodyJson` requires `application/json` or a
+  `bodyJson`/`bodyForm`, plus incremental `Ctx.decodedReader()` for streaming
+  routes (encoded and decoded bytes both bounded by `max_body_bytes`); `bodyJson` requires `application/json` or a
   structured `+json` media type (parameters allowed), malformed JSON maps to
   `400`, unsupported media types and codings to `415`, and oversized decoded
   bodies to `413`.
@@ -165,8 +166,9 @@ processing, decoded request data, and cooperative graceful shutdown.
   tests cover 200 KiB over HTTP/1, 1 KiB over HTTP/2, and 300 KiB over HTTP/3,
   and a differential test compares it with the buffered parser across every
   source chunk size. `DataReader.readAll(allocator, max_bytes)` drains one part
-  with its own bound, and `nextPart` skips any unread remainder. Encoded
-  (`Content-Encoding`) bodies return `415`; the buffered parser handles them.
+  with its own bound, and `nextPart` skips any unread remainder.
+  `Content-Encoding` bodies are decoded incrementally, with the parse window
+  reduced so decoder state still fits the request arena.
 - `Http3Server(H)` serves QUIC/TLS HTTP/3 through the shared dispatch,
   buffered/streaming responses, bounded QUIC limits, and one UDP accept loop
   with semaphore-bounded sessions. Each session uses netz's owner-serialized

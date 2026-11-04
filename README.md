@@ -112,6 +112,8 @@ escaped queries decode into a single buffer.
   `Limits.request_timeout` budget for cooperative handlers.
 - `ctx.decodedBody()` applies request `Content-Encoding` layers (gzip,
   deflate, br, zstd) with `Limits.max_body_bytes` as the decoded bound.
+  `ctx.decodedReader()` exposes the same decoding incrementally on streaming
+  routes, with both encoded and decoded bytes bounded.
 - `ctx.addTrailer(name, value)` appends a response trailer. HTTP/1 emits
   trailers only when the request sent `TE: trailers`; HTTP/2 and HTTP/3 emit
   them after the body.
@@ -132,9 +134,8 @@ escaped queries decode into a single buffer.
   part at a time with a `DataReader` (`next` or bounded `readAll`), and
   enforces `Limits.max_body_bytes` across the whole body, so large uploads
   never need to fit in the request arena. Stopping a part early is safe:
-  `nextPart` skips the remainder. `Content-Encoding`'d bodies return `415`
-  because the parser reads wire bytes; use the buffered `ctx.multipart()` for
-  encoded uploads.
+  `nextPart` skips the remainder. `Content-Encoding`'d bodies are decoded
+  incrementally before parsing.
 - `ctx.cookie(name)` reads request cookies, unwrapping RFC 6265 DQUOTE
   values; `ctx.setCookie(...)` appends a validated `Set-Cookie` field.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
@@ -648,8 +649,6 @@ results.
 - Handlers cannot be preempted while running CPU-bound code without reaching a
   cancellation point.
 - WebSocket upgrades are HTTP/1.1 only; HTTP/2 and HTTP/3 return `400`.
-- `ctx.multipartStream()` reads wire bytes, so `Content-Encoding`'d bodies
-  return `415`; use the buffered `ctx.multipart()` for encoded uploads.
 - `Etag` covers buffered responses; streamed bodies are not hashed.
 - `StaticFiles` sidecar (`.br`/`.zst`/`.gz`) responses are not range-addressable
   by design; `Range` requests receive the raw file.
