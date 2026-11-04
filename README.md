@@ -587,13 +587,13 @@ path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
 
 `bench-h3` uses a synthetic QUIC handshake (no TLS): 10k sequential requests,
 32k batched GETs, and 32k batched 2 KiB uploads, all in batches of 32 streams.
-With the default 1 ms weft poll interval and netz's active-command wake race
-fix (`462906fc`), it reports roughly 76 µs per request (about 13k requests/s)
-sequentially, 137–151 µs (~6.6–7.3k requests/s) for 32-stream batched GETs, and
-181–183 µs (~5.5k requests/s) for 32-stream batched uploads. A 5 ms poll interval is
-slower on both paths, so the 1 ms default stays. `-Dh3-batch=8` reports ~44 µs
-(~23k requests/s) for GETs and ~71 µs (~14k requests/s) for uploads, so more
-than eight concurrent streams remains the contention point. `-Dh3-batch=8` raises batched
+With the default 1 ms weft poll interval and netz's QUIC recovery-queue
+caching (`8140c2f6`), it reports roughly 76 µs per request (about 13k
+requests/s) sequentially, 59 µs (~17k requests/s) for 32-stream batched GETs,
+and 76 µs (~13k requests/s) for 32-stream batched uploads. `-Dh3-batch=8`
+reports ~53 µs (~19k requests/s) for GETs and ~61 µs (~16k requests/s) for
+uploads, so 32-stream batching is now within ~10–25% of the eight-stream path
+instead of ~3× slower. `-Dh3-batch=8` raises batched
 GET throughput to ~19k requests/s, indicating owner/worker contention above
 about eight concurrent streams. A 5 ms poll interval measured ~10.1 ms/req
 sequentially before these fixes, so the shorter default and the netz wake

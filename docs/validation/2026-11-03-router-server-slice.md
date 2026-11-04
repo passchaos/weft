@@ -244,14 +244,16 @@ sequential requests, batched GETs, and batched 2 KiB uploads, all 32 streams
 per batch:
 
 ```text
-server h3 sequential:      requests=10000 77004.0 ns/request 12986 requests/s
-server h3 batched:         requests=32000 151222.2 ns/request  6613 requests/s
-server h3 upload batched:  requests=32000 180585.4 ns/request  5538 requests/s
+server h3 sequential:      requests=10000 75995.9 ns/request 13159 requests/s
+server h3 batched:         requests=32000 58856.3 ns/request 16991 requests/s
+server h3 upload batched:  requests=32000 75627.2 ns/request 13223 requests/s
 ```
 
-32-stream H3 numbers vary by roughly ±10% between runs (137–151 µs/req for
-GETs) while the 8-stream result stays near 44 µs/req, so the contention point
-is confirmed above eight concurrent streams.
+netz's QUIC recovery-queue caching (`8140c2f6`) cut 32-stream batched GETs from
+~151 µs to ~59 µs per request and uploads from ~181 µs to ~76 µs. With
+`-Dh3-batch=8` the same host reports 53.2 µs (18.8k requests/s) for GETs and
+60.6 µs (16.5k requests/s) for uploads, so 32-stream batching is now within
+10–25% of the eight-stream path.
 
 `-Dh3-poll-us=5000` measured 89.5 µs/req sequential and 186.5 µs/req batched,
 confirming the 1 ms default is still the better trade-off after netz's
@@ -270,8 +272,8 @@ streams remains a netz tuning item.
 
 ## Remaining gaps
 
-- HTTP/3 sequential latency is ~71 µs/req versus ~26 µs for HTTP/2; the gap
-  is dominated by QUIC/HTTP/3 framing and recovery. H3 batched throughput
-  falls from ~19k req/s at eight streams to ~7.4k at 32, so owner/worker
-  scheduling contention remains a netz tuning item.
+- HTTP/3 sequential latency is ~76 µs/req versus ~25 µs for HTTP/2; the gap
+  is dominated by QUIC/HTTP/3 framing and recovery. Batched throughput is now
+  ~17k req/s at 32 streams versus ~19k at eight, so the previous 3× contention
+  penalty is largely resolved.
 - CPU-bound handler preemption without cancellation points.
