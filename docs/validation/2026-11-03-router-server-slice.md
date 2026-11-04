@@ -229,7 +229,9 @@ server h3 upload batched:  requests=32000 182501.8 ns/request  5479 requests/s
 
 `-Dh3-poll-us=5000` measured 89.5 µs/req sequential and 186.5 µs/req batched,
 confirming the 1 ms default is still the better trade-off after netz's
-command-wake fixes.
+command-wake fixes. `-Dh3-batch=8` reports 44.3 µs/req (22.6k requests/s) for
+GETs and 71.0 µs/req (14.1k requests/s) for uploads, so owner/worker contention
+starts above eight concurrent streams.
 
 A 5 ms poll interval measured ~10.1 ms/req sequentially before these netz
 fixes; the 1 ms default plus bounded active-command polling and the wake race

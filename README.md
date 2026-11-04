@@ -560,7 +560,9 @@ With the default 1 ms weft poll interval and netz's active-command wake race
 fix (`462906fc`), it reports roughly 76 µs per request (about 13k requests/s)
 sequentially, 137 µs (~7.3k requests/s) for 32-stream batched GETs, and 183 µs
 (~5.5k requests/s) for 32-stream batched uploads. A 5 ms poll interval is
-slower on both paths, so the 1 ms default stays. `-Dh3-batch=8` raises batched
+slower on both paths, so the 1 ms default stays. `-Dh3-batch=8` reports ~44 µs
+(~23k requests/s) for GETs and ~71 µs (~14k requests/s) for uploads, so more
+than eight concurrent streams remains the contention point. `-Dh3-batch=8` raises batched
 GET throughput to ~19k requests/s, indicating owner/worker contention above
 about eight concurrent streams. A 5 ms poll interval measured ~10.1 ms/req
 sequentially before these fixes, so the shorter default and the netz wake
