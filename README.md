@@ -629,10 +629,10 @@ path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
 
 `bench-h3` uses a synthetic QUIC handshake (no TLS): 10k sequential requests,
 32k batched GETs, and 32k batched 2 KiB uploads, all in batches of 32 streams.
-With the default 1 ms weft poll interval and netz's QUIC recovery-queue
-caching (`8140c2f6`), it reports roughly 76 µs per request (about 13k
-requests/s) sequentially, 59 µs (~17k requests/s) for 32-stream batched GETs,
-and 76 µs (~13k requests/s) for 32-stream batched uploads. `-Dh3-batch=8`
+With the default 1 ms weft poll interval and netz's single-packet buffered
+response emission (`e0d72d80`), it reports roughly 61 µs per request (about
+16k requests/s) sequentially, 52 µs (~19k requests/s) for 32-stream batched
+GETs, and 77 µs (~13k requests/s) for 32-stream batched uploads. `-Dh3-batch=8`
 reports ~53 µs (~19k requests/s) for GETs and ~61 µs (~16k requests/s) for
 uploads, so 32-stream batching is now within ~10–25% of the eight-stream path
 instead of ~3× slower. `-Dh3-batch=8` raises batched
