@@ -96,7 +96,9 @@ processing, decoded request data, and cooperative graceful shutdown.
 - Server options accept custom `404`, `400`, and `405` fallback handlers that
   can inspect `RouteFailure`; default status and `Allow` are pre-set.
 - Streamed response bodies use concatenated gzip members or continuous
-  Brotli/zstd encoder state (`vort.br.IncrementalPlannedStreamEncoder`,
+  deflate/Brotli/zstd encoder state
+  (`vort.deflate.ZlibIncrementalBestEncoder`,
+  `vort.br.IncrementalPlannedStreamEncoder`,
   `vort.zstd.NativeIncrementalFrameEncoder`) depending on the negotiated
   coding, with cancellation forwarded to the original producer.
 - `Ctx` exposes the request timeout deadline, remaining budget, and expiry for
@@ -165,8 +167,8 @@ zig build bench-h3 -Doptimize=ReleaseFast
 
 Results:
 
-- Debug: 110/110 tests passed (77 unit, 33 package/integration).
-- ReleaseFast: 110/110 tests passed.
+- Debug: 111/111 tests passed (78 unit, 33 package/integration).
+- ReleaseFast: 111/111 tests passed.
 - Examples build and `zig build run-hello` completes its request sequence.
 - Router benchmark on the development host (ReleaseFast):
 

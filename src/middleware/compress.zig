@@ -63,7 +63,7 @@ pub const Compress = struct {
                         .cancel_fn = StreamCompress.cancel,
                     };
                 },
-                .br, .zstd => {
+                .deflate, .br, .zstd => {
                     const wrapper = try ctx.arena.create(
                         ContinuousStreamCompress,
                     );
@@ -73,6 +73,10 @@ pub const Compress = struct {
                     );
                     var encoder: ContinuousEncoder = undefined;
                     switch (coding) {
+                        .deflate => encoder = .{ .deflate = vort.deflate.ZlibIncrementalBestEncoder.initWithOptions(
+                            ctx.arena,
+                            .{},
+                        ) },
                         .br => encoder = .{ .br = vort.br.IncrementalPlannedStreamEncoder.initWithOptions(
                             ctx.arena,
                             .{},
@@ -99,7 +103,6 @@ pub const Compress = struct {
                         .cancel_fn = ContinuousStreamCompress.cancel,
                     };
                 },
-                else => {},
             }
             return;
         }
@@ -366,6 +369,7 @@ const stream_encoder_output_bytes = 16 * 1024;
 /// members is not a valid single Content-Encoding stream, so one encoder
 /// state spans the whole response.
 const ContinuousEncoder = union(enum) {
+    deflate: vort.deflate.ZlibIncrementalBestEncoder,
     br: vort.br.IncrementalPlannedStreamEncoder,
     zstd: vort.zstd.NativeIncrementalFrameEncoder,
 
@@ -375,6 +379,7 @@ const ContinuousEncoder = union(enum) {
         output: []u8,
     ) anyerror!vort.core.StepResult {
         return switch (self.*) {
+            .deflate => |*state| state.step(input, output),
             .br => |*state| state.step(input, output),
             .zstd => |*state| state.step(input, output),
         };
@@ -382,6 +387,7 @@ const ContinuousEncoder = union(enum) {
 
     fn finish(self: *ContinuousEncoder) anyerror!void {
         switch (self.*) {
+            .deflate => |*state| state.finish(),
             .br => |*state| try state.finish(),
             .zstd => |*state| state.finish(),
         }
@@ -1047,6 +1053,10 @@ fn expectStreamCoding(
     );
     try std.testing.expectEqual(@as(usize, 4096), decoded.bytes.len);
     for (decoded.bytes) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
+}
+
+test "compress middleware wraps streamed bodies with deflate" {
+    try expectStreamCoding(std.testing.allocator, "deflate", "deflate");
 }
 
 test "compress middleware wraps streamed bodies with brotli" {
