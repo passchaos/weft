@@ -2439,8 +2439,10 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
                 .max_body_bytes = 4096,
                 .max_request_arena_bytes = 64 * 1024,
                 .max_response_bytes = 64 * 1024,
+                .max_http2_concurrent_streams = 32,
             },
             .max_connections = 2,
+            .max_concurrent_handlers = 32,
             .accept_timeout = .fromMilliseconds(100),
             .idle_timeout = .fromMilliseconds(100),
         },
@@ -2646,25 +2648,25 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
     );
     defer batch_client.close();
-    const batch_requests = [_]netz.http2.runtime.RequestOptions{
-        .{ .path = "/hello/one", .authority = "localhost" },
-        .{ .path = "/hello/two", .authority = "localhost" },
-    };
-    var batch_responses: [2]netz.http2.runtime.OwnedResponse = undefined;
+    var batch_requests: [32]netz.http2.runtime.RequestOptions = undefined;
+    for (&batch_requests, 0..) |*request, index| {
+        request.* = .{
+            .path = if (index % 2 == 0) "/hello/one" else "/hello/two",
+            .authority = "localhost",
+        };
+    }
+    var batch_responses: [32]netz.http2.runtime.OwnedResponse = undefined;
     try batch_client.requestBatchInto(&batch_requests, &batch_responses);
     defer for (&batch_responses) |*response| response.deinit(allocator);
-    try std.testing.expectEqual(@as(u16, 200), batch_responses[0].status);
-    try std.testing.expectEqual(@as(u16, 200), batch_responses[1].status);
-    try std.testing.expect(std.mem.indexOf(
-        u8,
-        batch_responses[0].body,
-        "one",
-    ) != null);
-    try std.testing.expect(std.mem.indexOf(
-        u8,
-        batch_responses[1].body,
-        "two",
-    ) != null);
+    for (&batch_responses, 0..) |*response, index| {
+        try std.testing.expectEqual(@as(u16, 200), response.status);
+        const expected = if (index % 2 == 0) "one" else "two";
+        try std.testing.expect(std.mem.indexOf(
+            u8,
+            response.body,
+            expected,
+        ) != null);
+    }
 
     const upload_batch_requests = [_]netz.http2.runtime.RequestOptions{
         .{
