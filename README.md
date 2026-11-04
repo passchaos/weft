@@ -539,12 +539,12 @@ path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
 
 `bench-h3` uses a synthetic QUIC handshake (no TLS): 10k sequential requests,
 32k batched GETs, and 32k batched 2 KiB uploads, all in batches of 32 streams.
-With the default 1 ms weft poll interval and netz's bounded active-command
-polling (`b2b5e5cb`), it reports roughly 275 µs per request (about 3.6k
-requests/s) sequentially, 129 µs (~7.7k requests/s) for batched GETs, and
-158 µs (~6.3k requests/s) for batched uploads. A 5 ms poll interval measured
-~10.1 ms/req sequentially, so the shorter default is important for H3
-latency.
+With the default 1 ms weft poll interval and netz's active-command wake race
+fix (`462906fc`), it reports roughly 71 µs per request (about 14k requests/s)
+sequentially, 134 µs (~7.4k requests/s) for batched GETs, and 161 µs (~6.2k
+requests/s) for batched uploads. A 5 ms poll interval measured ~10.1 ms/req
+sequentially before these fixes, so the shorter default and the netz wake
+changes are both important for H3 latency.
 
 ## Status
 

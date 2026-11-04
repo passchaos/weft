@@ -199,25 +199,26 @@ reach ~52k req/s, and the sequential path still pays HTTP/2 framing.
 `-Dh2-batch=<n>` and `-Dh2-batch-iterations=<n>` override the benchmark shape.
 
 HTTP/3 synthetic-handshake throughput on the same host with the default 1 ms
-weft poll interval and netz's bounded active-command polling (`b2b5e5cb`):
+weft poll interval and netz's active-command wake race fix (`462906fc`):
 sequential requests, batched GETs, and batched 2 KiB uploads, all 32 streams
 per batch:
 
 ```text
-server h3 sequential:      requests=10000 274775.2 ns/request 3639 requests/s
-server h3 batched:         requests=32000 129097.9 ns/request 7746 requests/s
-server h3 upload batched:  requests=32000 157674.9 ns/request 6342 requests/s
+server h3 sequential:      requests=10000 70560.4 ns/request 14172 requests/s
+server h3 batched:         requests=32000 134263.5 ns/request 7448 requests/s
+server h3 upload batched:  requests=32000 161383.0 ns/request 6196 requests/s
 ```
 
-A 5 ms poll interval measured ~10.1 ms/req sequentially and ~303 µs/req
-batched before the netz fix; the 1 ms default plus bounded active-command
-polling reduced sequential latency to ~275 µs.
+A 5 ms poll interval measured ~10.1 ms/req sequentially before these netz
+fixes; the 1 ms default plus bounded active-command polling and the wake race
+fix reduced sequential latency to ~71 µs.
 
 ## Remaining gaps
 
-- HTTP/3 sequential latency is ~275 µs/req versus ~26 µs for HTTP/2; the gap
+- HTTP/3 sequential latency is ~71 µs/req versus ~26 µs for HTTP/2; the gap
   is dominated by QUIC/HTTP/3 framing and recovery, and remains a netz
-  performance follow-up.
+  performance follow-up. H3 batched throughput is lower than sequential
+  because of per-stream worker scheduling contention.
 - HTTP/3 streaming compression currently covers gzip only; Brotli and zstd
   streamed bodies need a streaming encoder from vort.
 - CPU-bound handler preemption without cancellation points.
