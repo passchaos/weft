@@ -107,7 +107,8 @@ Non-streaming HTTP/2 routes previously always received a streaming reader, so
 The adapter now buffers a request with a declared non-zero `Content-Length`
 into the request arena and passes no reader, matching the HTTP/1 and HTTP/3
 buffered-route behavior. A declared zero length yields an empty body without
-waiting for DATA and still exposes any request trailers.
+waiting for DATA; trailers are copied when the concurrent engine has already
+published them.
 
 Requests without a declared length keep the streaming reader: netz's
 concurrent engine publishes body completion only while draining a stream, so a
