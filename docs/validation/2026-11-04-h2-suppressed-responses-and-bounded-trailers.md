@@ -134,6 +134,14 @@ Tests:
 - `package: HTTP/1 routes an absolute-form request target` sends a raw
   `GET http://example.com/hello/absolute HTTP/1.1` and asserts the route runs.
 
+## Empty multipart forms
+
+The buffered `Ctx.multipart()` parser rejected a form with no parts while the
+incremental `Ctx.multipartStream()` parser accepted it. Both now return an
+empty form for a closing delimiter with no parts.
+
+Unit test: `multipart accepts an empty form` in `src/multipart.zig`.
+
 ## Verification
 
 ```sh
@@ -142,4 +150,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 159/159 tests in Debug and ReleaseFast (107 unit, 52 package).
+Results: 160/160 tests in Debug and ReleaseFast (108 unit, 52 package).

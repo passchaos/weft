@@ -178,7 +178,6 @@ pub fn parse(
         });
     }
 
-    if (parts.items.len == 0) return error.InvalidMultipart;
     return .{ .parts = try parts.toOwnedSlice(allocator) };
 }
 
@@ -423,6 +422,19 @@ test "multipart parses fields and files" {
     try std.testing.expectEqualStrings("hello", file.data);
     try std.testing.expectEqualStrings("a.txt", file.filename.?);
     try std.testing.expectEqualStrings("text/plain", file.content_type.?);
+}
+
+test "multipart accepts an empty form" {
+    const allocator = std.testing.allocator;
+    var form = try parse(
+        allocator,
+        "multipart/form-data; boundary=weft",
+        "--weft--\r\n",
+        .{},
+    );
+    defer form.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), form.parts.len);
+    try std.testing.expect(form.part("missing") == null);
 }
 
 test "multipart prefers RFC 5987 filename* over filename" {
