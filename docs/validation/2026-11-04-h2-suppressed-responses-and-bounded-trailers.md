@@ -427,6 +427,17 @@ manually constructed contexts without a server allocator keep the arena path.
 Package test: `package: HTTP/2 readBody survives a small request arena` sends
 6000 bytes in 512-byte chunks against an 8 KiB arena.
 
+## JSON response staging
+
+`Response.json` serialized through a growing arena buffer; a bump allocator
+cannot reclaim intermediate blocks, so a JSON body that fit
+`max_request_arena_bytes` could still fail. Dispatch now gives the response the
+server allocator as a staging allocator and the final bytes are copied into the
+arena once. Manually constructed responses keep the previous path.
+
+Unit test: `json serialization stages growth outside a small arena` serializes
+a 3000-byte value through a 4 KiB arena.
+
 ## Verification
 
 ```sh
@@ -435,4 +446,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 181/181 tests in Debug and ReleaseFast (126 unit, 55 package).
+Results: 182/182 tests in Debug and ReleaseFast (127 unit, 55 package).

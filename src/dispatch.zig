@@ -206,6 +206,7 @@ pub fn dispatch(
             &.{},
         .final_handler = final_handler,
     };
+    context.response.staging_allocator = request_allocator;
 
     if (disposition) |value| {
         try context.set(RouteFailure, value);

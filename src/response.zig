@@ -21,6 +21,10 @@ pub const head_fields_overhead = 3;
 /// stack buffers) without leaving dangling response fields.
 pub const Response = struct {
     allocator: std.mem.Allocator,
+    /// Optional allocator for transient growth (currently JSON serialization).
+    /// When set, the final body is copied into `allocator` once so a bump
+    /// allocator does not accumulate intermediate buffers.
+    staging_allocator: ?std.mem.Allocator = null,
     max_body_bytes: usize,
     max_headers: usize,
     max_head_bytes: usize,
@@ -225,13 +229,20 @@ pub const Response = struct {
     pub fn json(self: *Response, value: anytype) !void {
         if (self.stream != null) return error.StreamAlreadySet;
         if (self.upgrade != null) return error.UpgradeAlreadySet;
-        const body = try std.json.Stringify.valueAlloc(
-            self.allocator,
-            value,
-            .{},
-        );
-        errdefer self.allocator.free(body);
-        if (body.len > self.max_body_bytes) return error.ResponseTooLarge;
+
+        const staging = self.staging_allocator orelse self.allocator;
+        var output = std.Io.Writer.Allocating.init(staging);
+        defer if (self.staging_allocator != null) output.deinit();
+        std.json.Stringify.value(value, .{}, &output.writer) catch
+            return error.OutOfMemory;
+        const written = output.written();
+        if (written.len > self.max_body_bytes) return error.ResponseTooLarge;
+
+        const body = if (self.staging_allocator != null)
+            self.allocator.dupe(u8, written) catch
+                return error.OutOfMemory
+        else
+            output.toOwnedSlice() catch return error.OutOfMemory;
         if (!self.hasHeader("content-type")) {
             try self.setHeader("Content-Type", "application/json");
         }
@@ -541,5 +552,30 @@ test "response trailers are validated and gated by request acceptance" {
     try std.testing.expectError(
         error.InvalidHeaderValue,
         response.addTrailer("X-Bad", "a\r\nb"),
+    );
+}
+
+test "json serialization stages growth outside a small arena" {
+    var arena_buffer: [4096]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var response = Response.initWithLimits(fixed.allocator(), .{
+        .max_response_bytes = 8192,
+        .max_response_headers = 16,
+        .max_response_head_bytes = 1024,
+    });
+    response.staging_allocator = std.testing.allocator;
+
+    const text = try std.testing.allocator.alloc(u8, 3000);
+    defer std.testing.allocator.free(text);
+    @memset(text, 'a');
+    try response.json(.{ .data = text });
+    try std.testing.expect(response.body.len > 3000);
+    try std.testing.expectEqualStrings(
+        "{\"data\":\"",
+        response.body[0..9],
+    );
+    try std.testing.expectEqual(
+        @as(u8, '}'),
+        response.body[response.body.len - 1],
     );
 }
