@@ -212,6 +212,39 @@ fixed-size.
 Unit test: `rate limit index tracks evicted buckets` in
 `src/middleware/rate_limit.zig`.
 
+## Multipart boundary candidates
+
+Both multipart parsers treated any `\r\n--boundary` occurrence followed by a
+bare CR or a single `-` as a delimiter line. Such bytes are valid part data;
+RFC 2046 only starts a delimiter line at `--boundary--` (closing) or
+`--boundary` followed by a complete CRLF. The buffered parser now requires the
+full trailing sequence. The streaming parser reports an incomplete candidate
+when the deciding byte is not buffered yet and keeps scanning otherwise, so a
+window edge cannot turn payload into a delimiter.
+
+The streaming parser also ignores empty source chunks instead of reporting
+progress that would spin the caller.
+
+Tests:
+- `multipart keeps a boundary-like line with a bare CR` and
+  `multipart keeps a single-dash boundary candidate as data` in
+  `src/multipart.zig`.
+- The streaming equivalents plus `streaming multipart ignores empty source
+  chunks` in `src/multipart_stream.zig`.
+
+## Streamed gzip scratch reuse
+
+`StreamCompress` compressed every producer chunk into a fresh arena
+allocation. `std.Io.Writer.Allocating` growth leaked its intermediate buffers
+into the fixed request arena, so a long streamed gzip response could exhaust
+`max_request_arena_bytes` even though the transport budget was respected. The
+wrapper now compresses fixed 16 KiB slices into one reusable output buffer
+allocated when the stream is selected; a final empty member keeps the stream
+valid.
+
+Unit test: `compress middleware streams gzip within a small arena` in
+`src/middleware/compress.zig` streams 256 KiB through a 64 KiB arena.
+
 ## Verification
 
 ```sh
@@ -220,4 +253,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 165/165 tests in Debug and ReleaseFast (112 unit, 53 package).
+Results: 171/171 tests in Debug and ReleaseFast (118 unit, 53 package).

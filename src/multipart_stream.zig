@@ -192,24 +192,45 @@ pub const Stream = struct {
                 }
                 // The initial delimiter must be followed by the first part's
                 // CRLF or by the closing `--`. Otherwise it is preamble text.
-                if (window[after] == '\r' or window[after] == '-') {
-                    self.start += after;
-                    return;
+                if (window[after] == '-') {
+                    if (after + 1 >= window.len) {
+                        if (!try self.fillMore()) {
+                            return error.InvalidMultipart;
+                        }
+                        continue;
+                    }
+                    if (window[after + 1] == '-') {
+                        self.start += after;
+                        return;
+                    }
+                } else if (window[after] == '\r') {
+                    if (after + 1 >= window.len) {
+                        if (!try self.fillMore()) {
+                            return error.InvalidMultipart;
+                        }
+                        continue;
+                    }
+                    if (window[after + 1] == '\n') {
+                        self.start += after;
+                        return;
+                    }
                 }
             }
-            if (findDelimiter(window, self.next_delimiter)) |found| {
-                const after = found + self.next_delimiter.len;
-                if (after < window.len) {
-                    self.start += after;
+            switch (findDelimiter(window, self.next_delimiter)) {
+                .none => {},
+                .incomplete => |found| {
+                    // Keep the candidate and fill more so its trailing bytes
+                    // can be checked before consuming it.
+                    self.start += found;
+                    if (!try self.fillMore()) {
+                        return error.InvalidMultipart;
+                    }
+                    continue;
+                },
+                .found => |found| {
+                    self.start += found + self.next_delimiter.len;
                     return;
-                }
-                // Keep the candidate and fill more so its trailing byte can
-                // be checked before consuming it.
-                self.start += found;
-                if (!try self.fillMore()) {
-                    return error.InvalidMultipart;
-                }
-                continue;
+                },
             }
             if (!try self.fillMore()) {
                 return error.InvalidMultipart;
@@ -334,23 +355,27 @@ pub const Stream = struct {
         }
 
         if (self.eof or self.end == self.buffer.len) return false;
-        const chunk = (try self.source.next()) orelse {
-            self.eof = true;
-            return false;
-        };
-        if (chunk.len == 0) return true;
-        self.total_bytes = std.math.add(
-            usize,
-            self.total_bytes,
-            chunk.len,
-        ) catch return error.PayloadTooLarge;
-        if (self.total_bytes > self.options.max_body_bytes) {
-            return error.PayloadTooLarge;
+        while (true) {
+            const chunk = (try self.source.next()) orelse {
+                self.eof = true;
+                return false;
+            };
+            // Empty chunks carry no bytes; ignore them instead of reporting
+            // progress that would spin the caller.
+            if (chunk.len == 0) continue;
+            self.total_bytes = std.math.add(
+                usize,
+                self.total_bytes,
+                chunk.len,
+            ) catch return error.PayloadTooLarge;
+            if (self.total_bytes > self.options.max_body_bytes) {
+                return error.PayloadTooLarge;
+            }
+            // The source slice stays valid until the next `next` call, so a
+            // partially copied chunk can be retained as `pending`.
+            self.pending = chunk;
+            return self.fillMore();
         }
-        // The source slice stays valid until the next `next` call, so a
-        // partially copied chunk can be retained as `pending`.
-        self.pending = chunk;
-        return self.fillMore();
     }
 };
 
@@ -383,26 +408,28 @@ pub const DataReader = struct {
         const stream = self.stream;
         while (true) {
             const window = stream.buffer[stream.start..stream.end];
-            if (findDelimiter(window, stream.next_delimiter)) |found| {
-                const after = found + stream.next_delimiter.len;
-                if (after < window.len) {
-                    stream.start += after;
+            switch (findDelimiter(window, stream.next_delimiter)) {
+                .found => |found| {
+                    stream.start += found + stream.next_delimiter.len;
                     self.finished = true;
                     if (found == 0) return null;
                     return window[0..found];
-                }
-                // The candidate ends at the window boundary, so the next byte
-                // (which decides whether this is a delimiter) is not buffered
-                // yet. Return the safe prefix and keep the candidate in place
-                // for the next fill.
-                if (found != 0) {
-                    stream.start += found;
-                    return window[0..found];
-                }
-                if (!try stream.fillMore()) {
-                    return error.InvalidMultipart;
-                }
-                continue;
+                },
+                .incomplete => |found| {
+                    // The candidate ends at the window boundary, so the bytes
+                    // that decide whether this is a delimiter line are not
+                    // buffered yet. Return the safe prefix and keep the
+                    // candidate in place for the next fill.
+                    if (found != 0) {
+                        stream.start += found;
+                        return window[0..found];
+                    }
+                    if (!try stream.fillMore()) {
+                        return error.InvalidMultipart;
+                    }
+                    continue;
+                },
+                .none => {},
             }
             const keep = stream.next_delimiter.len - 1;
             if (window.len > keep) {
@@ -417,17 +444,33 @@ pub const DataReader = struct {
     }
 };
 
-/// Find a `\r\n--boundary` occurrence followed by `-` or CRLF.
-fn findDelimiter(window: []const u8, needle: []const u8) ?usize {
+const DelimiterMatch = union(enum) {
+    none,
+    /// The needle is present at this index, but the bytes that decide whether
+    /// it starts a delimiter line are not buffered yet.
+    incomplete: usize,
+    /// A complete delimiter line starts at this index.
+    found: usize,
+};
+
+/// Find a `\r\n--boundary` occurrence that starts a delimiter line. The
+/// boundary must be followed by the closing `--` or by a complete CRLF; a bare
+/// CR or a single `-` is payload text, not a delimiter.
+fn findDelimiter(window: []const u8, needle: []const u8) DelimiterMatch {
     var index: usize = 0;
     while (std.mem.indexOfPos(u8, window, index, needle)) |found| {
         const after = found + needle.len;
-        if (after >= window.len) return found;
-        if (window[after] == '\r') return found;
-        if (window[after] == '-') return found;
+        if (after >= window.len) return .{ .incomplete = found };
+        if (window[after] == '-') {
+            if (after + 1 >= window.len) return .{ .incomplete = found };
+            if (window[after + 1] == '-') return .{ .found = found };
+        } else if (window[after] == '\r') {
+            if (after + 1 >= window.len) return .{ .incomplete = found };
+            if (window[after + 1] == '\n') return .{ .found = found };
+        }
         index = found + 1;
     }
-    return null;
+    return .none;
 }
 
 // ---------------------------------------------------------------------------
@@ -749,4 +792,75 @@ test "streaming multipart parsing is total for arbitrary bytes" {
         }
         try std.testing.expect(parts <= 64);
     }
+}
+
+test "streaming multipart keeps a boundary-like line with a bare CR" {
+    // A boundary candidate followed by CR but not LF is payload text, not a
+    // delimiter line.
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "abc\r\n--weft\rXdef\r\n" ++
+        "--weft--\r\n";
+    try expectStreamPartsWithWindow(body, 1, 128, &.{
+        .{ "field", "abc\r\n--weft\rXdef" },
+    });
+}
+
+test "streaming multipart keeps a single-dash boundary candidate as data" {
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "abc\r\n--weft-Xdef\r\n" ++
+        "--weft--\r\n";
+    try expectStreamPartsWithWindow(body, 1, 128, &.{
+        .{ "field", "abc\r\n--weft-Xdef" },
+    });
+}
+
+test "streaming multipart ignores empty source chunks" {
+    const EmptyChunkSource = struct {
+        body: []const u8,
+        offset: usize = 0,
+        empty_turn: bool = false,
+
+        fn next(raw: ?*anyopaque) anyerror!?[]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.empty_turn = !self.empty_turn;
+            if (!self.empty_turn) return &.{};
+            if (self.offset >= self.body.len) return null;
+            const end = @min(self.body.len, self.offset + 5);
+            const slice = self.body[self.offset..end];
+            self.offset = end;
+            return slice;
+        }
+    };
+
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "value\r\n" ++
+        "--weft--\r\n";
+
+    var source = EmptyChunkSource{ .body = body };
+    var stream = try Stream.init(
+        std.testing.allocator,
+        .{ .context = &source, .next_fn = EmptyChunkSource.next },
+        "multipart/form-data; boundary=weft",
+        .{ .buffer_bytes = 128 },
+    );
+    defer stream.deinit();
+
+    const part = (try stream.nextPart()) orelse
+        return error.TestUnexpectedResult;
+    var collected: std.ArrayListUnmanaged(u8) = .empty;
+    defer collected.deinit(std.testing.allocator);
+    while (try part.data.next()) |chunk| {
+        try collected.appendSlice(std.testing.allocator, chunk);
+    }
+    try std.testing.expectEqualStrings("value", collected.items);
+    try std.testing.expect((try stream.nextPart()) == null);
 }

@@ -79,10 +79,10 @@ pub fn parse(
     // field data containing the boundary text is not mistaken for a delimiter.
     var cursor: usize = 0;
     if (std.mem.startsWith(u8, body, delimiter) and
-        body.len > delimiter.len and
-        (body[delimiter.len] == '\r' or
+        body.len > delimiter.len + 1 and
+        ((body[delimiter.len] == '\r' and
+            body[delimiter.len + 1] == '\n') or
             (body[delimiter.len] == '-' and
-                delimiter.len + 1 < body.len and
                 body[delimiter.len + 1] == '-')))
     {
         cursor = delimiter.len;
@@ -181,8 +181,9 @@ pub fn parse(
     return .{ .parts = try parts.toOwnedSlice(allocator) };
 }
 
-/// Find a `\r\n--boundary` occurrence whose boundary is followed by either
-/// `-` (close delimiter) or CRLF (next part).
+/// Find a `\r\n--boundary` occurrence that starts a delimiter line. The
+/// boundary must be followed by the closing `--` or by a complete CRLF; a
+/// bare CR or a single `-` is payload text, not a delimiter.
 fn findDelimiter(
     body: []const u8,
     from: usize,
@@ -191,12 +192,11 @@ fn findDelimiter(
     var index = from;
     while (std.mem.indexOfPos(u8, body, index, needle)) |found| {
         const after = found + needle.len;
-        if (after < body.len) {
-            if (body[after] == '\r') return found;
-            if (body[after] == '-' and
-                after + 1 < body.len and
-                body[after + 1] == '-')
-            {
+        if (after + 1 < body.len) {
+            if (body[after] == '\r' and body[after + 1] == '\n') {
+                return found;
+            }
+            if (body[after] == '-' and body[after + 1] == '-') {
                 return found;
             }
         }
@@ -615,4 +615,55 @@ test "buffered multipart parsing is total for arbitrary bytes" {
         defer form.deinit(allocator);
         try std.testing.expect(form.parts.len <= 64);
     }
+}
+
+test "multipart keeps a boundary-like line with a bare CR" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    // A boundary candidate followed by CR but not LF is payload text.
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "abc\r\n--weft\rXdef\r\n" ++
+        "--weft--\r\n";
+
+    var form = try parse(
+        arena.allocator(),
+        "multipart/form-data; boundary=weft",
+        body,
+        .{},
+    );
+    defer form.deinit(arena.allocator());
+    try std.testing.expectEqualStrings(
+        "abc\r\n--weft\rXdef",
+        form.part("field").?.data,
+    );
+}
+
+test "multipart keeps a single-dash boundary candidate as data" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const body =
+        "--weft\r\n" ++
+        "Content-Disposition: form-data; name=\"field\"\r\n" ++
+        "\r\n" ++
+        "abc\r\n--weft-Xdef\r\n" ++
+        "--weft--\r\n";
+
+    var form = try parse(
+        arena.allocator(),
+        "multipart/form-data; boundary=weft",
+        body,
+        .{},
+    );
+    defer form.deinit(arena.allocator());
+    try std.testing.expectEqualStrings(
+        "abc\r\n--weft-Xdef",
+        form.part("field").?.data,
+    );
 }

@@ -60,10 +60,13 @@ pub const Compress = struct {
                 .gzip => {
                     const wrapper = try ctx.arena.create(StreamCompress);
                     wrapper.* = .{
-                        .allocator = ctx.arena,
                         .original = body,
                         .level = self.level,
                         .max_chunk_bytes = ctx.limits.max_response_bytes,
+                        .output_buffer = try ctx.arena.alloc(
+                            u8,
+                            gzip_member_output_bytes,
+                        ),
                     };
                     response.setHeader(
                         "Content-Encoding",
@@ -326,25 +329,28 @@ fn compressBody(
     }
 }
 
-/// Streaming gzip wrapper. Each producer chunk becomes one gzip member; RFC
-/// 1952 permits concatenated members, and a final empty member guarantees a
-/// valid stream even when the producer writes no data.
+/// Streaming gzip wrapper. Each producer chunk becomes one or more gzip
+/// members; RFC 1952 permits concatenated members, and a final empty member
+/// guarantees a valid stream even when the producer writes no data.
+///
+/// Members are compressed into one reusable buffer, so a long stream does not
+/// allocate per chunk from the request arena.
 const StreamCompress = struct {
-    allocator: std.mem.Allocator,
     original: stream_mod.Body,
     level: flate.Compress.Options,
-    /// Bound for one producer chunk; the compressed copy is allocated before
-    /// the transport writer sees the response budget.
+    /// Bound for one producer chunk; the transport writer enforces the total
+    /// response budget.
     max_chunk_bytes: usize,
+    output_buffer: []u8,
 
     fn run(raw: ?*anyopaque, output: *stream_mod.Writer) anyerror!void {
         const self: *StreamCompress = @ptrCast(@alignCast(raw orelse
             return error.InvalidWriterState));
         var chunk = ChunkCompress{
-            .allocator = self.allocator,
             .output = output,
             .level = self.level,
             .max_chunk_bytes = self.max_chunk_bytes,
+            .output_buffer = self.output_buffer,
         };
         var writer = stream_mod.Writer{
             .context = &chunk,
@@ -361,26 +367,69 @@ const StreamCompress = struct {
 };
 
 const ChunkCompress = struct {
-    allocator: std.mem.Allocator,
     output: *stream_mod.Writer,
     level: flate.Compress.Options,
     max_chunk_bytes: usize,
+    output_buffer: []u8,
 
     fn writeChunk(raw: ?*anyopaque, data: []const u8) anyerror!void {
         const self: *ChunkCompress = @ptrCast(@alignCast(raw orelse
             return error.InvalidWriterState));
         if (data.len > self.max_chunk_bytes) return error.ResponseTooLarge;
-        const compressed = try compressBody(
-            self.allocator,
-            data,
-            .gzip,
-            self.level,
-            3,
-        );
-        defer self.allocator.free(compressed);
-        try self.output.write(compressed);
+        if (data.len == 0) {
+            try compressGzipMember(
+                self.output_buffer,
+                self.output,
+                &.{},
+                self.level,
+            );
+            return;
+        }
+        var offset: usize = 0;
+        while (offset < data.len) {
+            const end = @min(data.len, offset + gzip_member_input_bytes);
+            try compressGzipMember(
+                self.output_buffer,
+                self.output,
+                data[offset..end],
+                self.level,
+            );
+            offset = end;
+        }
     }
 };
+
+/// Largest producer slice compressed into one gzip member. A fixed window
+/// bounds the reusable output buffer regardless of the response size.
+const gzip_member_input_bytes = 16 * 1024;
+
+/// Worst-case gzip member size for `input_len` bytes. Stored blocks add a
+/// small per-block header, and fixed Huffman codes can expand literals to 9/8
+/// of their size.
+fn gzipMemberBound(input_len: usize) usize {
+    return input_len + input_len / 8 + 128;
+}
+
+const gzip_member_output_bytes = gzipMemberBound(gzip_member_input_bytes);
+
+fn compressGzipMember(
+    buffer: []u8,
+    output: *stream_mod.Writer,
+    data: []const u8,
+    level: flate.Compress.Options,
+) !void {
+    var writer = std.Io.Writer.fixed(buffer);
+    var window: [flate.max_window_len]u8 = undefined;
+    var encoder = try flate.Compress.init(
+        &writer,
+        &window,
+        .gzip,
+        level,
+    );
+    try encoder.writer.writeAll(data);
+    try encoder.finish();
+    try output.write(writer.buffered());
+}
 
 const stream_encoder_output_bytes = 16 * 1024;
 
@@ -1248,4 +1297,81 @@ test "compress middleware honors no-transform" {
         context.response.header("content-encoding") == null,
     );
     try std.testing.expectEqual(@as(usize, 4096), context.response.body.len);
+}
+
+test "compress middleware streams gzip within a small arena" {
+    const allocator = std.testing.allocator;
+    var arena_buffer: [64 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    const arena = fixed.allocator();
+
+    const Producer = struct {
+        fn run(_: ?*anyopaque, writer: *stream_mod.Writer) anyerror!void {
+            var chunk: [1024]u8 = undefined;
+            @memset(&chunk, 'a');
+            var index: usize = 0;
+            while (index < 256) : (index += 1) try writer.write(&chunk);
+        }
+    };
+
+    const Collector = struct {
+        bytes: std.ArrayListUnmanaged(u8) = .empty,
+
+        fn write(raw: ?*anyopaque, data: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            try self.bytes.appendSlice(allocator, data);
+        }
+    };
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "gzip",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 0 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena,
+        .limits = .{ .max_response_bytes = 512 * 1024 },
+        .request = &request,
+        .response = ctx_mod.Response.init(arena, 512 * 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.setHeader("Content-Type", "text/plain");
+                try ctx.stream(.{ .write_fn = Producer.run });
+            }
+        }.handle),
+    };
+
+    try context.run();
+    var collector = Collector{};
+    defer collector.bytes.deinit(allocator);
+    var writer = stream_mod.Writer{
+        .context = &collector,
+        .write_fn = Collector.write,
+    };
+    try context.response.stream.?.run(&writer);
+
+    const decode_headers = [_]@import("netz").http1.Header{.{
+        .name = "Content-Encoding",
+        .value = "gzip",
+    }};
+    const decoded = try @import("netz").http1.content_coding.decodeHeadersAlloc(
+        allocator,
+        &decode_headers,
+        collector.bytes.items,
+        256 * 1024,
+    );
+    defer allocator.free(decoded.bytes);
+    try std.testing.expectEqual(@as(usize, 256 * 1024), decoded.bytes.len);
+    for (decoded.bytes) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
 }
