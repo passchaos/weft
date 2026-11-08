@@ -199,6 +199,9 @@ therefore read past `Limits.max_body_bytes` on HTTP/2 and HTTP/3, whose stream
 readers do not enforce the budget themselves. The wrapper is now applied for
 every request with a streaming reader, including fallback handlers.
 
+The wrapper is a stack local in `dispatch`, so applying the budget costs no
+arena allocation.
+
 Unit test: `fallback handlers keep the streaming body bounded` in
 `src/dispatch.zig`.
 

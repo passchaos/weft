@@ -152,18 +152,19 @@ pub fn dispatch(
         }
     }
 
+    var limited_reader: ctx_mod.LimitedReader = undefined;
     var effective_reader = body_reader;
     if (effective_reader) |reader| {
         // HTTP/1's pull reader enforces the server-wide budget itself, but
         // Netz's HTTP/2 concurrent stream and HTTP/3 stream readers do not.
         // Apply the effective budget here for every adapter, including
-        // fallback handlers, so a handler cannot read past it.
-        const limited = try arena.create(ctx_mod.LimitedReader);
-        limited.* = .{
+        // fallback handlers, so a handler cannot read past it. The wrapper
+        // lives on this stack frame, which outlives the handler chain.
+        limited_reader = .{
             .inner = reader,
             .remaining = effective_limits.max_body_bytes,
         };
-        effective_reader = .{ .limited = limited };
+        effective_reader = .{ .limited = &limited_reader };
     }
 
     var middleware = app_middleware;
