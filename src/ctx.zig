@@ -484,7 +484,13 @@ pub const Ctx = struct {
         else
             reader;
 
+        // Grow a staging buffer outside the fixed request arena: ArrayList
+        // growth cannot reclaim intermediate blocks from a bump allocator,
+        // which could otherwise exhaust the arena for a body that fits it.
+        // The final bytes are copied into the arena exactly once.
+        const staging = self.request_allocator orelse self.arena;
         var output = std.ArrayListUnmanaged(u8).empty;
+        defer if (self.request_allocator != null) output.deinit(staging);
         var total: usize = 0;
         while (try effective.next()) |chunk| {
             const next_total = std.math.add(usize, total, chunk.len) catch
@@ -494,12 +500,17 @@ pub const Ctx = struct {
             {
                 return error.PayloadTooLarge;
             }
-            output.appendSlice(self.arena, chunk) catch
+            output.appendSlice(staging, chunk) catch
                 return error.PayloadTooLarge;
             total = next_total;
         }
-        self.cached_body = output.items;
-        return output.items;
+        const cached = if (self.request_allocator != null)
+            self.arena.dupe(u8, output.items) catch
+                return error.PayloadTooLarge
+        else
+            output.items;
+        self.cached_body = cached;
+        return cached;
     }
 
     /// True when the request's `Accept` header allows `media_type`

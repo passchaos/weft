@@ -416,6 +416,17 @@ header's arena copy in the local, removing one allocation per generated id.
 Unit test: `request id middleware stores the response copy` in
 `src/middleware/request_id.zig`.
 
+## Streaming readBody staging
+
+`Ctx.readBody` grew its accumulation buffer inside the fixed request arena.
+`ArrayList` growth cannot reclaim intermediate blocks from a bump allocator,
+so a body that fit `max_request_arena_bytes` could still exhaust the arena.
+The body is now staged in `request_allocator` and copied into the arena once;
+manually constructed contexts without a server allocator keep the arena path.
+
+Package test: `package: HTTP/2 readBody survives a small request arena` sends
+6000 bytes in 512-byte chunks against an 8 KiB arena.
+
 ## Verification
 
 ```sh
@@ -424,4 +435,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 180/180 tests in Debug and ReleaseFast (126 unit, 54 package).
+Results: 181/181 tests in Debug and ReleaseFast (126 unit, 55 package).
