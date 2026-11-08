@@ -170,7 +170,8 @@ validated as positive durations at `init`. Previously a zero or negative value
 was accepted and could turn every request or accept loop iteration into an
 immediate timeout. `max_request_target_bytes = 0` and an explicitly zero
 `max_http2_concurrent_streams` are rejected for the same reason: they make the
-adapter unusable.
+adapter unusable. HTTP/2 also rejects a `max_concurrent_handlers` value that
+does not fit Netz's 32-bit stream limit.
 
 Package test: `package: servers reject unusable option budgets` covers HTTP/1,
 HTTP/2, and HTTP/3 initialization.

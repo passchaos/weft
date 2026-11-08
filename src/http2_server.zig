@@ -129,6 +129,7 @@ pub fn Http2Server(comptime H: type) type {
             if (options.max_connections == 0 or
                 options.max_requests_per_connection == 0 or
                 options.max_concurrent_handlers == 0 or
+                options.max_concurrent_handlers > std.math.maxInt(u32) or
                 options.handler_poll_interval.nanoseconds <= 0 or
                 options.accept_error_backoff.nanoseconds <= 0 or
                 options.accept_timeout.nanoseconds <= 0 or

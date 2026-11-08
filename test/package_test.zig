@@ -5232,6 +5232,20 @@ test "package: servers reject unusable option budgets" {
             .{},
         ),
     );
+    if (@sizeOf(usize) > @sizeOf(u32)) {
+        try std.testing.expectError(
+            error.InvalidOptions,
+            weft.Http2Server(App).init(
+                io,
+                allocator,
+                .{
+                    .address = .{ .ip4 = .loopback(0) },
+                    .max_concurrent_handlers = @as(usize, std.math.maxInt(u32)) + 1,
+                },
+                .{},
+            ),
+        );
+    }
 
     const connection_id = [_]u8{ 1, 2, 3, 4 };
     try std.testing.expectError(
