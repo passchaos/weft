@@ -8,6 +8,7 @@ const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
 const drain_mod = @import("drain.zig");
+const target_mod = @import("target.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -401,7 +402,12 @@ pub fn Http3Server(comptime H: type) type {
                 return;
             };
 
-            const streaming = self.app_router.isStreaming(method, target);
+            // Route matching uses the path, never the query string carried by
+            // the `:path` pseudo-header.
+            const streaming = self.app_router.isStreaming(
+                method,
+                target_mod.split(target).path,
+            );
             var reader: ?ctx_mod.H3StreamReader = null;
             var body: []const u8 = "";
             var trailers: []netz.http1.Header = &.{};

@@ -173,6 +173,45 @@ immediate timeout.
 Package test: `package: servers reject non-positive timeout budgets` covers
 HTTP/1, HTTP/2, and HTTP/3 initialization.
 
+## HTTP/2 and HTTP/3 streaming routes with query strings
+
+Both concurrent adapters passed the whole `:path` value to
+`Router.isStreaming`, including the query string. A route registered with
+`RouteOptions.streaming` therefore looked non-streaming whenever the request
+carried a query: HTTP/2 buffered the body and HTTP/3 read it eagerly, so
+`Ctx.bodyReader()` was null and `Ctx.multipartStream()` failed with
+`NotStreamingRoute`.
+
+Both adapters now split the target with `target.split` and match on the path,
+matching the HTTP/1 adapter and `dispatch`. The regression test registers a
+streaming route that reports whether it received a reader and requests it with
+`?check=1` over both HTTP/2 and HTTP/3.
+
+## Fallback body budget
+
+`dispatch` wrapped the adapter's body reader in `LimitedReader` only when the
+route resolution succeeded. A custom `not_found`, `bad_request`, or
+`method_not_allowed` handler that used `Ctx.bodyReader()` directly could
+therefore read past `Limits.max_body_bytes` on HTTP/2 and HTTP/3, whose stream
+readers do not enforce the budget themselves. The wrapper is now applied for
+every request with a streaming reader, including fallback handlers.
+
+Unit test: `fallback handlers keep the streaming body bounded` in
+`src/dispatch.zig`.
+
+## Indexed rate-limit buckets
+
+`RateLimit` located a client bucket by scanning the fixed table, and picked an
+eviction victim with a second scan. With the default 4096 clients, a busy
+server paid an O(clients) comparison cost per request. A bounded
+`AutoHashMapUnmanaged` index now maps each key to its bucket slot; capacity is
+reserved in `init`, and evicting the least-recently-seen client removes its key
+before the slot is reused. Lookup and insertion are O(1) and the table remains
+fixed-size.
+
+Unit test: `rate limit index tracks evicted buckets` in
+`src/middleware/rate_limit.zig`.
+
 ## Verification
 
 ```sh
@@ -181,4 +220,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 162/162 tests in Debug and ReleaseFast (110 unit, 52 package).
+Results: 165/165 tests in Debug and ReleaseFast (112 unit, 53 package).

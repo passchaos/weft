@@ -8,6 +8,7 @@ const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
 const drain_mod = @import("drain.zig");
+const target_mod = @import("target.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -431,7 +432,12 @@ pub fn Http2Server(comptime H: type) type {
             // avoid waiting for a body that cannot arrive, and keep the
             // streaming reader for routes that opted in or for unknown-length
             // bodies.
-            const route_streaming = self.app_router.isStreaming(method, target);
+            // Route matching uses the path, never the query string carried by
+            // the `:path` pseudo-header.
+            const route_streaming = self.app_router.isStreaming(
+                method,
+                target_mod.split(target).path,
+            );
             const declared_length = head.content_length;
             const has_declared_body = declared_length != null and
                 declared_length.? != 0;

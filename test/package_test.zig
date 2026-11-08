@@ -767,6 +767,13 @@ const StreamHandlers = struct {
         try ctx.json(.{ .bytes = body.len });
     }
 
+    /// Reports whether the adapter exposed the incremental reader, without
+    /// dereferencing it. Streaming-route detection must ignore the query.
+    fn streamingProbeRoute(app: *App, ctx: *weft.Ctx) anyerror!void {
+        _ = app;
+        try ctx.json(.{ .streaming = ctx.bodyReader() != null });
+    }
+
     fn rejectUpload(app: *App, ctx: *weft.Ctx) anyerror!void {
         _ = app;
         ctx.setStatus(413);
@@ -3257,6 +3264,11 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
         StreamHandlers.uploadRoute,
         .{ .streaming = true },
     );
+    try router.post(
+        "/streaming-probe",
+        StreamHandlers.streamingProbeRoute,
+        .{ .streaming = true },
+    );
     try router.get("/trailers", trailerRoute, .{});
     try router.get("/trailers-stream", streamingTrailerRoute, .{});
     try router.post(
@@ -3439,6 +3451,31 @@ test "package: HTTP/2 adapter serves routes, errors, and streams" {
     try std.testing.expectEqualStrings(
         "{\"bytes\":2048}",
         upload_response.body,
+    );
+
+    // Streaming-route detection must use the path, not the whole target, so
+    // a query string does not silently turn the route into a buffered one.
+    const probe_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/streaming-probe?check=1",
+        .{base},
+    );
+    defer allocator.free(probe_uri);
+    var probe_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        probe_uri,
+        .{
+            .method = "POST",
+            .body = "probe",
+        },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer probe_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), probe_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"streaming\":true}",
+        probe_response.body,
     );
 
     const trailers_uri = try std.fmt.allocPrint(
@@ -3708,6 +3745,11 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
         StreamHandlers.uploadRoute,
         .{ .streaming = true },
     );
+    try router.post(
+        "/streaming-probe",
+        StreamHandlers.streamingProbeRoute,
+        .{ .streaming = true },
+    );
     try router.get("/trailers-stream", streamingTrailerRoute, .{});
     try router.post(
         "/upload-multipart-stream",
@@ -3823,6 +3865,23 @@ test "package: HTTP/3 adapter serves routes, POST, and streams" {
     try std.testing.expectEqualStrings(
         "{\"bytes\":2048}",
         upload_response.response.body,
+    );
+
+    // Streaming-route detection must ignore the query string on HTTP/3 too.
+    var h3_probe_response = try client.request(.{
+        .method = "POST",
+        .path = "/streaming-probe?check=1",
+        .authority = "localhost",
+        .body = "probe",
+    });
+    defer h3_probe_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        h3_probe_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"streaming\":true}",
+        h3_probe_response.response.body,
     );
 
     // Exceed the per-stream resident window so the owner must pause and

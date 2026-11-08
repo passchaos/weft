@@ -132,19 +132,17 @@ pub fn dispatch(
     }
 
     var effective_reader = body_reader;
-    if (disposition == null) {
-        if (effective_reader) |reader| {
-            // HTTP/1's pull reader enforces the server-wide budget itself,
-            // but Netz's HTTP/2 concurrent stream and HTTP/3 stream readers
-            // do not. Apply the effective budget here for every adapter so a
-            // streaming handler cannot read past it.
-            const limited = try arena.create(ctx_mod.LimitedReader);
-            limited.* = .{
-                .inner = reader,
-                .remaining = effective_limits.max_body_bytes,
-            };
-            effective_reader = .{ .limited = limited };
-        }
+    if (effective_reader) |reader| {
+        // HTTP/1's pull reader enforces the server-wide budget itself, but
+        // Netz's HTTP/2 concurrent stream and HTTP/3 stream readers do not.
+        // Apply the effective budget here for every adapter, including
+        // fallback handlers, so a handler cannot read past it.
+        const limited = try arena.create(ctx_mod.LimitedReader);
+        limited.* = .{
+            .inner = reader,
+            .remaining = effective_limits.max_body_bytes,
+        };
+        effective_reader = .{ .limited = limited };
     }
 
     var middleware = app_middleware;
@@ -331,4 +329,50 @@ fn applyHandlerError(context: *ctx_mod.Ctx, err: anyerror) void {
     context.response.reset();
     context.response.setStatus(status);
     context.response.text(response_mod.reasonFor(status)) catch {};
+}
+
+test "fallback handlers keep the streaming body bounded" {
+    var app: void = {};
+    var router = router_mod.Router(void).init(std.testing.allocator);
+    defer router.deinit();
+
+    var replay = ctx_mod.ReplayReader{ .body = "0123456789abcdef" };
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/missing",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const drainBody = struct {
+        fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+            var total: usize = 0;
+            while (try ctx.bodyReader().?.next()) |chunk| total += chunk.len;
+            ctx.setStatus(200);
+            try ctx.text("drained");
+        }
+    }.handle;
+
+    const response = try dispatch(
+        void,
+        &app,
+        &router,
+        std.testing.io,
+        .{
+            .max_body_bytes = 4,
+            .max_response_bytes = 1024,
+        },
+        &.{},
+        .{ .not_found = ctx_mod.handler(drainBody) },
+        &request,
+        .{},
+        arena.allocator(),
+        std.testing.allocator,
+        .{ .replay = &replay },
+    );
+    try std.testing.expectEqual(@as(u16, 413), response.status);
 }

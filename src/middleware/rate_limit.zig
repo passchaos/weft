@@ -6,8 +6,9 @@ const ctx_mod = @import("../ctx.zig");
 /// Clients are keyed by the peer IP address without the ephemeral source port,
 /// so reconnecting does not create a fresh bucket. IPv4-mapped IPv6 addresses
 /// share the IPv4 key. When an adapter cannot provide an address, all such
-/// requests share one bucket. Bucket storage is fixed at construction and
-/// evicts the least-recently-seen client when full.
+/// requests share one bucket. Bucket storage is fixed at construction, a
+/// bounded hash index makes client lookup independent of the table size, and
+/// the least-recently-seen client is evicted when the table is full.
 ///
 /// Rate limiting uses the direct peer address. Applications behind a reverse
 /// proxy must apply their own trusted-proxy policy before enabling this.
@@ -16,6 +17,9 @@ pub const RateLimit = struct {
     max_requests: u64,
     window_ns: i96,
     buckets: []Bucket,
+    /// Maps a client key to its bucket slot. Capacity is reserved in `init`,
+    /// so insertion after an eviction never allocates.
+    index: std.AutoHashMapUnmanaged(Key, usize) = .empty,
     mutex: std.Io.Mutex = .init,
     global_bucket: Bucket = .{},
     key_header: ?[]const u8 = null,
@@ -52,24 +56,35 @@ pub const RateLimit = struct {
     ) !RateLimit {
         if (options.max_requests == 0 or
             options.window.nanoseconds <= 0 or
-            options.max_clients == 0)
+            options.max_clients == 0 or
+            options.max_clients > std.math.maxInt(u32))
         {
             return error.InvalidOptions;
         }
 
         const buckets = try allocator.alloc(Bucket, options.max_clients);
         for (buckets) |*bucket| bucket.* = .{};
+        errdefer allocator.free(buckets);
+
+        var index: std.AutoHashMapUnmanaged(Key, usize) = .empty;
+        errdefer index.deinit(allocator);
+        try index.ensureTotalCapacity(
+            allocator,
+            @intCast(options.max_clients),
+        );
 
         return .{
             .allocator = allocator,
             .max_requests = options.max_requests,
             .window_ns = options.window.nanoseconds,
             .buckets = buckets,
+            .index = index,
             .key_header = options.key_header,
         };
     }
 
     pub fn deinit(self: *RateLimit) void {
+        self.index.deinit(self.allocator);
         self.allocator.free(self.buckets);
         self.* = undefined;
     }
@@ -95,7 +110,7 @@ pub const RateLimit = struct {
         {
             defer self.mutex.unlock(ctx.io);
 
-            const bucket = self.bucketFor(address, override_key, now);
+            const bucket = try self.bucketFor(address, override_key, now);
             self.refill(bucket, now);
             bucket.last_seen_ns = now;
             if (bucket.tokens == 0) {
@@ -124,7 +139,7 @@ pub const RateLimit = struct {
         address: ?std.Io.net.IpAddress,
         override_key: ?Key,
         now: i96,
-    ) *Bucket {
+    ) !*Bucket {
         const key = override_key orelse
             if (address) |value| keyFor(value) else null;
         if (key == null) {
@@ -139,20 +154,30 @@ pub const RateLimit = struct {
             return &self.global_bucket;
         }
 
-        for (self.buckets) |*bucket| {
-            if (!bucket.used) continue;
-            if (bucket.key != null and std.meta.eql(bucket.key.?, key.?)) {
-                return bucket;
-            }
+        if (self.index.get(key.?)) |slot| {
+            return &self.buckets[slot];
         }
 
-        var victim: *Bucket = &self.buckets[0];
-        for (self.buckets) |*bucket| {
+        // Prefer an unused bucket, otherwise evict the least-recently-seen
+        // client. The hash index is bounded by the same table size, so a
+        // lookup never scans every bucket.
+        var victim_index: usize = 0;
+        var found_free = false;
+        for (self.buckets, 0..) |*bucket, index| {
             if (!bucket.used) {
-                victim = bucket;
+                victim_index = index;
+                found_free = true;
                 break;
             }
-            if (bucket.last_seen_ns < victim.last_seen_ns) victim = bucket;
+            if (bucket.last_seen_ns <
+                self.buckets[victim_index].last_seen_ns)
+            {
+                victim_index = index;
+            }
+        }
+        const victim = &self.buckets[victim_index];
+        if (!found_free) {
+            if (victim.key) |old_key| _ = self.index.remove(old_key);
         }
         victim.* = .{
             .key = key,
@@ -161,6 +186,10 @@ pub const RateLimit = struct {
             .last_refill_ns = now,
             .last_seen_ns = now,
         };
+        // Capacity for `max_clients` entries is reserved in `init` and an
+        // eviction removes one entry first, so this insert cannot grow the
+        // table. Keep the bucket usable if an allocator failure still occurs.
+        self.index.put(self.allocator, key.?, victim_index) catch {};
         return victim;
     }
 
@@ -398,4 +427,64 @@ test "rate limit can key on an application header" {
         @as(u16, 200),
         try run.once(&limiter, arena.allocator(), &other_request),
     );
+}
+
+test "rate limit index tracks evicted buckets" {
+    const allocator = std.testing.allocator;
+    var limiter = try RateLimit.init(allocator, .{
+        .max_requests = 1,
+        .window = .fromSeconds(1),
+        .max_clients = 2,
+    });
+    defer limiter.deinit();
+
+    const run = struct {
+        fn once(
+            limiter_: *RateLimit,
+            address: std.Io.net.IpAddress,
+        ) !u16 {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var request: @import("netz").http1.Request = .{
+                .method = .GET,
+                .target = "/",
+                .version = .http_1_1,
+                .headers = &.{},
+                .body = "",
+                .consumed = 0,
+            };
+            var context = ctx_mod.Ctx{
+                .app = undefined,
+                .io = std.testing.io,
+                .arena = arena.allocator(),
+                .limits = .{},
+                .request = &request,
+                .client_info = .{ .address = address },
+                .response = ctx_mod.Response.init(arena.allocator(), 1024),
+                .middleware = &.{limiter_.handler()},
+                .final_handler = ctx_mod.handler(struct {
+                    fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                        try ctx.text("ok");
+                    }
+                }.handle),
+            };
+            try context.run();
+            return context.response.status;
+        }
+    };
+
+    const first = try std.Io.net.IpAddress.parse("127.0.0.1", 1000);
+    const second = try std.Io.net.IpAddress.parse("127.0.0.2", 1000);
+    const third = try std.Io.net.IpAddress.parse("127.0.0.3", 1000);
+
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, first));
+    try std.testing.expectEqual(@as(u16, 429), try run.once(&limiter, first));
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, second));
+
+    // The third client evicts the least-recently-seen bucket, and the index
+    // must forget the evicted key instead of pointing at its reused slot.
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, third));
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, first));
+    try std.testing.expectEqual(@as(u16, 429), try run.once(&limiter, first));
+    try std.testing.expectEqual(@as(u16, 429), try run.once(&limiter, third));
 }
