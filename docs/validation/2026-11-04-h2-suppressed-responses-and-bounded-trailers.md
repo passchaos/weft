@@ -401,6 +401,12 @@ the bound. The common one-or-two locals need no allocation.
 
 Unit test: `locals replace values and stay bounded` in `src/ctx.zig`.
 
+## Stack-formatted ETag
+
+The `Etag` middleware allocated the quoted tag and its weak prefix in the
+arena before `setHeader` copied the value again. It now formats both into
+stack buffers, leaving `setHeader` as the single arena copy.
+
 ## Verification
 
 ```sh

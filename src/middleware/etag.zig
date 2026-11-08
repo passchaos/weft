@@ -30,13 +30,15 @@ pub const Etag = struct {
         }
 
         const hash = std.hash.Wyhash.hash(0, ctx.response.body);
-        const strong = try std.fmt.allocPrint(
-            ctx.arena,
+        var strong_buffer: [32]u8 = undefined;
+        const strong = std.fmt.bufPrint(
+            &strong_buffer,
             "\"{x}\"",
             .{hash},
-        );
+        ) catch return;
+        var weak_buffer: [34]u8 = undefined;
         const value = if (self.weak)
-            try std.fmt.allocPrint(ctx.arena, "W/{s}", .{strong})
+            std.fmt.bufPrint(&weak_buffer, "W/{s}", .{strong}) catch return
         else
             strong;
         try ctx.setHeader("ETag", value);
