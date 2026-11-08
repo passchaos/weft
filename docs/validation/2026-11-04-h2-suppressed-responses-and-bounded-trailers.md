@@ -448,6 +448,16 @@ encodings still borrow the original body.
 Unit test: `decodedBody stages growth outside a small arena` decodes a
 3000-byte gzip body through a 4 KiB arena.
 
+## Buffered compression staging
+
+Buffered compression grew its output in the request arena, so a body that fit
+the arena could still fail to compress and fall back to identity. It now
+compresses in the server allocator and copies the final bytes into the arena
+once; genuine compression failures still fall back to identity.
+
+Unit test: `compress middleware stages buffered growth outside a small arena`
+compresses an incompressible 3000-byte body through a 4 KiB arena.
+
 ## Verification
 
 ```sh
@@ -456,4 +466,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 183/183 tests in Debug and ReleaseFast (128 unit, 55 package).
+Results: 184/184 tests in Debug and ReleaseFast (129 unit, 55 package).

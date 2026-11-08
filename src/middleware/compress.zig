@@ -138,23 +138,35 @@ pub const Compress = struct {
                 if (response.body.len < self.min_bytes) return;
                 if (!compressible(response.header("content-type"))) return;
 
+                // Compress in the server allocator and copy the final bytes
+                // into the arena once, so encoder growth cannot exhaust the
+                // fixed request arena for a body that fits.
+                const staging = ctx.request_allocator orelse ctx.arena;
                 const compressed = compressBody(
-                    ctx.arena,
+                    staging,
                     response.body,
                     coding,
                     self.level,
                     self.zstd_level,
                 ) catch return;
+                const body = if (ctx.request_allocator != null)
+                    ctx.arena.dupe(u8, compressed) catch {
+                        staging.free(compressed);
+                        return;
+                    }
+                else
+                    compressed;
+                if (ctx.request_allocator != null) staging.free(compressed);
                 response.setHeader(
                     "Content-Encoding",
                     coding.headerValue(),
                 ) catch {
-                    ctx.arena.free(compressed);
+                    ctx.arena.free(body);
                     return;
                 };
-                response.setBody(compressed) catch {
+                response.setBody(body) catch {
                     _ = response.removeHeader("content-encoding");
-                    ctx.arena.free(compressed);
+                    ctx.arena.free(body);
                     return;
                 };
             },
@@ -1376,4 +1388,54 @@ test "compress middleware streams gzip within a small arena" {
     defer allocator.free(decoded.bytes);
     try std.testing.expectEqual(@as(usize, 256 * 1024), decoded.bytes.len);
     for (decoded.bytes) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
+}
+
+test "compress middleware stages buffered growth outside a small arena" {
+    const allocator = std.testing.allocator;
+    var arena_buffer: [4096]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    const arena = fixed.allocator();
+
+    // Incompressible input keeps the compressed output near the input size.
+    var body: [3000]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(0x1234_5678);
+    prng.random().bytes(&body);
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "gzip",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 0 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena,
+        .request_allocator = allocator,
+        .limits = .{ .max_response_bytes = 8192 },
+        .request = &request,
+        .response = ctx_mod.Response.init(arena, 8192),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+    try context.response.setHeader("Content-Type", "text/plain");
+    try context.response.setBody(&body);
+
+    try context.run();
+    try std.testing.expectEqualStrings(
+        "gzip",
+        context.response.header("content-encoding").?,
+    );
+    try std.testing.expect(context.response.body.len > 0);
 }
