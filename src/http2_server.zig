@@ -37,6 +37,9 @@ pub const Options = struct {
     max_concurrent_handlers: usize = 8,
     /// Poll interval used while handlers are active.
     handler_poll_interval: std.Io.Duration = .fromMilliseconds(5),
+    /// Optional cap on handler worker threads per connection. Null keeps one
+    /// worker per possible concurrent handler.
+    max_handler_threads: ?usize = null,
     accept_error_backoff: std.Io.Duration = .fromMilliseconds(10),
     /// TCP accept plus HTTP/2 bootstrap budget. This is also the idle shutdown
     /// polling interval for workers blocked in accept.
@@ -130,6 +133,8 @@ pub fn Http2Server(comptime H: type) type {
                 options.max_requests_per_connection == 0 or
                 options.max_concurrent_handlers == 0 or
                 options.max_concurrent_handlers > std.math.maxInt(u32) or
+                (options.max_handler_threads != null and
+                    options.max_handler_threads.? == 0) or
                 options.handler_poll_interval.nanoseconds <= 0 or
                 options.accept_error_backoff.nanoseconds <= 0 or
                 options.accept_timeout.nanoseconds <= 0 or
@@ -351,6 +356,7 @@ pub fn Http2Server(comptime H: type) type {
                     .idle_timeout = self.options.idle_timeout,
                     .shutdown = &context.session_shutdown,
                     .poll_interval = self.options.handler_poll_interval,
+                    .max_worker_threads = self.options.max_handler_threads,
                 },
             ) catch |err| {
                 if (err == error.Canceled) return err;

@@ -355,6 +355,13 @@ route's cached names, so a parameterized request allocates nothing for path
 parameters unless a value needs percent decoding. The public `resolve`/`match`
 API still returns an allocated `Match` for callers that need one.
 
+## Handler thread cap
+
+Both concurrent adapters expose `max_handler_threads`, forwarded to Netz's
+`max_worker_threads`. Null keeps one worker per possible concurrent handler;
+zero is rejected. This lets a deployment trade handler parallelism against
+thread-scheduling contention without changing the default.
+
 ## Verification
 
 ```sh

@@ -35,6 +35,9 @@ pub const Options = struct {
     /// command/receive poll budget, so a shorter interval directly reduces
     /// per-request latency.
     handler_poll_interval: std.Io.Duration = .fromMilliseconds(1),
+    /// Optional cap on handler worker threads per connection. Null keeps one
+    /// worker per possible concurrent handler.
+    max_handler_threads: ?usize = null,
     accept_error_backoff: std.Io.Duration = .fromMilliseconds(10),
     accept_timeout: std.Io.Duration = .fromMilliseconds(500),
     idle_timeout: std.Io.Duration = .fromSeconds(5),
@@ -82,6 +85,8 @@ pub fn Http3Server(comptime H: type) type {
                 options.max_requests_per_connection == 0 or
                 options.max_concurrent_streams == 0 or
                 options.max_concurrent_handlers == 0 or
+                (options.max_handler_threads != null and
+                    options.max_handler_threads.? == 0) or
                 options.handler_poll_interval.nanoseconds <= 0 or
                 options.accept_error_backoff.nanoseconds <= 0 or
                 options.accept_timeout.nanoseconds <= 0 or
@@ -292,6 +297,7 @@ pub fn Http3Server(comptime H: type) type {
                     .idle_timeout = self.options.idle_timeout,
                     .shutdown = &context.session_shutdown,
                     .poll_interval = self.options.handler_poll_interval,
+                    .max_worker_threads = self.options.max_handler_threads,
                     .max_buffered_body_bytes = self.options.limits.max_streaming_window_bytes,
                 },
             ) catch |err| {
