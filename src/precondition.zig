@@ -77,9 +77,8 @@ fn ifRangeMatches(value: []const u8, etag: []const u8, last_modified: i64) bool 
 
 /// Strong comparison: both tags must be strong and byte-identical.
 pub fn strongMatches(header: []const u8, etag: []const u8) bool {
-    var iterator = std.mem.splitScalar(u8, header, ',');
-    while (iterator.next()) |part| {
-        const token = std.mem.trim(u8, part, " \t");
+    var index: usize = 0;
+    while (nextEntityTag(header, &index)) |token| {
         if (std.mem.eql(u8, token, "*")) return true;
         if (std.ascii.startsWithIgnoreCase(token, "W/")) continue;
         if (std.mem.eql(u8, token, etag)) return true;
@@ -89,9 +88,8 @@ pub fn strongMatches(header: []const u8, etag: []const u8) bool {
 
 /// Weak comparison: opaque tags match even when either side is weak.
 pub fn weakMatches(header: []const u8, etag: []const u8) bool {
-    var iterator = std.mem.splitScalar(u8, header, ',');
-    while (iterator.next()) |part| {
-        const token = std.mem.trim(u8, part, " \t");
+    var index: usize = 0;
+    while (nextEntityTag(header, &index)) |token| {
         if (std.mem.eql(u8, token, "*")) return true;
         const candidate = if (std.ascii.startsWithIgnoreCase(token, "W/"))
             token[2..]
@@ -100,6 +98,36 @@ pub fn weakMatches(header: []const u8, etag: []const u8) bool {
         if (std.mem.eql(u8, candidate, etag)) return true;
     }
     return false;
+}
+
+/// Iterate the entity-tag elements of a list field value. A comma inside a
+/// quoted tag is part of the tag, not a separator.
+fn nextEntityTag(value: []const u8, index: *usize) ?[]const u8 {
+    var position = index.*;
+    while (position < value.len) : (position += 1) {
+        const char = value[position];
+        if (char != ',' and char != ' ' and char != '\t') break;
+    }
+    if (position >= value.len) {
+        index.* = position;
+        return null;
+    }
+    const start = position;
+    if (value[position] == 'W' and position + 1 < value.len and
+        value[position + 1] == '/')
+    {
+        position += 2;
+    }
+    if (position < value.len and value[position] == '"') {
+        position += 1;
+        while (position < value.len and value[position] != '"') position += 1;
+        if (position < value.len) position += 1;
+    } else {
+        // `*` or a malformed token: consume through the next comma.
+        while (position < value.len and value[position] != ',') position += 1;
+    }
+    index.* = position;
+    return value[start..position];
 }
 
 pub const value_len: usize = 29;
@@ -443,4 +471,12 @@ test "date parsing and precondition evaluation are total for arbitrary input" {
             .range = text,
         }, "\"tag\"", 1_700_000_000);
     }
+}
+
+test "precondition entity tags may contain commas" {
+    try std.testing.expect(strongMatches("\"a,b\", \"c\"", "\"a,b\""));
+    try std.testing.expect(!strongMatches("\"a,b\", \"c\"", "\"a\""));
+    try std.testing.expect(weakMatches("W/\"a,b\"", "\"a,b\""));
+    try std.testing.expect(weakMatches(" \"x\" , W/\"a,b\" ", "\"a,b\""));
+    try std.testing.expect(strongMatches("*", "\"a,b\""));
 }

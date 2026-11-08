@@ -207,7 +207,10 @@ pub const RateLimit = struct {
         const elapsed = now - bucket.last_refill_ns;
         if (elapsed <= 0) return;
 
-        const elapsed_u64: u64 = @intCast(elapsed);
+        const elapsed_u64: u64 = @intCast(@min(
+            elapsed,
+            @as(i96, std.math.maxInt(u64)),
+        ));
         const window_u64: u64 = @intCast(self.window_ns);
         const scaled = @as(u128, elapsed_u64) *
             @as(u128, self.max_requests) / @as(u128, window_u64);
@@ -217,15 +220,16 @@ pub const RateLimit = struct {
         ));
         if (tokens == 0) return;
 
-        bucket.tokens = @min(self.max_requests, bucket.tokens + tokens);
+        bucket.tokens = @min(self.max_requests, bucket.tokens +| tokens);
         if (bucket.tokens == self.max_requests) {
             bucket.last_refill_ns = now;
         } else {
-            const consumed_ns = @divTrunc(
-                @as(i96, @intCast(tokens)) * self.window_ns,
-                @as(i96, @intCast(self.max_requests)),
+            const consumed_ns: i96 = @intCast(
+                @as(u128, tokens) *
+                    @as(u128, @intCast(self.window_ns)) /
+                    @as(u128, self.max_requests),
             );
-            bucket.last_refill_ns += consumed_ns;
+            bucket.last_refill_ns +|= consumed_ns;
         }
     }
 

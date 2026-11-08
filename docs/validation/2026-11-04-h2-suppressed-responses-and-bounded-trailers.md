@@ -276,6 +276,29 @@ allocation. An already-lowercase name now borrows the response-owned copy, and
 the field array is sized once before conversion. This removes one allocation
 per header on the concurrent response paths.
 
+## Entity tags containing commas
+
+`strongMatches` and `weakMatches` split `If-Match` and `If-None-Match` on every
+comma, so a valid quoted entity-tag such as `"a,b"` was never compared as a
+whole. A small entity-tag iterator now treats commas inside a quoted tag as
+part of the tag and leaves malformed tokens to the existing comparisons.
+
+Unit test: `precondition entity tags may contain commas` in
+`src/precondition.zig`.
+
+## HTTP/3 response head
+
+`respondConcurrent` built a full `netz.http3.Response` (including a trailer
+field list) and then discarded the body and trailers before writing them
+separately. The head is now constructed directly with only the header fields,
+removing the redundant trailer allocation.
+
+## Rate-limit arithmetic
+
+Token refill uses saturating addition, and the elapsed-time multiplication uses
+a widened intermediate, so extreme `max_requests` or clock-jump values cannot
+overflow.
+
 ## Verification
 
 ```sh
@@ -284,4 +307,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 172/172 tests in Debug and ReleaseFast (119 unit, 53 package).
+Results: 173/173 tests in Debug and ReleaseFast (120 unit, 53 package).

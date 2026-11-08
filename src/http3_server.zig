@@ -624,9 +624,15 @@ pub fn Http3Server(comptime H: type) type {
                 }
             }
 
-            var h3_response = try toHttp3Response(response, method, arena);
-            h3_response.body = &.{};
-            h3_response.trailers = &.{};
+            // Body and trailers are written after the head, so only the
+            // header fields are converted here.
+            const h3_response = netz.http3.Response{
+                .status = response.status,
+                .headers = try headerFields(response, arena),
+                .body = &.{},
+                .trailers = &.{},
+                .request_method = method,
+            };
 
             if (body_forbidden) {
                 const length: ?usize = if (std.mem.eql(u8, method, "HEAD"))
@@ -784,25 +790,6 @@ fn trailerFields(
         });
     }
     return fields.items;
-}
-
-fn toHttp3Response(
-    response: *const Response,
-    method: []const u8,
-    arena: std.mem.Allocator,
-) !netz.http3.Response {
-    const emit_trailers = response.trailers.items.len != 0 and
-        !responseBodyForbidden(method, response.status);
-    return .{
-        .status = response.status,
-        .headers = try headerFields(response, arena),
-        .body = response.body,
-        .trailers = if (emit_trailers)
-            try trailerFields(response, arena)
-        else
-            &.{},
-        .request_method = method,
-    };
 }
 
 fn headerFields(
