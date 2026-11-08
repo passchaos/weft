@@ -458,6 +458,16 @@ once; genuine compression failures still fall back to identity.
 Unit test: `compress middleware stages buffered growth outside a small arena`
 compresses an incompressible 3000-byte body through a 4 KiB arena.
 
+## Buffered HTTP/2 and HTTP/3 bodies
+
+`readWholeBody` grew its accumulator inside the request arena. A request that
+declares a non-zero `Content-Length` now allocates the body exactly in the
+arena and fills it; an unknown-length body is staged in the server allocator
+and copied into the arena once.
+
+Package test: `package: HTTP/2 buffered body survives a small request arena`
+posts a 3000-byte body against a 4 KiB arena.
+
 ## Verification
 
 ```sh
@@ -466,4 +476,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 184/184 tests in Debug and ReleaseFast (129 unit, 55 package).
+Results: 185/185 tests in Debug and ReleaseFast (129 unit, 56 package).

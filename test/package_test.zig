@@ -5982,3 +5982,71 @@ test "package: HTTP/2 readBody survives a small request arena" {
     server.stop();
     try group.await(io);
 }
+
+test "package: HTTP/2 buffered body survives a small request arena" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Http2Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 4096,
+                .max_response_bytes = 4096,
+            },
+            .max_connections = 1,
+            .max_concurrent_handlers = 4,
+            .accept_timeout = .fromMilliseconds(100),
+            .idle_timeout = .fromMilliseconds(100),
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().post("/body-echo", echoBufferedBody, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp2Server, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/body-echo",
+        .{base},
+    );
+    defer allocator.free(uri);
+
+    // The declared length lets the adapter allocate the arena body exactly;
+    // ArrayList growth would otherwise leak intermediate blocks.
+    const body = try allocator.alloc(u8, 3000);
+    defer allocator.free(body);
+    @memset(body, 'x');
+    var response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = "POST",
+            .body = body,
+        },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.status);
+    try std.testing.expectEqualSlices(u8, body, response.body);
+
+    server.stop();
+    try group.await(io);
+}

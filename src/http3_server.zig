@@ -434,7 +434,9 @@ pub fn Http3Server(comptime H: type) type {
             } else {
                 body = readWholeBody(
                     arena,
+                    self.allocator,
                     stream,
+                    head.content_length,
                     self.options.limits.max_body_bytes,
                     self.options.limits.max_request_arena_bytes,
                 ) catch |err| {
@@ -757,11 +759,36 @@ fn writeConcurrentWithBudget(
 
 fn readWholeBody(
     arena: std.mem.Allocator,
+    staging: std.mem.Allocator,
     stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
+    expected_length: ?usize,
     max_body_bytes: usize,
     max_arena_bytes: usize,
 ) ![]const u8 {
+    if (expected_length) |expected| {
+        if (expected != 0) {
+            if (expected > max_body_bytes or expected > max_arena_bytes) {
+                return error.PayloadTooLarge;
+            }
+            const body = arena.alloc(u8, expected) catch
+                return error.PayloadTooLarge;
+            var offset: usize = 0;
+            var buffer: [16 * 1024]u8 = undefined;
+            while (true) {
+                const count = (try stream.nextBody(&buffer, null)) orelse break;
+                if (count == 0) continue;
+                if (count > expected - offset) return error.PayloadTooLarge;
+                @memcpy(body[offset..][0..count], buffer[0..count]);
+                offset += count;
+            }
+            return body[0..offset];
+        }
+    }
+
+    // Unknown length: stage outside the fixed arena so growth cannot leak
+    // intermediate blocks, then copy the final bytes once.
     var output = std.ArrayListUnmanaged(u8).empty;
+    defer output.deinit(staging);
     var buffer: [16 * 1024]u8 = undefined;
     while (true) {
         const count = (try stream.nextBody(&buffer, null)) orelse break;
@@ -771,10 +798,10 @@ fn readWholeBody(
         if (total > max_body_bytes or total > max_arena_bytes) {
             return error.PayloadTooLarge;
         }
-        output.appendSlice(arena, buffer[0..count]) catch
+        output.appendSlice(staging, buffer[0..count]) catch
             return error.PayloadTooLarge;
     }
-    return output.items;
+    return arena.dupe(u8, output.items) catch error.PayloadTooLarge;
 }
 
 fn responseBodyForbidden(method: []const u8, status: u16) bool {
