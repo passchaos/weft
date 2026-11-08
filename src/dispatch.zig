@@ -167,16 +167,10 @@ pub fn dispatch(
         effective_reader = .{ .limited = &limited_reader };
     }
 
-    var middleware = app_middleware;
-    if (disposition == null and route_middleware.len > 0) {
-        const total = middleware.len + route_middleware.len;
-        if (total > limits.max_middleware) {
-            return error.TooMuchMiddleware;
-        }
-        const combined = try arena.alloc(ctx_mod.Handler, total);
-        @memcpy(combined[0..middleware.len], middleware);
-        @memcpy(combined[middleware.len..], route_middleware);
-        middleware = combined;
+    if (disposition == null and
+        app_middleware.len + route_middleware.len > limits.max_middleware)
+    {
+        return error.TooMuchMiddleware;
     }
 
     const effective_timeout = route_timeout orelse limits.request_timeout;
@@ -205,7 +199,11 @@ pub fn dispatch(
             arena,
             effective_limits,
         ),
-        .middleware = middleware,
+        .middleware = app_middleware,
+        .route_middleware = if (disposition == null)
+            route_middleware
+        else
+            &.{},
         .final_handler = final_handler,
     };
 

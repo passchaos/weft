@@ -317,6 +317,10 @@ pub const Ctx = struct {
     response: Response,
     locals: Locals = .{},
     middleware: []const Handler = &.{},
+    /// Route-scoped middleware, run after the application middleware and
+    /// before `final_handler`. Kept separate so dispatch does not have to
+    /// concatenate the two slices per request.
+    route_middleware: []const Handler = &.{},
     final_handler: Handler,
     index: usize = 0,
     final_called: bool = false,
@@ -335,6 +339,13 @@ pub const Ctx = struct {
 
         if (self.index < self.middleware.len) {
             const middleware_handler = self.middleware[self.index];
+            self.index += 1;
+            return self.callHandler(middleware_handler);
+        }
+
+        const route_index = self.index - self.middleware.len;
+        if (route_index < self.route_middleware.len) {
+            const middleware_handler = self.route_middleware[route_index];
             self.index += 1;
             return self.callHandler(middleware_handler);
         }

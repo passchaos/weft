@@ -5822,3 +5822,89 @@ test "package: HTTP/2 server body limit returns 413 and keeps the connection" {
     server.stop();
     try group.await(io);
 }
+
+const OrderState = struct {
+    fn append(ctx: *weft.Ctx, suffix: []const u8) !void {
+        const existing = ctx.responseHeader("x-order") orelse "";
+        try ctx.setHeader(
+            "X-Order",
+            try std.fmt.allocPrint(
+                ctx.arena,
+                "{s}{s}",
+                .{ existing, suffix },
+            ),
+        );
+    }
+
+    fn app(ctx: *weft.Ctx) anyerror!void {
+        try append(ctx, "a");
+        try ctx.next();
+    }
+
+    fn route(ctx: *weft.Ctx) anyerror!void {
+        try append(ctx, "r");
+        try ctx.next();
+    }
+
+    fn finalRoute(_: *App, ctx: *weft.Ctx) anyerror!void {
+        try append(ctx, "h");
+        try ctx.text("ok");
+    }
+};
+
+test "package: route middleware runs after application middleware" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .middleware = &.{weft.handler(OrderState.app)},
+        },
+        .{},
+    );
+    defer server.deinit();
+    try server.router().get("/order", OrderState.finalRoute, .{
+        .middleware = &.{weft.handler(OrderState.route)},
+    });
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/order",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings("ok", response.response.body);
+    try std.testing.expectEqualStrings(
+        "arh",
+        response.response.header("x-order").?,
+    );
+
+    server.stop();
+    try group.await(io);
+}

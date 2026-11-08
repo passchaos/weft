@@ -374,6 +374,17 @@ before they reach the wire encoder.
 Unit test: `response rejects out-of-range status codes` in
 `src/response.zig`.
 
+## Route middleware without concatenation
+
+`dispatch` allocated a combined middleware array for every request to a route
+with route middleware. `Ctx` now carries `middleware` and `route_middleware`
+as separate slices and `next()` walks them in order. The `max_middleware`
+check still sums both, and route middleware is skipped when a disposition
+fallback replaces the handler, matching the previous behavior.
+
+Package test: `package: route middleware runs after application middleware`
+asserts the order `a`, `r`, `h`.
+
 ## Verification
 
 ```sh
@@ -382,4 +393,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 177/177 tests in Debug and ReleaseFast (124 unit, 53 package).
+Results: 178/178 tests in Debug and ReleaseFast (124 unit, 54 package).
