@@ -54,6 +54,8 @@ pub const Route = struct {
     specificity: u32,
     /// Number of `:param` and `*` captures in `pattern`.
     capture_count: usize,
+    /// Capture names in match order, borrowed from `pattern`.
+    capture_names: []const []const u8 = &.{},
 };
 
 pub const Match = struct {
@@ -425,6 +427,9 @@ pub fn Router(comptime H: type) type {
             for (self.all_routes.items) |route| {
                 self.allocator.free(route.pattern);
                 self.allocator.free(route.middleware);
+                if (route.capture_names.len != 0) {
+                    self.allocator.free(route.capture_names);
+                }
                 self.allocator.destroy(route);
             }
             self.all_routes.deinit(self.allocator);
@@ -467,6 +472,29 @@ pub fn Router(comptime H: type) type {
             );
             errdefer self.allocator.free(middleware_copy);
 
+            var capture_names: []const []const u8 = &.{};
+            if (info.captures != 0) {
+                const names = try self.allocator.alloc(
+                    []const u8,
+                    info.captures,
+                );
+                errdefer self.allocator.free(names);
+                var capture_index: usize = 0;
+                var name_segments = SegmentIterator{
+                    .source = std.mem.trim(u8, pattern_copy, "/"),
+                };
+                while (name_segments.next()) |segment| {
+                    if (segment.text[0] == ':') {
+                        names[capture_index] = segment.text[1..];
+                        capture_index += 1;
+                    } else if (std.mem.eql(u8, segment.text, "*")) {
+                        names[capture_index] = "*";
+                        capture_index += 1;
+                    }
+                }
+                capture_names = names;
+            }
+
             route.* = .{
                 .method = method,
                 .pattern = pattern_copy,
@@ -477,6 +505,7 @@ pub fn Router(comptime H: type) type {
                 .timeout = route_options.timeout,
                 .specificity = computeSpecificity(pattern),
                 .capture_count = info.captures,
+                .capture_names = capture_names,
             };
 
             const trimmed = std.mem.trim(u8, pattern_copy, "/");
@@ -858,24 +887,11 @@ pub fn Router(comptime H: type) type {
                 return .{ .route = route, .params = &.{}, .path = path };
             }
             const params = try allocator.alloc(Param, route.capture_count);
-            var capture_index: usize = 0;
-            var segments = SegmentIterator{
-                .source = std.mem.trim(u8, route.pattern, "/"),
-            };
-            while (segments.next()) |segment| {
-                if (segment.text[0] == ':') {
-                    params[capture_index] = .{
-                        .name = segment.text[1..],
-                        .value = captures.values[capture_index],
-                    };
-                    capture_index += 1;
-                } else if (std.mem.eql(u8, segment.text, "*")) {
-                    params[capture_index] = .{
-                        .name = "*",
-                        .value = captures.values[capture_index],
-                    };
-                    capture_index += 1;
-                }
+            for (route.capture_names, 0..) |name, index| {
+                params[index] = .{
+                    .name = name,
+                    .value = captures.values[index],
+                };
             }
             return .{
                 .route = route,

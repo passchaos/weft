@@ -338,6 +338,14 @@ extension) to a protocol status, so the HTTP/1 adapter closed the connection
 without sending a `400`. It now maps to `400` alongside the other malformed
 framing errors.
 
+## Cached capture names
+
+`buildMatch` re-scanned the registered pattern to recover `:param` and `*`
+names on every parameterized match. Each route now stores its capture names at
+registration and the match copies them directly. Router benchmark (ReleaseFast)
+moves from ~92 ns to ~60 ns per parameterized lookup; static lookup is
+unchanged.
+
 ## Verification
 
 ```sh
