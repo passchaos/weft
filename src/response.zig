@@ -98,9 +98,9 @@ pub const Response = struct {
     }
 
     pub fn setStatus(self: *Response, status: u16) void {
-        // HTTP status codes are three digits. Reject nonsense locally rather
-        // than letting it reach the wire encoder.
-        self.status = if (status >= 100 and status <= 999) status else 500;
+        // HTTP status codes are three digits in the 1xx-5xx classes. Reject
+        // nonsense locally rather than letting it reach the wire encoder.
+        self.status = if (status >= 100 and status <= 599) status else 500;
         self.reason = reasonFor(self.status);
         self.committed = true;
     }
@@ -425,6 +425,19 @@ pub fn reasonFor(status: u16) []const u8 {
         511 => "Network Authentication Required",
         else => "Unknown",
     };
+}
+
+test "response rejects out-of-range status codes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var response = Response.init(arena.allocator(), 1024);
+
+    response.setStatus(599);
+    try std.testing.expectEqual(@as(u16, 599), response.status);
+    response.setStatus(600);
+    try std.testing.expectEqual(@as(u16, 500), response.status);
+    response.setStatus(99);
+    try std.testing.expectEqual(@as(u16, 500), response.status);
 }
 
 test "reason phrases cover common status codes" {

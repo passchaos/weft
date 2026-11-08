@@ -362,6 +362,15 @@ Both concurrent adapters expose `max_handler_threads`, forwarded to Netz's
 zero is rejected. This lets a deployment trade handler parallelism against
 thread-scheduling contention without changing the default.
 
+## Status code range
+
+`Response.setStatus` accepted any three-digit code from 100 to 999, although
+HTTP only defines the 1xx-5xx classes. Codes outside 100-599 now become `500`
+before they reach the wire encoder.
+
+Unit test: `response rejects out-of-range status codes` in
+`src/response.zig`.
+
 ## Verification
 
 ```sh
@@ -370,4 +379,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 176/176 tests in Debug and ReleaseFast (123 unit, 53 package).
+Results: 177/177 tests in Debug and ReleaseFast (124 unit, 53 package).
