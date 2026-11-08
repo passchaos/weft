@@ -346,6 +346,15 @@ registration and the match copies them directly. Router benchmark (ReleaseFast)
 moves from ~92 ns to ~60 ns per parameterized lookup; static lookup is
 unchanged.
 
+## Zero-allocation parameter dispatch
+
+`dispatch` built a `Match` (allocating the raw parameter array) and then
+allocated a second decoded array for the same captures. It now decodes the
+prepared captures directly into a fixed `max_params` stack array using the
+route's cached names, so a parameterized request allocates nothing for path
+parameters unless a value needs percent decoding. The public `resolve`/`match`
+API still returns an allocated `Match` for callers that need one.
+
 ## Verification
 
 ```sh

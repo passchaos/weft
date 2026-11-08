@@ -88,24 +88,21 @@ pub fn dispatch(
     const query = split_target.query;
 
     var disposition: ?Disposition = null;
-    const resolution: router_mod.Resolution =
-        if (request.method == .OPTIONS and
-        std.mem.eql(u8, path, "*")) blk: {
-            disposition = .{ .options_star = router.allowedMethods() };
-            break :blk .not_found;
-        } else if (prepared.route) |route|
-            .{ .matched = try router_mod.Router(H).buildMatch(
-                route,
-                &prepared.captures,
-                arena,
-                path,
-            ) }
-        else if (prepared.allowed.len > 0)
-            .{ .method_not_allowed = prepared.allowed }
-        else
-            .not_found;
+    var matched_route: ?*const router_mod.Route = null;
+    if (request.method == .OPTIONS and
+        std.mem.eql(u8, path, "*"))
+    {
+        disposition = .{ .options_star = router.allowedMethods() };
+    } else if (prepared.route) |route| {
+        matched_route = route;
+    } else if (prepared.allowed.len > 0) {
+        disposition = .{ .method_not_allowed = prepared.allowed };
+    } else {
+        disposition = .not_found;
+    }
     var query_params: []const query_mod.Pair = &.{};
     var params: []const ctx_mod.Param = &.{};
+    var params_storage: [ctx_mod.max_params]ctx_mod.Param = undefined;
     var route_middleware: []const ctx_mod.Handler = &.{};
     var route_max_body: ?usize = null;
     var route_timeout: ?std.Io.Duration = null;
@@ -121,28 +118,23 @@ pub fn dispatch(
     };
     query_params = parsed_query.pairs;
 
-    switch (resolution) {
-        .matched => |matched| {
-            if (disposition == null) {
-                if (decodeParams(arena, matched.params) catch null) |decoded| {
-                    params = decoded;
-                    route_middleware = matched.route.middleware;
-                    route_max_body = matched.route.max_body_bytes;
-                    route_timeout = matched.route.timeout;
-                    final_handler = matched.route.handler;
-                } else {
-                    disposition = .bad_request;
-                }
+    if (matched_route) |route| {
+        if (disposition == null) {
+            if (decodeParams(
+                arena,
+                route,
+                &prepared.captures.values,
+                &params_storage,
+            ) catch null) |decoded| {
+                params = decoded;
+                route_middleware = route.middleware;
+                route_max_body = route.max_body_bytes;
+                route_timeout = route.timeout;
+                final_handler = route.handler;
+            } else {
+                disposition = .bad_request;
             }
-        },
-        .method_not_allowed => |allowed| {
-            if (disposition == null) {
-                disposition = .{ .method_not_allowed = allowed };
-            }
-        },
-        .not_found => {
-            if (disposition == null) disposition = .not_found;
-        },
+        }
     }
 
     if (disposition) |value| {
@@ -325,21 +317,26 @@ fn respondDisposition(ctx: *ctx_mod.Ctx) anyerror!void {
 
 fn decodeParams(
     arena: std.mem.Allocator,
-    raw: []const ctx_mod.Param,
+    route: *const router_mod.Route,
+    capture_values: []const []const u8,
+    storage: *[ctx_mod.max_params]ctx_mod.Param,
 ) ![]const ctx_mod.Param {
-    if (raw.len == 0) return &.{};
-    const decoded = try arena.alloc(ctx_mod.Param, raw.len);
-    for (raw, 0..) |param, index| {
-        decoded[index] = .{
-            .name = param.name,
+    const count = route.capture_names.len;
+    if (count == 0) return &.{};
+    if (count > storage.len or capture_values.len < count) {
+        return error.InvalidRoute;
+    }
+    for (route.capture_names, 0..) |name, index| {
+        storage[index] = .{
+            .name = name,
             .value = try query_mod.decodeComponentBorrowed(
                 arena,
-                param.value,
+                capture_values[index],
                 false,
             ),
         };
     }
-    return decoded;
+    return storage[0..count];
 }
 
 fn applyHandlerError(context: *ctx_mod.Ctx, err: anyerror) void {
