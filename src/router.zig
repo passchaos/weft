@@ -120,6 +120,10 @@ pub const Resolution = union(enum) {
 
 const Node = struct {
     static_children: std.StringHashMapUnmanaged(*Node) = .empty,
+    /// Fast path for the common case of exactly one static child. When set,
+    /// `static_children` is empty and `single_key` owns the child's name.
+    single_key: ?[]const u8 = null,
+    single_child: ?*Node = null,
     param: ?*Node = null,
     routes: std.ArrayListUnmanaged(*Route) = .empty,
     wildcard_routes: std.ArrayListUnmanaged(*Route) = .empty,
@@ -835,7 +839,14 @@ pub fn Router(comptime H: type) type {
             const segment = source[position..end];
             const next_position = if (end < source.len) end + 1 else source.len;
 
-            if (node.static_children.get(segment)) |child| {
+            const static_child = if (node.single_child) |child|
+                (if (std.mem.eql(u8, node.single_key.?, segment))
+                    child
+                else
+                    null)
+            else
+                node.static_children.get(segment);
+            if (static_child) |child| {
                 if (self.matchNode(
                     child,
                     source,
@@ -911,12 +922,34 @@ pub fn Router(comptime H: type) type {
             node: *Node,
             segment: []const u8,
         ) !*Node {
-            if (node.static_children.get(segment)) |child| return child;
+            if (node.single_child) |child| {
+                if (std.mem.eql(u8, node.single_key.?, segment)) return child;
+            } else if (node.static_children.get(segment)) |child| {
+                return child;
+            }
 
             const key = try self.allocator.dupe(u8, segment);
             errdefer self.allocator.free(key);
             const child = try self.createNode();
             errdefer self.allocator.destroy(child);
+
+            if (node.single_child == null and
+                node.static_children.count() == 0)
+            {
+                node.single_key = key;
+                node.single_child = child;
+                return child;
+            }
+            if (node.single_child) |existing| {
+                // Promote the lone child into the map before adding another.
+                try node.static_children.put(
+                    self.allocator,
+                    node.single_key.?,
+                    existing,
+                );
+                node.single_key = null;
+                node.single_child = null;
+            }
             try node.static_children.put(self.allocator, key, child);
             return child;
         }
@@ -938,6 +971,13 @@ pub fn Router(comptime H: type) type {
                 }
                 if (segment.text[0] == ':') {
                     node = node.param orelse return;
+                } else if (node.single_child) |child| {
+                    if (!std.mem.eql(
+                        u8,
+                        node.single_key.?,
+                        segment.text,
+                    )) return;
+                    node = child;
                 } else {
                     node = node.static_children.get(segment.text) orelse return;
                 }
@@ -946,10 +986,15 @@ pub fn Router(comptime H: type) type {
         }
 
         fn deinitNode(self: *@This(), node: *Node) void {
-            var iterator = node.static_children.iterator();
-            while (iterator.next()) |entry| {
-                self.deinitNode(entry.value_ptr.*);
-                self.allocator.free(entry.key_ptr.*);
+            if (node.single_child) |child| {
+                self.deinitNode(child);
+                self.allocator.free(node.single_key.?);
+            } else {
+                var iterator = node.static_children.iterator();
+                while (iterator.next()) |entry| {
+                    self.deinitNode(entry.value_ptr.*);
+                    self.allocator.free(entry.key_ptr.*);
+                }
             }
             node.static_children.deinit(self.allocator);
             if (node.param) |child| self.deinitNode(child);
