@@ -332,7 +332,11 @@ fn decodeParams(
     for (raw, 0..) |param, index| {
         decoded[index] = .{
             .name = param.name,
-            .value = try query_mod.decodeComponent(arena, param.value, false),
+            .value = try query_mod.decodeComponentBorrowed(
+                arena,
+                param.value,
+                false,
+            ),
         };
     }
     return decoded;

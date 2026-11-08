@@ -150,8 +150,24 @@ pub fn parse(
     };
 }
 
+/// Decode like `decodeComponent`, but borrow `text` when it needs no
+/// escape or plus-space rewrite. The caller must keep `text` alive when the
+/// result points into it.
+pub fn decodeComponentBorrowed(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    plus_as_space: bool,
+) ![]const u8 {
+    if (!try needsComponentDecode(text, plus_as_space)) return text;
+    return decodeComponent(allocator, text, plus_as_space);
+}
+
 /// Validate one component and report whether it contains an escape.
 fn scanComponent(text: []const u8) !bool {
+    return needsComponentDecode(text, true);
+}
+
+fn needsComponentDecode(text: []const u8, plus_as_space: bool) !bool {
     var needs_decode = false;
     var index: usize = 0;
     while (index < text.len) {
@@ -169,7 +185,7 @@ fn scanComponent(text: []const u8) !bool {
             index += 3;
             continue;
         }
-        if (char == '+') needs_decode = true;
+        if (plus_as_space and char == '+') needs_decode = true;
         if (!isVisible(char)) return error.InvalidPercentEncoding;
         index += 1;
     }
@@ -301,4 +317,36 @@ test "query parsing is total for arbitrary bytes" {
             }
         }
     }
+}
+
+test "borrowed component decoding avoids allocation without escapes" {
+    const plain = "plain";
+    const borrowed = try decodeComponentBorrowed(
+        std.testing.allocator,
+        plain,
+        false,
+    );
+    try std.testing.expect(borrowed.ptr == plain.ptr);
+
+    const plus_text = "a+b";
+    const plus_borrowed = try decodeComponentBorrowed(
+        std.testing.allocator,
+        plus_text,
+        false,
+    );
+    try std.testing.expectEqualStrings(plus_text, plus_borrowed);
+    try std.testing.expect(plus_borrowed.ptr == plus_text.ptr);
+
+    const decoded = try decodeComponentBorrowed(
+        std.testing.allocator,
+        "a+b%20c",
+        true,
+    );
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings("a b c", decoded);
+
+    try std.testing.expectError(
+        error.InvalidPercentEncoding,
+        decodeComponentBorrowed(std.testing.allocator, "a%zz", false),
+    );
 }

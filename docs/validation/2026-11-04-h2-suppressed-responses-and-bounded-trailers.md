@@ -317,6 +317,16 @@ segments array and joined copy for the common case.
 
 Unit test: `static path normalization borrows plain relative paths`.
 
+## Borrowed path parameters
+
+`decodeParams` allocated a decoded copy for every captured path value, even
+when the value had no escapes. `query.decodeComponentBorrowed` validates the
+component and returns the request-owned slice unchanged when no rewrite is
+needed; path captures and the manual `Ctx.queryParam` fallback use it.
+
+Unit test: `borrowed component decoding avoids allocation without escapes` in
+`src/query.zig`.
+
 ## Verification
 
 ```sh
@@ -325,4 +335,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 175/175 tests in Debug and ReleaseFast (122 unit, 53 package).
+Results: 176/176 tests in Debug and ReleaseFast (123 unit, 53 package).

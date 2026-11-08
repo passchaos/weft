@@ -619,7 +619,7 @@ pub const Ctx = struct {
         while (pairs.next()) |pair| {
             const equals = std.mem.indexOfScalar(u8, pair, '=') orelse pair.len;
             if (std.mem.eql(u8, pair[0..equals], name)) {
-                return query_mod.decodeComponent(
+                return query_mod.decodeComponentBorrowed(
                     self.arena,
                     pair[equals + 1 ..],
                     true,
