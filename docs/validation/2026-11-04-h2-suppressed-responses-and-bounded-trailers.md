@@ -244,6 +244,9 @@ wrapper now compresses fixed 16 KiB slices into one reusable output buffer
 allocated when the stream is selected; a final empty member keeps the stream
 valid.
 
+If the request arena cannot provide the encoder state or scratch buffer, the
+middleware leaves the response uncompressed instead of failing it.
+
 Unit test: `compress middleware streams gzip within a small arena` in
 `src/middleware/compress.zig` streams 256 KiB through a 64 KiB arena.
 

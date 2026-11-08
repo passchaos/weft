@@ -58,15 +58,17 @@ pub const Compress = struct {
             }
             switch (coding) {
                 .gzip => {
-                    const wrapper = try ctx.arena.create(StreamCompress);
+                    const wrapper = ctx.arena.create(StreamCompress) catch
+                        return;
+                    const output_buffer = ctx.arena.alloc(
+                        u8,
+                        gzip_member_output_bytes,
+                    ) catch return;
                     wrapper.* = .{
                         .original = body,
                         .level = self.level,
                         .max_chunk_bytes = ctx.limits.max_response_bytes,
-                        .output_buffer = try ctx.arena.alloc(
-                            u8,
-                            gzip_member_output_bytes,
-                        ),
+                        .output_buffer = output_buffer,
                     };
                     response.setHeader(
                         "Content-Encoding",
@@ -80,13 +82,13 @@ pub const Compress = struct {
                     };
                 },
                 .deflate, .br, .zstd => {
-                    const wrapper = try ctx.arena.create(
+                    const wrapper = ctx.arena.create(
                         ContinuousStreamCompress,
-                    );
-                    const output_buffer = try ctx.arena.alloc(
+                    ) catch return;
+                    const output_buffer = ctx.arena.alloc(
                         u8,
                         stream_encoder_output_bytes,
-                    );
+                    ) catch return;
                     var encoder: ContinuousEncoder = undefined;
                     switch (coding) {
                         .deflate => encoder = .{ .deflate = vort.deflate.ZlibIncrementalBestEncoder.initWithOptions(
