@@ -162,6 +162,17 @@ chunk with `error.ResponseTooLarge` before compressing it.
 Unit test: `compress middleware bounds one streamed chunk` in
 `src/middleware/compress.zig`.
 
+## Non-positive timeout budgets
+
+`Limits.request_timeout`, `Limits.request_head_timeout`,
+`Options.accept_error_backoff`, and the HTTP/3 recovery drain budget are now
+validated as positive durations at `init`. Previously a zero or negative value
+was accepted and could turn every request or accept loop iteration into an
+immediate timeout.
+
+Package test: `package: servers reject non-positive timeout budgets` covers
+HTTP/1, HTTP/2, and HTTP/3 initialization.
+
 ## Verification
 
 ```sh

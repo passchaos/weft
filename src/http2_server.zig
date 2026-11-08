@@ -130,11 +130,16 @@ pub fn Http2Server(comptime H: type) type {
                 options.max_requests_per_connection == 0 or
                 options.max_concurrent_handlers == 0 or
                 options.handler_poll_interval.nanoseconds <= 0 or
+                options.accept_error_backoff.nanoseconds <= 0 or
                 options.accept_timeout.nanoseconds <= 0 or
                 options.idle_timeout.nanoseconds <= 0 or
                 options.tls_accept_timeout.nanoseconds <= 0 or
                 (options.drain_timeout != null and
                     options.drain_timeout.?.nanoseconds <= 0) or
+                (options.limits.request_timeout != null and
+                    options.limits.request_timeout.?.nanoseconds <= 0) or
+                (options.limits.request_head_timeout != null and
+                    options.limits.request_head_timeout.?.nanoseconds <= 0) or
                 options.limits.max_head_bytes == 0 or
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
