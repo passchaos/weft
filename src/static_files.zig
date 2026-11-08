@@ -57,6 +57,21 @@ pub const default_mime_types = [_]MimeType{
     .{ .extension = ".tar", .content_type = "application/x-tar" },
 };
 
+/// Compiled lookup for the default table. Extensions are ASCII-lowercased
+/// before lookup so `.CSS` matches `.css` without scanning every entry.
+const default_mime_map = blk: {
+    var entries: [default_mime_types.len]struct {
+        []const u8,
+        []const u8,
+    } = undefined;
+    for (default_mime_types, 0..) |mime, index| {
+        entries[index] = .{ mime.extension, mime.content_type };
+    }
+    break :blk std.StaticStringMap([]const u8).initComptime(entries);
+};
+
+const max_default_extension_bytes = 16;
+
 pub const default_cache_control = "public, max-age=3600";
 pub const max_segments = 128;
 
@@ -421,12 +436,30 @@ pub const StaticFiles = struct {
         const dot = std.mem.lastIndexOfScalar(u8, basename, '.') orelse
             return "application/octet-stream";
         const extension = basename[dot..];
+        if (self.usesDefaultMimeTypes() and
+            extension.len <= max_default_extension_bytes)
+        {
+            var lower: [max_default_extension_bytes]u8 = undefined;
+            for (extension, 0..) |char, index| {
+                lower[index] = std.ascii.toLower(char);
+            }
+            return default_mime_map.get(lower[0..extension.len]) orelse
+                "application/octet-stream";
+        }
         for (self.mime_types) |mime| {
             if (std.ascii.eqlIgnoreCase(mime.extension, extension)) {
                 return mime.content_type;
             }
         }
         return "application/octet-stream";
+    }
+
+    fn usesDefaultMimeTypes(self: *const StaticFiles) bool {
+        return self.mime_types.len == default_mime_types.len and
+            self.mime_types.ptr == @as(
+                [*]const MimeType,
+                @ptrCast(&default_mime_types),
+            );
     }
 };
 
@@ -968,5 +1001,36 @@ test "static download disposition escapes filenames" {
     try std.testing.expectEqualStrings(
         "attachment; filename=\"caf__.txt\"; filename*=UTF-8''caf%C3%A9.txt",
         utf8,
+    );
+}
+
+test "static mime lookup handles case and custom tables" {
+    var files = StaticFiles{ .dir = undefined };
+    try std.testing.expectEqualStrings(
+        "text/html; charset=utf-8",
+        files.contentType("index.html"),
+    );
+    try std.testing.expectEqualStrings(
+        "text/html; charset=utf-8",
+        files.contentType("INDEX.HTML"),
+    );
+    try std.testing.expectEqualStrings(
+        "application/json",
+        files.contentType("a.json"),
+    );
+    try std.testing.expectEqualStrings(
+        "application/octet-stream",
+        files.contentType("a.unknown"),
+    );
+
+    const custom = [_]MimeType{.{
+        .extension = ".foo",
+        .content_type = "x/foo",
+    }};
+    files.mime_types = &custom;
+    try std.testing.expectEqualStrings("x/foo", files.contentType("a.foo"));
+    try std.testing.expectEqualStrings(
+        "application/octet-stream",
+        files.contentType("a.html"),
     );
 }

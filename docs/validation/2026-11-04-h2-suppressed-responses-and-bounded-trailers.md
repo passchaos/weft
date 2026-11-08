@@ -301,6 +301,16 @@ Token refill uses saturating addition, and the elapsed-time multiplication uses
 a widened intermediate, so extreme `max_requests` or clock-jump values cannot
 overflow.
 
+## Static MIME lookup
+
+`StaticFiles.contentType` scanned the default MIME table linearly for every
+served path. The default table now compiles to a `StaticStringMap`; the
+extension is ASCII-lowercased into a 16-byte stack buffer before lookup.
+Custom tables keep the case-insensitive linear scan.
+
+Unit test: `static mime lookup handles case and custom tables` in
+`src/static_files.zig`.
+
 ## Verification
 
 ```sh
@@ -309,4 +319,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 173/173 tests in Debug and ReleaseFast (120 unit, 53 package).
+Results: 174/174 tests in Debug and ReleaseFast (121 unit, 53 package).
