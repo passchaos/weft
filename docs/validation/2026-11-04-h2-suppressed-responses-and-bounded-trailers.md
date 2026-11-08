@@ -438,6 +438,16 @@ arena once. Manually constructed responses keep the previous path.
 Unit test: `json serialization stages growth outside a small arena` serializes
 a 3000-byte value through a 4 KiB arena.
 
+## Decoded body staging
+
+`Ctx.decodedBody` decoded into the request arena, where decoder growth cannot
+reclaim intermediate blocks. It now decodes in the server allocator and copies
+the final bytes into the arena once when the result is owned; identity
+encodings still borrow the original body.
+
+Unit test: `decodedBody stages growth outside a small arena` decodes a
+3000-byte gzip body through a 4 KiB arena.
+
 ## Verification
 
 ```sh
@@ -446,4 +456,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 182/182 tests in Debug and ReleaseFast (127 unit, 55 package).
+Results: 183/183 tests in Debug and ReleaseFast (128 unit, 55 package).

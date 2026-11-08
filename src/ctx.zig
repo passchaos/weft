@@ -621,8 +621,9 @@ pub const Ctx = struct {
         // `readBody` already returns decoded bytes when a streaming decoder
         // is active; decoding again would corrupt the body.
         if (self.cached_decoded_reader != null) return self.readBody();
-        const decoded = netz.http1.content_coding.decodeHeadersAlloc(
-            self.arena,
+        const staging = self.request_allocator orelse self.arena;
+        var decoded = netz.http1.content_coding.decodeHeadersAlloc(
+            staging,
             self.request.headers,
             try self.readBody(),
             self.limits.max_body_bytes,
@@ -638,6 +639,14 @@ pub const Ctx = struct {
             => return error.BadRequest,
             else => return err,
         };
+        if (self.request_allocator != null and decoded.owned != null) {
+            // Decoder growth cannot reclaim intermediate blocks from the
+            // fixed request arena; copy the final bytes once instead.
+            const cached = self.arena.dupe(u8, decoded.bytes) catch
+                return error.PayloadTooLarge;
+            decoded.deinit(staging);
+            return cached;
+        }
         return decoded.bytes;
     }
 
@@ -1282,4 +1291,61 @@ test "locals replace values and stay bounded" {
         error.TooManyLocals,
         locals.put(undefined, keys[max_locals], @ptrCast(&first)),
     );
+}
+
+test "decodedBody stages growth outside a small arena" {
+    const allocator = std.testing.allocator;
+    const plain = try allocator.alloc(u8, 3000);
+    defer allocator.free(plain);
+    @memset(plain, 'a');
+
+    var compressed_output = try std.Io.Writer.Allocating.initCapacity(
+        allocator,
+        64,
+    );
+    defer compressed_output.deinit();
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var encoder = try std.compress.flate.Compress.init(
+        &compressed_output.writer,
+        &window,
+        .gzip,
+        .default,
+    );
+    try encoder.writer.writeAll(plain);
+    try encoder.finish();
+
+    var headers = [_]netz.http1.Header{.{
+        .name = "Content-Encoding",
+        .value = "gzip",
+    }};
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var replay = ReplayReader{ .body = compressed_output.written() };
+    var arena_buffer: [4096]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .request_allocator = allocator,
+        .limits = .{ .max_body_bytes = 8192 },
+        .request = &request,
+        .body_reader = .{ .replay = &replay },
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    const decoded = try context.decodedBody();
+    try std.testing.expectEqual(@as(usize, 3000), decoded.len);
+    for (decoded) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
 }
