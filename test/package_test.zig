@@ -5232,6 +5232,18 @@ test "package: servers reject unusable option budgets" {
             .{},
         ),
     );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Http2Server(App).init(
+            io,
+            allocator,
+            .{
+                .address = .{ .ip4 = .loopback(0) },
+                .max_handler_threads = 0,
+            },
+            .{},
+        ),
+    );
     if (@sizeOf(usize) > @sizeOf(u32)) {
         try std.testing.expectError(
             error.InvalidOptions,
@@ -5278,6 +5290,23 @@ test "package: servers reject unusable option budgets" {
                     .x25519_secret_key = [_]u8{0} ** 32,
                 },
                 .limits = .{ .max_request_target_bytes = 0 },
+            },
+            .{},
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Http3Server(App).init(
+            io,
+            allocator,
+            .{
+                .address = .{ .ip4 = .loopback(0) },
+                .handshake = .{
+                    .local_connection_id = &connection_id,
+                    .random = [_]u8{0} ** 32,
+                    .x25519_secret_key = [_]u8{0} ** 32,
+                },
+                .max_handler_threads = 0,
             },
             .{},
         ),
