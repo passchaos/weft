@@ -141,10 +141,13 @@ pub fn Http2Server(comptime H: type) type {
                 (options.limits.request_head_timeout != null and
                     options.limits.request_head_timeout.?.nanoseconds <= 0) or
                 options.limits.max_head_bytes == 0 or
+                options.limits.max_request_target_bytes == 0 or
                 options.limits.max_request_headers == 0 or
                 options.limits.max_body_bytes == 0 or
                 options.limits.max_request_arena_bytes == 0 or
                 options.limits.max_streaming_window_bytes == 0 or
+                (options.limits.max_http2_concurrent_streams != null and
+                    options.limits.max_http2_concurrent_streams.? == 0) or
                 options.limits.max_http2_frame_payload == 0 or
                 options.limits.max_response_bytes == 0 or
                 options.limits.max_response_headers <

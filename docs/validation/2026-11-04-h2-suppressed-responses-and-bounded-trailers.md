@@ -168,10 +168,12 @@ Unit test: `compress middleware bounds one streamed chunk` in
 `Options.accept_error_backoff`, and the HTTP/3 recovery drain budget are now
 validated as positive durations at `init`. Previously a zero or negative value
 was accepted and could turn every request or accept loop iteration into an
-immediate timeout.
+immediate timeout. `max_request_target_bytes = 0` and an explicitly zero
+`max_http2_concurrent_streams` are rejected for the same reason: they make the
+adapter unusable.
 
-Package test: `package: servers reject non-positive timeout budgets` covers
-HTTP/1, HTTP/2, and HTTP/3 initialization.
+Package test: `package: servers reject unusable option budgets` covers HTTP/1,
+HTTP/2, and HTTP/3 initialization.
 
 ## HTTP/2 and HTTP/3 streaming routes with query strings
 

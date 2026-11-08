@@ -54,6 +54,7 @@ pub const Route = @import("router.zig").Route;
 pub const RouteOptions = @import("router.zig").RouteOptions;
 pub const GroupOptions = @import("router.zig").GroupOptions;
 pub const Match = @import("router.zig").Match;
+pub const Prepared = @import("router.zig").Prepared;
 pub const AllowedMethods = @import("router.zig").AllowedMethods;
 pub const Resolution = @import("router.zig").Resolution;
 pub const Router = @import("router.zig").Router;

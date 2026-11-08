@@ -5165,7 +5165,7 @@ test "package: server requires exactly one listen address" {
     );
 }
 
-test "package: servers reject non-positive timeout budgets" {
+test "package: servers reject unusable option budgets" {
     const allocator = std.testing.allocator;
 
     var backend = try netz.runtime.Backend.init(allocator);
@@ -5198,12 +5198,36 @@ test "package: servers reject non-positive timeout budgets" {
     );
     try std.testing.expectError(
         error.InvalidOptions,
+        weft.Server(App).init(
+            io,
+            allocator,
+            .{
+                .address = .{ .ip4 = .loopback(0) },
+                .limits = .{ .max_request_target_bytes = 0 },
+            },
+            .{},
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
         weft.Http2Server(App).init(
             io,
             allocator,
             .{
                 .address = .{ .ip4 = .loopback(0) },
                 .limits = .{ .request_head_timeout = .fromSeconds(0) },
+            },
+            .{},
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Http2Server(App).init(
+            io,
+            allocator,
+            .{
+                .address = .{ .ip4 = .loopback(0) },
+                .limits = .{ .max_http2_concurrent_streams = 0 },
             },
             .{},
         ),
@@ -5223,6 +5247,23 @@ test "package: servers reject non-positive timeout budgets" {
                     .x25519_secret_key = [_]u8{0} ** 32,
                 },
                 .limits = .{ .request_timeout = .fromSeconds(0) },
+            },
+            .{},
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        weft.Http3Server(App).init(
+            io,
+            allocator,
+            .{
+                .address = .{ .ip4 = .loopback(0) },
+                .handshake = .{
+                    .local_connection_id = &connection_id,
+                    .random = [_]u8{0} ** 32,
+                    .x25519_secret_key = [_]u8{0} ** 32,
+                },
+                .limits = .{ .max_request_target_bytes = 0 },
             },
             .{},
         ),
