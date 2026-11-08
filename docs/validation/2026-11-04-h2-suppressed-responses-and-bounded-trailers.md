@@ -392,6 +392,15 @@ fallback replaces the handler, matching the previous behavior.
 Package test: `package: route middleware runs after application middleware`
 asserts the order `a`, `r`, `h`.
 
+## Inline request locals
+
+`Locals` used a `StringHashMapUnmanaged` that allocated on the first
+`ctx.set`. It now stores up to `max_locals` (16) key/value pairs inline and
+scans them; `put` replaces an existing key and returns `error.TooManyLocals` at
+the bound. The common one-or-two locals need no allocation.
+
+Unit test: `locals replace values and stay bounded` in `src/ctx.zig`.
+
 ## Verification
 
 ```sh
@@ -400,4 +409,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 178/178 tests in Debug and ReleaseFast (124 unit, 54 package).
+Results: 179/179 tests in Debug and ReleaseFast (125 unit, 54 package).

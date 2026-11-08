@@ -260,13 +260,23 @@ pub const Handler = struct {
     }
 };
 
+/// Maximum distinct request-local values. The bound keeps `Locals` inline
+/// instead of allocating a hash map for the usual one or two entries.
+pub const max_locals = 16;
+
 /// Request-scoped typed locals.
 ///
 /// Keys are `@typeName(T)` strings, so only one value per type is stored.
 /// Values are allocated in the request arena and are valid until the response
 /// has been written.
 pub const Locals = struct {
-    map: std.StringHashMapUnmanaged(*anyopaque) = .empty,
+    const Entry = struct {
+        key: []const u8,
+        value: *anyopaque,
+    };
+
+    entries: [max_locals]Entry = undefined,
+    len: usize = 0,
 
     pub fn put(
         self: *Locals,
@@ -274,11 +284,23 @@ pub const Locals = struct {
         key: []const u8,
         value: *anyopaque,
     ) !void {
-        try self.map.put(allocator, key, value);
+        _ = allocator;
+        for (self.entries[0..self.len]) |*entry| {
+            if (std.mem.eql(u8, entry.key, key)) {
+                entry.value = value;
+                return;
+            }
+        }
+        if (self.len >= self.entries.len) return error.TooManyLocals;
+        self.entries[self.len] = .{ .key = key, .value = value };
+        self.len += 1;
     }
 
     pub fn get(self: *const Locals, key: []const u8) ?*anyopaque {
-        return self.map.get(key);
+        for (self.entries[0..self.len]) |entry| {
+            if (std.mem.eql(u8, entry.key, key)) return entry.value;
+        }
+        return null;
     }
 };
 
@@ -1222,4 +1244,31 @@ test "typed locals round-trip through the request arena" {
     const raw = locals.get(@typeName(u32)).?;
     const typed: *u32 = @ptrCast(@alignCast(raw));
     try std.testing.expectEqual(@as(u32, 42), typed.*);
+}
+
+test "locals replace values and stay bounded" {
+    var locals = Locals{};
+    var first: u32 = 1;
+    var second: u32 = 2;
+    try locals.put(undefined, "key", @ptrCast(&first));
+    try locals.put(undefined, "key", @ptrCast(&second));
+    try std.testing.expect(
+        locals.get("key").? == @as(*anyopaque, @ptrCast(&second)),
+    );
+
+    locals = .{};
+    const keys = comptime blk: {
+        var result: [max_locals + 1][]const u8 = undefined;
+        for (&result, 0..) |*slot, index| {
+            slot.* = std.fmt.comptimePrint("key{d}", .{index});
+        }
+        break :blk result;
+    };
+    for (keys[0..max_locals]) |key| {
+        try locals.put(undefined, key, @ptrCast(&first));
+    }
+    try std.testing.expectError(
+        error.TooManyLocals,
+        locals.put(undefined, keys[max_locals], @ptrCast(&first)),
+    );
 }
