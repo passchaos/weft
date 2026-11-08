@@ -327,6 +327,13 @@ needed; path captures and the manual `Ctx.queryParam` fallback use it.
 Unit test: `borrowed component decoding avoids allocation without escapes` in
 `src/query.zig`.
 
+## Invalid chunk framing
+
+`statusForReadError` did not map `error.InvalidChunk` (a malformed chunk
+extension) to a protocol status, so the HTTP/1 adapter closed the connection
+without sending a `400`. It now maps to `400` alongside the other malformed
+framing errors.
+
 ## Verification
 
 ```sh

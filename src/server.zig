@@ -883,6 +883,7 @@ pub fn statusForReadError(err: anyerror) ?u16 {
         err == error.InvalidConnection or
         err == error.InvalidExpectation or
         err == error.InvalidTrailer or
+        err == error.InvalidChunk or
         err == error.ChunkSizeOverflow or
         err == error.ChunkExtensionTooLarge or
         err == error.ContentLengthOverflow)
