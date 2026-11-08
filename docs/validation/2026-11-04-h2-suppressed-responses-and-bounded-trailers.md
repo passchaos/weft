@@ -407,6 +407,15 @@ The `Etag` middleware allocated the quoted tag and its weak prefix in the
 arena before `setHeader` copied the value again. It now formats both into
 stack buffers, leaving `setHeader` as the single arena copy.
 
+## Request-id allocation
+
+`requestId` generated the id in the arena and then had `setHeader` copy it
+again. It now formats the id on the stack, sets the header, and stores the
+header's arena copy in the local, removing one allocation per generated id.
+
+Unit test: `request id middleware stores the response copy` in
+`src/middleware/request_id.zig`.
+
 ## Verification
 
 ```sh
@@ -415,4 +424,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 179/179 tests in Debug and ReleaseFast (125 unit, 54 package).
+Results: 180/180 tests in Debug and ReleaseFast (126 unit, 54 package).
