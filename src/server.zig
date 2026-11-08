@@ -8,7 +8,6 @@ const stream_mod = @import("stream.zig");
 const dispatch_mod = @import("dispatch.zig");
 const drain_mod = @import("drain.zig");
 const websocket_mod = @import("websocket.zig");
-const target_mod = @import("target.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -354,18 +353,23 @@ pub fn Server(comptime H: type) type {
             self: *@This(),
             connection: *netz.http1.runtime.Connection,
         ) !Disposition {
-            const arena_buffer = try self.allocator.alloc(
-                u8,
-                self.options.limits.max_request_arena_bytes,
-            );
-            defer self.allocator.free(arena_buffer);
+            // Allocate the per-request arena on the first request so idle
+            // keep-alive connections do not reserve it.
+            var arena_buffer: ?[]u8 = null;
+            defer if (arena_buffer) |buffer| self.allocator.free(buffer);
 
             var served: usize = 0;
             while (served < self.options.max_requests_per_connection) : (served += 1) {
                 if (self.shutdown.isSet()) return .close;
 
+                if (arena_buffer == null) {
+                    arena_buffer = try self.allocator.alloc(
+                        u8,
+                        self.options.limits.max_request_arena_bytes,
+                    );
+                }
                 var fixed_buffer = std.heap.FixedBufferAllocator.init(
-                    arena_buffer,
+                    arena_buffer.?,
                 );
                 const arena = fixed_buffer.allocator();
 
@@ -423,8 +427,18 @@ pub fn Server(comptime H: type) type {
                     return .drained;
                 }
                 const target = head.target;
-                const path = target_mod.split(target).path;
-                const streaming = self.app_router.isStreaming(method, path);
+                var prepared: router_mod.Prepared = .{};
+                dispatch_mod.prepareRoute(
+                    H,
+                    &self.app_router,
+                    method,
+                    target,
+                    &prepared,
+                );
+                const streaming = if (prepared.route) |route|
+                    route.streaming
+                else
+                    false;
 
                 var body: std.ArrayListUnmanaged(u8) = .empty;
                 defer body.deinit(self.allocator);
@@ -485,6 +499,7 @@ pub fn Server(comptime H: type) type {
                     client_info,
                     arena,
                     body_reader,
+                    &prepared,
                 ) catch |err| blk: {
                     if (err == error.Canceled) return error.Canceled;
                     std.log.scoped(.weft).warn(
@@ -772,6 +787,7 @@ pub fn Server(comptime H: type) type {
             client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
             body_reader: ?ctx_mod.BodyReader,
+            prepared: *const router_mod.Prepared,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -790,6 +806,7 @@ pub fn Server(comptime H: type) type {
                 arena,
                 self.allocator,
                 body_reader,
+                prepared,
             );
         }
     };

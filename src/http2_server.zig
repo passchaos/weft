@@ -8,7 +8,6 @@ const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
 const drain_mod = @import("drain.zig");
-const target_mod = @import("target.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -433,11 +432,19 @@ pub fn Http2Server(comptime H: type) type {
             // streaming reader for routes that opted in or for unknown-length
             // bodies.
             // Route matching uses the path, never the query string carried by
-            // the `:path` pseudo-header.
-            const route_streaming = self.app_router.isStreaming(
+            // the `:path` pseudo-header. The result is reused by dispatch.
+            var prepared: router_mod.Prepared = .{};
+            dispatch_mod.prepareRoute(
+                H,
+                &self.app_router,
                 method,
-                target_mod.split(target).path,
+                target,
+                &prepared,
             );
+            const route_streaming = if (prepared.route) |route|
+                route.streaming
+            else
+                false;
             const declared_length = head.content_length;
             const has_declared_body = declared_length != null and
                 declared_length.? != 0;
@@ -512,6 +519,7 @@ pub fn Http2Server(comptime H: type) type {
                 client_info,
                 arena,
                 reader,
+                &prepared,
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;
                 std.log.scoped(.weft).warn(
@@ -689,6 +697,7 @@ pub fn Http2Server(comptime H: type) type {
             client_info: ctx_mod.ClientInfo,
             arena: std.mem.Allocator,
             body_reader: ?ctx_mod.BodyReader,
+            prepared: *const router_mod.Prepared,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -707,6 +716,7 @@ pub fn Http2Server(comptime H: type) type {
                 arena,
                 self.allocator,
                 body_reader,
+                prepared,
             );
         }
     };

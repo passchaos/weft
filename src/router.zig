@@ -151,6 +151,18 @@ const Captures = struct {
     count: usize = 0,
 };
 
+/// A route lookup performed before the request body is read.
+///
+/// Adapters use `route.streaming` to decide whether to expose a body reader,
+/// then pass the same value to dispatch so the trie is walked once per
+/// request. `route` is null when nothing matched; `allowed` then lists the
+/// methods registered on the matched path.
+pub const Prepared = struct {
+    route: ?*const Route = null,
+    captures: Captures = .{},
+    allowed: AllowedMethods = .{},
+};
+
 const PatternInfo = struct {
     captures: usize,
     segments: usize,
@@ -583,7 +595,15 @@ pub fn Router(comptime H: type) type {
 
             var captures = Captures{};
             var allowed = AllowedMethods{};
-            if (self.matchNode(&self.root, source, 0, 0, method, &captures, &allowed)) |route| {
+            if (self.matchNode(
+                &self.root,
+                source,
+                0,
+                0,
+                method,
+                &captures,
+                &allowed,
+            )) |route| {
                 return .{ .matched = try buildMatch(
                     route,
                     &captures,
@@ -596,7 +616,15 @@ pub fn Router(comptime H: type) type {
             // resource is readable without its representation.
             if (method == .HEAD) {
                 var get_captures = Captures{};
-                if (self.matchNode(&self.root, source, 0, 0, .GET, &get_captures, &allowed)) |route| {
+                if (self.matchNode(
+                    &self.root,
+                    source,
+                    0,
+                    0,
+                    .GET,
+                    &get_captures,
+                    &allowed,
+                )) |route| {
                     return .{ .matched = try buildMatch(
                         route,
                         &get_captures,
@@ -608,6 +636,59 @@ pub fn Router(comptime H: type) type {
 
             if (allowed.len > 0) return .{ .method_not_allowed = allowed };
             return .not_found;
+        }
+
+        /// Resolve the route without allocating. Adapters call this before
+        /// reading the body and pass the result to dispatch.
+        pub fn prepare(
+            self: *@This(),
+            method: netz.http1.Method,
+            path: []const u8,
+            out: *Prepared,
+        ) void {
+            // Only the counts need clearing; capture and method arrays are
+            // written before they are read.
+            out.route = null;
+            out.allowed.len = 0;
+            out.captures.count = 0;
+            const source = if (std.mem.eql(u8, path, "*"))
+                ""
+            else if (path.len > 0 and path[0] == '/')
+                std.mem.trim(u8, path, "/")
+            else
+                return;
+
+            if (self.matchNode(
+                &self.root,
+                source,
+                0,
+                0,
+                method,
+                &out.captures,
+                &out.allowed,
+            )) |route| {
+                out.route = route;
+                return;
+            }
+
+            // HEAD falls back to GET, matching the HTTP semantics that a GET
+            // resource is readable without its representation.
+            if (method == .HEAD) {
+                var get_captures = Captures{};
+                if (self.matchNode(
+                    &self.root,
+                    source,
+                    0,
+                    0,
+                    .GET,
+                    &get_captures,
+                    &out.allowed,
+                )) |route| {
+                    out.route = route;
+                    out.captures = get_captures;
+                    return;
+                }
+            }
         }
 
         /// Cheap check for whether the matched route opted into streaming.
@@ -767,7 +848,7 @@ pub fn Router(comptime H: type) type {
             return null;
         }
 
-        fn buildMatch(
+        pub fn buildMatch(
             route: *const Route,
             captures: *const Captures,
             allocator: std.mem.Allocator,

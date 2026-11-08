@@ -9,6 +9,9 @@ pub fn add(ctx: *ctx_mod.Ctx, value: []const u8) !void {
     const existing = ctx.responseHeader("vary") orelse {
         return ctx.setHeader("Vary", value);
     };
+    if (std.mem.trim(u8, existing, " \t").len == 0) {
+        return ctx.setHeader("Vary", value);
+    }
 
     var tokens = std.mem.splitScalar(u8, existing, ',');
     while (tokens.next()) |raw_token| {
@@ -77,4 +80,12 @@ test "vary appends unique tokens and respects the wildcard" {
     try context.setHeader("Vary", "*");
     try add(&context, "Accept-Encoding");
     try std.testing.expectEqualStrings("*", context.responseHeader("vary").?);
+
+    // An empty field value is replaced instead of producing ", token".
+    try context.setHeader("Vary", "");
+    try add(&context, "Accept-Encoding");
+    try std.testing.expectEqualStrings(
+        "Accept-Encoding",
+        context.responseHeader("vary").?,
+    );
 }

@@ -45,6 +45,24 @@ fn sleepTask(io: std.Io, duration: std.Io.Duration) void {
     std.Io.sleep(io, duration, .awake) catch {};
 }
 
+/// Prepare a route lookup from a request target. Adapters call this before
+/// reading the body; `dispatch` reuses the result so the trie is walked once
+/// per request.
+pub fn prepareRoute(
+    comptime H: type,
+    router: *router_mod.Router(H),
+    method: netz.http1.Method,
+    target: []const u8,
+    out: *router_mod.Prepared,
+) void {
+    out.route = null;
+    out.allowed.len = 0;
+    out.captures.count = 0;
+    const path = target_mod.split(target).path;
+    if (method == .OPTIONS and std.mem.eql(u8, path, "*")) return;
+    router.prepare(method, path, out);
+}
+
 /// Dispatch one parsed request through the application router and middleware.
 ///
 /// The request is an HTTP/1 shape even for non-HTTP/1 adapters; adapters map
@@ -62,6 +80,7 @@ pub fn dispatch(
     arena: std.mem.Allocator,
     request_allocator: std.mem.Allocator,
     body_reader: ?ctx_mod.BodyReader,
+    prepared: *const router_mod.Prepared,
 ) !response_mod.Response {
     const target = request.target;
     const split_target = target_mod.split(target);
@@ -69,12 +88,22 @@ pub fn dispatch(
     const query = split_target.query;
 
     var disposition: ?Disposition = null;
-    const resolution = if (request.method == .OPTIONS and
-        std.mem.eql(u8, path, "*"))
-    blk: {
-        disposition = .{ .options_star = router.allowedMethods() };
-        break :blk router_mod.Resolution.not_found;
-    } else try router.resolve(request.method, path, arena);
+    const resolution: router_mod.Resolution =
+        if (request.method == .OPTIONS and
+        std.mem.eql(u8, path, "*")) blk: {
+            disposition = .{ .options_star = router.allowedMethods() };
+            break :blk .not_found;
+        } else if (prepared.route) |route|
+            .{ .matched = try router_mod.Router(H).buildMatch(
+                route,
+                &prepared.captures,
+                arena,
+                path,
+            ) }
+        else if (prepared.allowed.len > 0)
+            .{ .method_not_allowed = prepared.allowed }
+        else
+            .not_found;
     var query_params: []const query_mod.Pair = &.{};
     var params: []const ctx_mod.Param = &.{};
     var route_middleware: []const ctx_mod.Handler = &.{};
@@ -348,6 +377,7 @@ test "fallback handlers keep the streaming body bounded" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
+    var prepared: router_mod.Prepared = .{};
     const drainBody = struct {
         fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
             var total: usize = 0;
@@ -373,6 +403,7 @@ test "fallback handlers keep the streaming body bounded" {
         arena.allocator(),
         std.testing.allocator,
         .{ .replay = &replay },
+        &prepared,
     );
     try std.testing.expectEqual(@as(u16, 413), response.status);
 }

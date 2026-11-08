@@ -245,6 +245,20 @@ valid.
 Unit test: `compress middleware streams gzip within a small arena` in
 `src/middleware/compress.zig` streams 256 KiB through a 64 KiB arena.
 
+## Single route lookup per request
+
+Every adapter previously walked the route trie twice: once through
+`Router.isStreaming` before reading the body, and again inside `dispatch`.
+`Router.prepare` now resolves the route, captures, and allowed methods without
+allocating; the adapter uses `prepared.route.streaming` for the body decision
+and passes the same value to `dispatch`, which builds the match from the
+captured values. `resolve` and `isStreaming` keep their existing
+allocation-free implementations for direct callers.
+
+The HTTP/1 adapter also allocates its per-request arena on the first request
+instead of at connection accept, so idle keep-alive connections do not reserve
+`max_request_arena_bytes`.
+
 ## Verification
 
 ```sh
