@@ -776,17 +776,14 @@ fn trailerFields(
     arena: std.mem.Allocator,
 ) ![]const netz.http3.Qpack.HeaderField {
     var fields = std.ArrayListUnmanaged(netz.http3.Qpack.HeaderField).empty;
+    try fields.ensureTotalCapacity(arena, response.trailers.items.len);
     for (response.trailers.items) |header| {
-        const name = try arena.alloc(u8, header.name.len);
-        for (header.name, name) |source, *target| {
-            target.* = std.ascii.toLower(source);
-        }
-        try fields.append(arena, .{
-            .name = name,
+        fields.appendAssumeCapacity(.{
+            .name = try lowerHeaderName(arena, header.name),
             .value = header.value,
         });
     }
-    return fields.toOwnedSlice(arena);
+    return fields.items;
 }
 
 fn toHttp3Response(
@@ -813,18 +810,33 @@ fn headerFields(
     arena: std.mem.Allocator,
 ) ![]const netz.http3.Qpack.HeaderField {
     var fields = std.ArrayListUnmanaged(netz.http3.Qpack.HeaderField).empty;
+    try fields.ensureTotalCapacity(arena, response.headers.items.len);
     for (response.headers.items) |header| {
         if (forbiddenResponseHeader(header.name)) continue;
-        const name = try arena.alloc(u8, header.name.len);
-        for (header.name, name) |source, *target| {
-            target.* = std.ascii.toLower(source);
-        }
-        try fields.append(arena, .{
-            .name = name,
+        fields.appendAssumeCapacity(.{
+            .name = try lowerHeaderName(arena, header.name),
             .value = header.value,
         });
     }
-    return fields.toOwnedSlice(arena);
+    return fields.items;
+}
+
+/// QPACK field names are lowercase. Response names already live in the
+/// request arena, so an already-lowercase name is borrowed instead of copied.
+fn lowerHeaderName(
+    arena: std.mem.Allocator,
+    name: []const u8,
+) ![]const u8 {
+    for (name) |char| {
+        if (char >= 'A' and char <= 'Z') {
+            const copy = try arena.alloc(u8, name.len);
+            for (name, copy) |source, *target| {
+                target.* = std.ascii.toLower(source);
+            }
+            return copy;
+        }
+    }
+    return name;
 }
 
 fn forbiddenResponseHeader(name: []const u8) bool {

@@ -41,6 +41,12 @@ pub const Etag = struct {
             strong;
         try ctx.setHeader("ETag", value);
 
+        // RFC 9110 §13.1.2 only defines the 304 short-circuit for GET and
+        // HEAD. The handler has already run for other methods, so turning
+        // their response into 304 would both misstate the result and hide the
+        // representation the client asked for.
+        if (ctx.method() != .GET and ctx.method() != .HEAD) return;
+
         const if_none_match = ctx.header("if-none-match") orelse return;
         const matches = if (self.weak)
             precondition.weakMatches(if_none_match, strong)
@@ -119,4 +125,46 @@ test "etag middleware answers If-None-Match with 304" {
     try std.testing.expectEqual(@as(u16, 304), second.response.status);
     try std.testing.expectEqualStrings("", second.response.body);
     try std.testing.expectEqualStrings(tag, second.response.header("etag").?);
+}
+
+test "etag middleware keeps non-GET responses intact" {
+    const allocator = std.testing.allocator;
+    const hash = std.hash.Wyhash.hash(0, "hello");
+    const tag = try std.fmt.allocPrint(allocator, "W/\"{x}\"", .{hash});
+    defer allocator.free(tag);
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "If-None-Match",
+        .value = tag,
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var etag = Etag{};
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{etag.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.text("hello");
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqual(@as(u16, 200), context.response.status);
+    try std.testing.expectEqualStrings("hello", context.response.body);
+    try std.testing.expect(context.response.header("etag") != null);
 }

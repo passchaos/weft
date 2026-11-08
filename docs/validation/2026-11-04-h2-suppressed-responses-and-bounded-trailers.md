@@ -259,6 +259,23 @@ The HTTP/1 adapter also allocates its per-request arena on the first request
 instead of at connection accept, so idle keep-alive connections do not reserve
 `max_request_arena_bytes`.
 
+## ETag and non-GET methods
+
+The `Etag` middleware turned any matching `If-None-Match` into `304`, even for
+`POST`, `PUT`, or `DELETE` responses whose handler had already run. RFC 9110
+§13.1.2 only defines that short-circuit for `GET` and `HEAD`; other methods now
+keep their response (and still receive the computed `ETag`).
+
+Unit test: `etag middleware keeps non-GET responses intact` in
+`src/middleware/etag.zig`.
+
+## HTTP/2 and HTTP/3 header conversion
+
+Both adapters lowercased every response field name into a fresh arena
+allocation. An already-lowercase name now borrows the response-owned copy, and
+the field array is sized once before conversion. This removes one allocation
+per header on the concurrent response paths.
+
 ## Verification
 
 ```sh
@@ -267,4 +284,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 171/171 tests in Debug and ReleaseFast (118 unit, 53 package).
+Results: 172/172 tests in Debug and ReleaseFast (119 unit, 53 package).
