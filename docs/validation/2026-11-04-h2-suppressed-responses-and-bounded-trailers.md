@@ -311,6 +311,12 @@ Custom tables keep the case-insensitive linear scan.
 Unit test: `static mime lookup handles case and custom tables` in
 `src/static_files.zig`.
 
+`normalizePath` also returns the arena-owned request path unchanged when it is
+already plain (no empty, dot, hidden, or invalid segments), avoiding the
+segments array and joined copy for the common case.
+
+Unit test: `static path normalization borrows plain relative paths`.
+
 ## Verification
 
 ```sh
@@ -319,4 +325,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 174/174 tests in Debug and ReleaseFast (121 unit, 53 package).
+Results: 175/175 tests in Debug and ReleaseFast (122 unit, 53 package).

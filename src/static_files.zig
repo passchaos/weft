@@ -733,6 +733,9 @@ fn normalizePath(
     allow_dotfiles: bool,
 ) ![]const u8 {
     if (raw.len == 0) return "";
+    // A plain relative path is already normalized and stays borrowed from the
+    // request arena.
+    if (isPlainRelativePath(raw, allow_dotfiles)) return raw;
 
     var segments = std.ArrayListUnmanaged([]const u8).empty;
     defer segments.deinit(allocator);
@@ -753,6 +756,35 @@ fn normalizePath(
 
     if (segments.items.len == 0) return "";
     return std.mem.join(allocator, "/", segments.items);
+}
+
+/// True when `raw` has no empty, dot, dot-dot, hidden, or invalid segments,
+/// so normalization would return the input unchanged.
+fn isPlainRelativePath(raw: []const u8, allow_dotfiles: bool) bool {
+    var segment_start: usize = 0;
+    var segment_count: usize = 0;
+    var index: usize = 0;
+    while (index <= raw.len) : (index += 1) {
+        if (index < raw.len and raw[index] != '/') {
+            const char = raw[index];
+            if (char == '\\' or char == 0 or char < 0x20 or char == 0x7f) {
+                return false;
+            }
+            continue;
+        }
+        const segment = raw[segment_start..index];
+        if (segment.len == 0) return false;
+        if (std.mem.eql(u8, segment, ".") or
+            std.mem.eql(u8, segment, ".."))
+        {
+            return false;
+        }
+        if (!allow_dotfiles and segment[0] == '.') return false;
+        segment_count += 1;
+        if (segment_count > max_segments) return false;
+        segment_start = index + 1;
+    }
+    return true;
 }
 
 const max_ranges = 16;
@@ -1032,5 +1064,23 @@ test "static mime lookup handles case and custom tables" {
     try std.testing.expectEqualStrings(
         "application/octet-stream",
         files.contentType("a.html"),
+    );
+}
+
+test "static path normalization borrows plain relative paths" {
+    const allocator = std.testing.allocator;
+    const plain = "css/site.css";
+    const normalized = try normalizePath(allocator, plain, false);
+    try std.testing.expectEqualStrings(plain, normalized);
+    try std.testing.expect(normalized.ptr == plain.ptr);
+
+    // A hidden first segment still falls back to the validating path.
+    try std.testing.expectError(
+        error.HiddenPath,
+        normalizePath(allocator, ".env", false),
+    );
+    try std.testing.expectEqualStrings(
+        ".env",
+        try normalizePath(allocator, ".env", true),
     );
 }
