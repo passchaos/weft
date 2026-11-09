@@ -75,6 +75,17 @@ pub fn serialize(
     allocator: std.mem.Allocator,
     cookie: SetCookie,
 ) ![]const u8 {
+    var output = std.Io.Writer.Allocating.init(allocator);
+    errdefer output.deinit();
+    try write(&output.writer, cookie);
+    return output.toOwnedSlice();
+}
+
+/// Write a serialized `Set-Cookie` field value to `writer`.
+///
+/// Validation happens before any bytes are written, so a rejected cookie does
+/// not leave a partial value in the caller's buffer.
+pub fn write(writer: *std.Io.Writer, cookie: SetCookie) !void {
     try validateName(cookie.name);
     try validateValue(cookie.value);
     if (cookie.same_site == .none and !cookie.secure) {
@@ -85,46 +96,35 @@ pub fn serialize(
     }
     try validatePrefix(cookie);
 
-    var output = std.ArrayListUnmanaged(u8).empty;
-    errdefer output.deinit(allocator);
-
-    try output.appendSlice(allocator, cookie.name);
-    try output.append(allocator, '=');
-    try output.appendSlice(allocator, cookie.value);
+    try writer.writeAll(cookie.name);
+    try writer.writeByte('=');
+    try writer.writeAll(cookie.value);
 
     if (cookie.path) |path| {
         try validateAttribute(path);
-        try output.appendSlice(allocator, "; Path=");
-        try output.appendSlice(allocator, path);
+        try writer.writeAll("; Path=");
+        try writer.writeAll(path);
     }
     if (cookie.domain) |domain| {
         try validateAttribute(domain);
-        try output.appendSlice(allocator, "; Domain=");
-        try output.appendSlice(allocator, domain);
+        try writer.writeAll("; Domain=");
+        try writer.writeAll(domain);
     }
     if (cookie.max_age) |seconds| {
-        const text = try std.fmt.allocPrint(
-            allocator,
-            "; Max-Age={d}",
-            .{seconds},
-        );
-        defer allocator.free(text);
-        try output.appendSlice(allocator, text);
+        try writer.print("; Max-Age={d}", .{seconds});
     }
     if (cookie.expires) |expires| {
         try validateAttribute(expires);
-        try output.appendSlice(allocator, "; Expires=");
-        try output.appendSlice(allocator, expires);
+        try writer.writeAll("; Expires=");
+        try writer.writeAll(expires);
     }
-    if (cookie.secure) try output.appendSlice(allocator, "; Secure");
-    if (cookie.http_only) try output.appendSlice(allocator, "; HttpOnly");
+    if (cookie.secure) try writer.writeAll("; Secure");
+    if (cookie.http_only) try writer.writeAll("; HttpOnly");
     if (cookie.same_site) |same_site| {
-        try output.appendSlice(allocator, "; SameSite=");
-        try output.appendSlice(allocator, same_site.text());
+        try writer.writeAll("; SameSite=");
+        try writer.writeAll(same_site.text());
     }
-    if (cookie.partitioned) try output.appendSlice(allocator, "; Partitioned");
-
-    return output.toOwnedSlice(allocator);
+    if (cookie.partitioned) try writer.writeAll("; Partitioned");
 }
 
 /// Enforce the RFC 6265bis `__Secure-` and `__Host-` cookie prefixes.

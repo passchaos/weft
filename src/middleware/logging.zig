@@ -25,8 +25,9 @@ pub const Log = struct {
             const elapsed = started.untilNow(ctx.io, .awake);
             const id = request_id.from(ctx) orelse "-";
             const protocol = @tagName(ctx.protocol());
+            var remote_buffer: [64]u8 = undefined;
             const remote = if (ctx.clientAddress()) |address|
-                std.fmt.allocPrint(ctx.arena, "{f}", .{address}) catch "-"
+                std.fmt.bufPrint(&remote_buffer, "{f}", .{address}) catch "-"
             else
                 "-";
             const status = resolveStatus(ctx.response.status, failure);
@@ -53,8 +54,9 @@ pub fn log(ctx: *ctx_mod.Ctx) anyerror!void {
         const elapsed = started.untilNow(ctx.io, .awake);
         const id = request_id.from(ctx) orelse "-";
         const protocol = @tagName(ctx.protocol());
+        var remote_buffer: [64]u8 = undefined;
         const remote = if (ctx.clientAddress()) |address|
-            std.fmt.allocPrint(ctx.arena, "{f}", .{address}) catch "-"
+            std.fmt.bufPrint(&remote_buffer, "{f}", .{address}) catch "-"
         else
             "-";
         const status = resolveStatus(ctx.response.status, failure);

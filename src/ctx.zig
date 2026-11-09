@@ -843,10 +843,20 @@ pub const Ctx = struct {
 
     /// Append a `Set-Cookie` response field.
     pub fn setCookie(self: *Ctx, set_cookie: SetCookie) !void {
-        try self.addHeader(
-            "Set-Cookie",
-            try cookie_mod.serialize(self.arena, set_cookie),
-        );
+        // Common cookies serialize into a stack buffer; only unusually large
+        // values allocate a staging copy before the response takes its own.
+        var buffer: [512]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        cookie_mod.write(&writer, set_cookie) catch |err| switch (err) {
+            error.WriteFailed => {
+                return self.addHeader(
+                    "Set-Cookie",
+                    try cookie_mod.serialize(self.arena, set_cookie),
+                );
+            },
+            else => return err,
+        };
+        try self.addHeader("Set-Cookie", writer.buffered());
     }
 
     pub fn set(self: *Ctx, comptime T: type, value: T) !void {
@@ -1250,6 +1260,46 @@ test "json media type accepts parameters and structured suffixes" {
     try std.testing.expect(!isJsonMediaType("application/jsonx"));
     try std.testing.expect(!isJsonMediaType("json"));
     try std.testing.expect(!isJsonMediaType(""));
+}
+
+test "setCookie falls back to the arena for large values" {
+    var request = netz.http1.Request{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = Response.init(arena.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    const long_value = try std.testing.allocator.alloc(u8, 700);
+    defer std.testing.allocator.free(long_value);
+    @memset(long_value, 'a');
+    try context.setCookie(.{
+        .name = "big",
+        .value = long_value,
+        .http_only = true,
+    });
+
+    const serialized = context.response.header("set-cookie").?;
+    try std.testing.expect(serialized.len > 700);
+    try std.testing.expect(std.mem.startsWith(u8, serialized, "big="));
+    try std.testing.expect(std.mem.endsWith(u8, serialized, "; HttpOnly"));
 }
 
 test "typed locals round-trip through the request arena" {

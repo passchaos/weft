@@ -506,6 +506,17 @@ validated step shared by `setHeader` and `appendHeader`, and the constant
 Middleware benchmark (ReleaseFast, interleaved A/B): bare handler 36.4–38.2 ns
 vs 59.6 ns, and the four-middleware chain 233–237 ns vs 297 ns.
 
+## Cookie serialization and access-log formatting
+
+`Ctx.setCookie` serialized the value into the arena and then `addHeader`
+copied it again. Cookies up to 512 bytes now serialize into a stack buffer;
+larger values keep the arena fallback. The access logger formats the client
+address into a stack buffer instead of `allocPrint`.
+
+HTTP/1 keep-alive benchmark: 8.57 µs/request (~117k requests/s). Static
+benchmarks: 6.30 µs (64 KiB), 3.21 µs (1 KiB), 0.87 µs (conditional 304),
+3.44 µs (1 KiB range).
+
 ## Verification
 
 ```sh
@@ -514,4 +525,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 186/186 tests in Debug and ReleaseFast (130 unit, 56 package).
+Results: 187/187 tests in Debug and ReleaseFast (131 unit, 56 package).
