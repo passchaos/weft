@@ -780,6 +780,39 @@ route is selected. H3 user CPU per benchmark run (74k requests) dropped from
 The existing HTTP/3 adapter package test covers both streaming and
 non-streaming routes.
 
+## QUIC pending-stream recovery queries
+
+After the reader-buffer fix, the same H3 profile attributed 7.29% of sampled
+cycles to `quic.recovery.Queue.hasPendingStreamFrame`. Instrumenting the
+benchmark queue showed 6.33 million queries over 74k requests, each scanning
+23.5 pending payloads on average (peak 80), for 148.9 million entry visits.
+Close-time delivery checks run several times per acknowledgement, and the
+queue was decoding every pending payload to find the few frames that name a
+stream.
+
+The recovery queue now maintains per-stream pending counters
+(`pending_data_streams`, `pending_reset_streams`) instead of scanning:
+enqueue increments the counters from the frame list the packetizer already
+has, entry removal decrements them, and payload compaction re-materializes
+the rewritten references. Payloads with more than four stream references
+still answer conservatively through an overflow counter, and a counter-growth
+failure falls back to the previous scan, so OOM cannot change a delivery
+answer.
+
+An isolated query benchmark with a 64-entry pending queue measured
+`hasPendingStreamData` at 55 ns (hit) and 54 ns (miss) before the change and
+3–4 ns / 2–3 ns after, a 13–18× improvement. In the post-change H3 profile
+the same symbol falls from 7.29% to 1.37% of sampled cycles, which is now the
+map lookup and call overhead rather than payload decoding. Wall-clock A/B
+numbers on this host are too noisy to separate a low-single-digit CPU change,
+so the isolated query benchmark is the primary evidence.
+
+Correctness: the full netz library suite passes (6871/6871, Debug), including
+the 1175 QUIC and 948 HTTP/3 tests, and weft passes 213/213 against the
+changed netz. The netz change is `5c3bcace`; verification ran against a clean
+worktree at that commit because the shared netz worktree carried unrelated
+in-progress HTTP/1 edits.
+
 ## Verification
 
 ```sh
