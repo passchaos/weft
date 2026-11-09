@@ -666,12 +666,15 @@ Unit test: `quality parses RFC qvalues into thousandths`.
 `bodyJson`, `bodyForm`, `multipart`, and `multipartStream` parsed into the
 fixed request arena and surfaced arena exhaustion as `OutOfMemory`, which
 dispatch mapped to `500`. Since the arena is a request budget, exhaustion now
-maps to `PayloadTooLarge` (`413`), matching `readBody`.
+maps to `PayloadTooLarge` (`413`), matching `readBody`. `decodedBody` does the
+same when no server staging allocator is configured; with staging enabled,
+`OutOfMemory` still means a genuine server allocation failure.
 
 Unit tests: `bodyForm maps arena exhaustion to PayloadTooLarge`,
 `bodyJson maps arena exhaustion to PayloadTooLarge`,
-`multipart maps arena exhaustion to PayloadTooLarge`, and
-`multipartStream maps arena exhaustion to PayloadTooLarge`.
+`multipart maps arena exhaustion to PayloadTooLarge`,
+`multipartStream maps arena exhaustion to PayloadTooLarge`, and
+`decodedBody maps arena exhaustion to PayloadTooLarge`.
 
 ## Verification
 
@@ -683,5 +686,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 211/211 tests in Debug, ReleaseSafe, and ReleaseFast (155 unit,
+Results: 212/212 tests in Debug, ReleaseSafe, and ReleaseFast (156 unit,
 56 package).

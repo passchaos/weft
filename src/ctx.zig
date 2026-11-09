@@ -628,6 +628,12 @@ pub const Ctx = struct {
             try self.readBody(),
             self.limits.max_body_bytes,
         ) catch |err| switch (err) {
+            // Without a server staging allocator the arena is both the body
+            // and decoder budget, so exhaustion is a request-size failure.
+            error.OutOfMemory => return if (self.request_allocator == null)
+                error.PayloadTooLarge
+            else
+                error.OutOfMemory,
             error.UnsupportedContentEncoding => return error.UnsupportedMediaType,
             error.DecodedBodyTooLarge,
             error.EncodedBodyTooLarge,
@@ -1222,6 +1228,65 @@ test "readBody releases staging when the arena is too small" {
     };
 
     try std.testing.expectError(error.PayloadTooLarge, context.readBody());
+}
+
+test "decodedBody maps arena exhaustion to PayloadTooLarge" {
+    const allocator = std.testing.allocator;
+    const plain = try allocator.alloc(u8, 3000);
+    defer allocator.free(plain);
+    @memset(plain, 'a');
+
+    var compressed_output = try std.Io.Writer.Allocating.initCapacity(
+        allocator,
+        64,
+    );
+    defer compressed_output.deinit();
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var encoder = try std.compress.flate.Compress.init(
+        &compressed_output.writer,
+        &window,
+        .gzip,
+        .default,
+    );
+    try encoder.writer.writeAll(plain);
+    try encoder.finish();
+
+    var headers = [_]netz.http1.Header{.{
+        .name = "Content-Encoding",
+        .value = "gzip",
+    }};
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var replay = ReplayReader{ .body = compressed_output.written() };
+    // The encoded body fits, the decoded output does not, and there is no
+    // server staging allocator.
+    var arena_buffer: [64]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .limits = .{ .max_body_bytes = 8192, .max_request_arena_bytes = 64 },
+        .request = &request,
+        .body_reader = .{ .replay = &replay },
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectError(
+        error.PayloadTooLarge,
+        context.decodedBody(),
+    );
 }
 
 test "bodyForm maps arena exhaustion to PayloadTooLarge" {
