@@ -797,7 +797,11 @@ completed without the per-request producer task.
 `work_stealing` (955k–1041k vs 832k–990k requests/s across noisy rounds).
 HTTP/2 batched and upload are neutral to slightly better with pinned, while
 HTTP/3 sequential is slower (43.5–46.5 → 45.4–52.7 µs), so the default stays
-`work_stealing`; use `pinned` when HTTP/1 tail latency matters most.
+`work_stealing`; use `pinned` when HTTP/1 tail latency matters most. For a
+single-connection HTTP/2 deployment using `inline_bodyless` handlers,
+`single_executor` removes idle-executor work stealing and brings the 32-stream
+batch from 14.4–14.8 µs to 11.2–12.2 µs; multi-connection servers keep the
+default.
 
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32

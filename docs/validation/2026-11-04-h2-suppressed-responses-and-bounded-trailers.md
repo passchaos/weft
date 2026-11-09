@@ -877,8 +877,13 @@ requests in 32-stream batches):
 
 weft now beats axum on sequential HTTP/2 by about 1.45× and remains about
 1.37× behind on 32-stream batches, where the owner serializes inline handlers
-while axum serves streams on multiple runtime threads. Closing the batch gap
-needs a parallel inline policy or a cheaper worker handoff.
+while axum serves streams on multiple runtime threads. The batch profile is
+dominated by idle zio executors: with `-Dscheduling=single_executor` the
+inline batch drops to 11.2–12.2 µs (sequential 33.9–41.2 µs), nearly matching
+axum, because the other executors no longer steal work for a single
+connection. Pinned is worse for inline (28.7–30.9 µs batched). The default
+stays `work_stealing` for multi-connection servers; a single-connection
+inline deployment can select `single_executor`.
 
 Verification: the full netz library suite passes (6871/6871) on `5c3bcace`
 plus this change, including the 1004 HTTP/2 tests, and weft passes 222/222 in
