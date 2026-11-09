@@ -949,8 +949,14 @@ Interleaved H3 benchmark rounds:
 - sequential: 39.98–40.81 µs before, 30.53–31.09 µs after (about 24% faster).
 - batched 32 streams: 35.15–36.76 µs before, 28.70–28.82 µs after (about 21%
   faster).
-- batched 2 KiB uploads are unchanged (60.2–60.7 µs) because request bodies
-  keep the worker path.
+- batched 2 KiB uploads: 60.2–60.7 µs before, 50.8–51.1 µs after (about 16%)
+  once small declared bodies were admitted inline as well.
+
+Small declared bodies now use the inline path too: when the head declares a
+content length that fits the buffered window, the engine buffers the body on
+the owner and runs the handler after the stream finishes, so a streaming
+reader sees a complete body and cannot block. Unknown or oversized bodies and
+streaming responses keep the worker path.
 
 Verification: the netz HTTP/3 filter passes (953/953) and weft passes 223/223
 in Debug, ReleaseSafe, and ReleaseFast, including a new H3 inline package

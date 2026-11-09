@@ -366,7 +366,7 @@ pub fn Http3Server(comptime H: type) type {
                     return error.InlineDeclined;
                 if (method == .CONNECT or
                     !route.inline_bodyless or
-                    route.streaming or
+                    (route.streaming and !stream.inlineBodyComplete()) or
                     target.len > self.options.limits.max_request_target_bytes or
                     head.headers.len > self.options.limits.max_request_headers)
                 {
