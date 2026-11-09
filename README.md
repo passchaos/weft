@@ -824,7 +824,7 @@ sequential path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
 With the default 1 ms weft poll interval, the combined head+body command,
 netz's single-packet buffered response emission, and the inline bodyless path,
 it reports roughly 30–31 µs per request sequentially, 28–29 µs for 32-stream
-batched GETs, and 60–61 µs for 32-stream batched uploads. `-Dh3-batch=8` reports ~39 µs GETs and ~57 µs
+batched GETs, and 51 µs for 32-stream batched uploads. `-Dh3-batch=8` reports ~39 µs GETs and ~57 µs
 uploads, so 32-stream uploads still show owner/worker contention above about
 eight concurrent streams. A 5 ms poll interval measured ~10.1 ms/req
 sequentially before these fixes, so the shorter default and the netz wake
