@@ -676,6 +676,17 @@ Unit tests: `bodyForm maps arena exhaustion to PayloadTooLarge`,
 `multipartStream maps arena exhaustion to PayloadTooLarge`, and
 `decodedBody maps arena exhaustion to PayloadTooLarge`.
 
+## Server-sent event batching
+
+`sse.write` emitted one transport write per field (and per data line), so a
+typical event cost three or four chunked writes. Events up to 512 bytes are
+now formatted into one stack buffer and written once; larger events keep the
+per-field streaming path. `sse.comment` is batched the same way.
+
+Unit tests: `sse formats fields and splits multiline data` asserts one write
+for a complete event, and `sse streams events larger than the batch buffer`
+covers the fallback.
+
 ## Verification
 
 ```sh
@@ -686,5 +697,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 212/212 tests in Debug, ReleaseSafe, and ReleaseFast (156 unit,
+Results: 213/213 tests in Debug, ReleaseSafe, and ReleaseFast (157 unit,
 56 package).
