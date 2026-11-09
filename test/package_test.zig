@@ -6174,6 +6174,7 @@ test "package: mcp initialize, tools/list, tools/call, and notifications" {
     var mcp_server = weft.mcp.Server.init(allocator, .{
         .server_name = "weft-test",
         .server_version = "0.0.1",
+        .allowed_origins = &.{"https://app.example"},
     });
     defer mcp_server.deinit();
     try mcp_server.addTool(.{
@@ -6300,6 +6301,27 @@ test "package: mcp initialize, tools/list, tools/call, and notifications" {
         notification.response.status,
     );
     try std.testing.expectEqualStrings("", notification.response.body);
+
+    const evil_headers = [_]netz.http1.Header{
+        .{ .name = "Content-Type", .value = "application/json" },
+        .{ .name = "Origin", .value = "https://evil.example" },
+    };
+    var forbidden = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .headers = &evil_headers,
+            .body = notification_body,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer forbidden.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 403),
+        forbidden.response.status,
+    );
 
     server.stop();
     try group.await(io);

@@ -638,7 +638,9 @@ try router.addRaw(.POST, "/mcp", mcp_server.handler(), .{});
 - `prompts/get` substitutes `{{name}}` placeholders from the supplied
   arguments and rejects missing required arguments.
 - The transport is stateless: no `Mcp-Session-Id` is issued, and the handler
-  only accepts `POST` (other methods receive `405`).
+  only accepts `POST` (other methods receive `405`). Set
+  `Options.allowed_origins` for browser-facing deployments; requests without
+  an `Origin` header are always allowed, and an empty list allows any origin.
 
 ## Limits
 

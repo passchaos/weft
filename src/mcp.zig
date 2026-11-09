@@ -175,6 +175,11 @@ pub const Options = struct {
     max_resources: usize = 64,
     max_prompts: usize = 64,
     max_batch_messages: usize = 16,
+    /// Browser origins allowed to call the endpoint. Empty allows any origin;
+    /// requests without an `Origin` header (non-browser clients) are always
+    /// allowed. Set this for browser-facing deployments to prevent DNS
+    /// rebinding.
+    allowed_origins: []const []const u8 = &.{},
     /// Supported protocol versions, newest first.
     protocol_versions: []const []const u8 = &.{
         "2025-06-18",
@@ -261,6 +266,10 @@ pub const Server = struct {
             try ctx.setHeader("Allow", "POST");
             return ctx.text("Method Not Allowed");
         }
+        if (!self.originAllowed(ctx)) {
+            ctx.setStatus(403);
+            return ctx.text("Forbidden origin");
+        }
 
         const body = ctx.bodyJson(std.json.Value) catch |err| switch (err) {
             error.UnsupportedMediaType => {
@@ -326,6 +335,15 @@ pub const Server = struct {
                 ));
             },
         }
+    }
+
+    fn originAllowed(self: *const Server, ctx: *const ctx_mod.Ctx) bool {
+        if (self.options.allowed_origins.len == 0) return true;
+        const origin = ctx.header("origin") orelse return true;
+        for (self.options.allowed_origins) |allowed| {
+            if (std.ascii.eqlIgnoreCase(allowed, origin)) return true;
+        }
+        return false;
     }
 
     /// Dispatch one JSON-RPC message. Returns null for notifications.
