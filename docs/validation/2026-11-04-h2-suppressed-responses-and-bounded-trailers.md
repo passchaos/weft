@@ -907,6 +907,24 @@ Debug, ReleaseSafe, and ReleaseFast. The netz change is `ce39517f`; netz
 `main` also carries an unrelated flaky HTTP/2 test hang that reproduces
 without this change, so the full suite was verified on the known-good base.
 
+## HTTP/1 p999 tail
+
+HTTP/1 throughput, p90, and p99 lead axum, but the p999 tail still trails.
+Fresh interleaved rounds at lower host load (32 keep-alive connections, 5 s):
+
+- axum: 830–857k req/s, p90 50–53 µs, p99 67–84 µs, p999 138–152 µs.
+- weft `work_stealing`: 938k–1052k req/s, p90 47–54 µs, p99 86–118 µs,
+  p999 252–280 µs.
+- weft `pinned`: 1042k–1095k req/s, p90 43–47 µs, p99 73–91 µs,
+  p999 232–244 µs.
+
+A profile of the work_stealing run spreads the cost across zio executor
+poll/steal/timer work, netz request parsing and response writing, and kernel
+io_uring submission; there is no single userspace hotspot. Pinned helps both
+throughput and the tail for HTTP/1 but hurts H3 sequential latency, so the
+default stays `work_stealing`. Closing the remaining ~100 µs needs zio-level
+wake and scheduling work.
+
 ## Verification
 
 ```sh

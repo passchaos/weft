@@ -43,11 +43,16 @@ pub fn main(init: std.process.Init) !void {
     defer backend.deinit();
     const io = backend.io();
 
+    const port: u16 = blk: {
+        const text = init.environ_map.get("WEFT_PORT") orelse
+            break :blk 28081;
+        break :blk std.fmt.parseInt(u16, text, 10) catch 28081;
+    };
     var server = try weft.Server(App).init(
         io,
         allocator,
         .{
-            .address = .{ .ip4 = .loopback(28081) },
+            .address = .{ .ip4 = .loopback(port) },
             .limits = .{
                 .max_head_bytes = 16 * 1024,
                 .max_body_bytes = 64 * 1024,
