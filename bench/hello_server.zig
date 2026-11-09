@@ -58,6 +58,16 @@ pub fn main(init: std.process.Init) !void {
                 .max_body_bytes = 64 * 1024,
                 .max_request_arena_bytes = 64 * 1024,
                 .max_response_bytes = 64 * 1024,
+                .request_head_timeout = blk: {
+                    const text = init.environ_map.get("WEFT_HEAD_TIMEOUT_MS") orelse
+                        break :blk .fromSeconds(30);
+                    const milliseconds = std.fmt.parseInt(i64, text, 10) catch
+                        30000;
+                    break :blk if (milliseconds == 0)
+                        null
+                    else
+                        .fromMilliseconds(milliseconds);
+                },
             },
             .max_connections = blk: {
                 const text = init.environ_map.get("WEFT_CONNECTIONS") orelse

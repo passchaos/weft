@@ -922,8 +922,11 @@ A profile of the work_stealing run spreads the cost across zio executor
 poll/steal/timer work, netz request parsing and response writing, and kernel
 io_uring submission; there is no single userspace hotspot. Pinned helps both
 throughput and the tail for HTTP/1 but hurts H3 sequential latency, so the
-default stays `work_stealing`. Closing the remaining ~100 µs needs zio-level
-wake and scheduling work.
+default stays `work_stealing`. Disabling `request_head_timeout` in the hello
+benchmark (an experimental knob) measured a small p999 improvement (222–231 µs
+vs 231–263 µs) and slightly higher throughput, but it removes Slowloris
+protection and is not a production recommendation. Closing the remaining
+~80–100 µs needs zio-level wake and scheduling work.
 
 ## Verification
 
