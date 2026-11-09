@@ -513,9 +513,9 @@ copied it again. Cookies up to 512 bytes now serialize into a stack buffer;
 larger values keep the arena fallback. The access logger formats the client
 address into a stack buffer instead of `allocPrint`.
 
-HTTP/1 keep-alive benchmark: 8.57 µs/request (~117k requests/s). Static
-benchmarks: 6.30 µs (64 KiB), 3.21 µs (1 KiB), 0.87 µs (conditional 304),
-3.44 µs (1 KiB range).
+HTTP/1 keep-alive benchmark (shared host, single run): 8.57 µs/request
+(~117k requests/s). Static benchmarks: 6.30 µs (64 KiB), 3.21 µs (1 KiB),
+0.87 µs (conditional 304), 3.44 µs (1 KiB range).
 
 ## Basic-auth credential comparison
 
