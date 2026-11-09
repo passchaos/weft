@@ -596,6 +596,35 @@ test "multipart rejects missing boundaries and malformed parts" {
     );
 }
 
+test "buffered multipart releases ownership on allocation failure" {
+    const testImpl = struct {
+        const body =
+            "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"field\"; " ++
+            "filename=\"a.txt\"\r\n" ++
+            "Content-Type: text/plain\r\n" ++
+            "\r\n" ++
+            "value\r\n" ++
+            "--weft--\r\n";
+
+        fn run(allocator: std.mem.Allocator) !void {
+            var form = try parse(
+                allocator,
+                "multipart/form-data; boundary=weft",
+                body,
+                .{},
+            );
+            defer form.deinit(allocator);
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
+    );
+}
+
 test "buffered multipart parsing is total for arbitrary bytes" {
     const allocator = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(0x3a3a_11);

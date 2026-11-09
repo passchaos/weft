@@ -577,6 +577,18 @@ Unit tests:
   failure.
 - `decodedBody releases staging when the arena is too small`.
 
+## Allocation-failure coverage
+
+Added `checkAllAllocationFailures` tests for buffered multipart parsing, query
+parsing, cookie serialization, and static download dispositions. Cookie
+serialization now maps the allocating writer's `WriteFailed` to `OutOfMemory`,
+matching the other helpers; the other three paths were already balanced.
+
+Unit tests: `buffered multipart releases ownership on allocation failure`,
+`query parsing releases ownership on allocation failure`,
+`cookie serialization releases ownership on allocation failure`, and
+`static download disposition releases ownership on allocation failure`.
+
 ## Verification
 
 ```sh
@@ -585,4 +597,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 193/193 tests in Debug and ReleaseFast (137 unit, 56 package).
+Results: 197/197 tests in Debug and ReleaseFast (141 unit, 56 package).

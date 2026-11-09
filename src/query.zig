@@ -292,6 +292,21 @@ test "query parsing borrows plain text and decodes mixed input into one buffer" 
     try std.testing.expectEqualStrings("a b", escaped_name.pairs[0].name);
 }
 
+test "query parsing releases ownership on allocation failure" {
+    const testImpl = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var parsed = try parse(allocator, "a=1&b=%20c&d=+e", 8);
+            defer parsed.deinit();
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
+    );
+}
+
 test "query parsing is total for arbitrary bytes" {
     const allocator = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(0x5eed_1234);

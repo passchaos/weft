@@ -1050,6 +1050,21 @@ test "static download disposition escapes filenames" {
     );
 }
 
+test "static download disposition releases ownership on allocation failure" {
+    const testImpl = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const value = try attachmentValue(allocator, "caf\xc3\xa9.txt");
+            allocator.free(value);
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
+    );
+}
+
 test "static mime lookup handles case and custom tables" {
     var files = StaticFiles{ .dir = undefined };
     try std.testing.expectEqualStrings(

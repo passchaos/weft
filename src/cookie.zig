@@ -77,7 +77,12 @@ pub fn serialize(
 ) ![]const u8 {
     var output = std.Io.Writer.Allocating.init(allocator);
     errdefer output.deinit();
-    try write(&output.writer, cookie);
+    // An allocating writer reports allocator failure as `WriteFailed`;
+    // normalize it so callers can handle `OutOfMemory` like other helpers.
+    write(&output.writer, cookie) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |other| return other,
+    };
     return output.toOwnedSlice();
 }
 
@@ -172,6 +177,29 @@ fn isTokenChar(char: u8) bool {
         '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => true,
         else => false,
     };
+}
+
+test "cookie serialization releases ownership on allocation failure" {
+    const testImpl = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const value = try serialize(allocator, .{
+                .name = "session",
+                .value = "abc",
+                .path = "/",
+                .max_age = 3600,
+                .http_only = true,
+                .secure = true,
+                .same_site = .lax,
+            });
+            allocator.free(value);
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
+    );
 }
 
 test "cookie lookup scans multiple headers" {
