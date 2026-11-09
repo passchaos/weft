@@ -666,8 +666,10 @@ Unit test: `quality parses RFC qvalues into thousandths`.
 ```sh
 zig fmt --check src test bench examples build.zig
 zig build test --summary all
+zig build test -Doptimize=ReleaseSafe --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 205/205 tests in Debug and ReleaseFast (149 unit, 56 package).
+Results: 205/205 tests in Debug, ReleaseSafe, and ReleaseFast (149 unit,
+56 package).
