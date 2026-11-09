@@ -28,7 +28,6 @@ pub const Compress = struct {
 
     fn call(self: *Compress, ctx: *ctx_mod.Ctx) anyerror!void {
         const negotiation = self.negotiate(ctx);
-        try vary.add(ctx, "Accept-Encoding");
         try ctx.next();
 
         const response = &ctx.response;
@@ -38,7 +37,16 @@ pub const Compress = struct {
         if (response.stream) |body| {
             const coding = switch (negotiation) {
                 .coding => |value| value,
-                .identity => return,
+                .identity => {
+                    // `Vary` is only needed when another Accept-Encoding
+                    // would select a different representation.
+                    if (!compressible(response.header("content-type"))) return;
+                    if (body.length) |length| {
+                        if (length < self.min_bytes) return;
+                    }
+                    try vary.add(ctx, "Accept-Encoding");
+                    return;
+                },
                 .not_acceptable => {
                     // Identity was explicitly refused and no coding is
                     // acceptable. A stream cannot be negotiated after the
@@ -56,6 +64,7 @@ pub const Compress = struct {
             if (body.length) |length| {
                 if (length < self.min_bytes) return;
             }
+            try vary.add(ctx, "Accept-Encoding");
             switch (coding) {
                 .gzip => {
                     const wrapper = ctx.arena.create(StreamCompress) catch
@@ -126,7 +135,13 @@ pub const Compress = struct {
         }
 
         switch (negotiation) {
-            .identity => return,
+            .identity => {
+                // See the streaming identity case above.
+                if (response.body.len < self.min_bytes) return;
+                if (!compressible(response.header("content-type"))) return;
+                try vary.add(ctx, "Accept-Encoding");
+                return;
+            },
             .not_acceptable => {
                 response.reset();
                 response.setStatus(406);
@@ -137,6 +152,7 @@ pub const Compress = struct {
             .coding => |coding| {
                 if (response.body.len < self.min_bytes) return;
                 if (!compressible(response.header("content-type"))) return;
+                try vary.add(ctx, "Accept-Encoding");
 
                 // Compress in the server allocator and copy the final bytes
                 // into the arena once, so encoder growth cannot exhaust the
@@ -730,6 +746,50 @@ test "compress middleware honors q=0 and small bodies" {
         context.response.header("content-encoding") == null,
     );
     try std.testing.expectEqual(@as(usize, 4096), context.response.body.len);
+    // A client accepting gzip would still get a compressed representation.
+    try std.testing.expect(context.response.header("vary") != null);
+}
+
+test "compress middleware omits Vary for bodies that never compress" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var headers = [_]@import("netz").http1.Header{.{
+        .name = "Accept-Encoding",
+        .value = "gzip",
+    }};
+    var request: @import("netz").http1.Request = .{
+        .method = .GET,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var middleware = Compress{ .min_bytes = 64 };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 64 * 1024),
+        .middleware = &.{middleware.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.text("tiny");
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expect(
+        context.response.header("content-encoding") == null,
+    );
+    // Every Accept-Encoding value receives the same identity response, so the
+    // field would not affect caching.
+    try std.testing.expect(context.response.header("vary") == null);
 }
 
 test "compress middleware negotiates deflate when preferred" {

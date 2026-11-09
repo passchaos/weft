@@ -609,6 +609,21 @@ All attributes are now validated before the first byte is written.
 
 Unit test: `cookie write validates before emitting bytes`.
 
+## Compression Vary placement
+
+`Compress` added `Vary: Accept-Encoding` before running the handler, so every
+response paid for the field even when the body was below `min_bytes` or had a
+non-compressible type — cases where no Accept-Encoding value can change the
+representation. The field is now added after the handler only when the
+response is eligible for compression (or when the client refused identity and
+the response becomes 406). Identity responses for eligible bodies still carry
+`Vary`.
+
+Middleware benchmark: Compress 55.4 → 34.8–36.1 ns, and the four-middleware
+chain 234.4 → 198.1–202.9 ns.
+
+Unit test: `compress middleware omits Vary for bodies that never compress`.
+
 ## Verification
 
 ```sh
