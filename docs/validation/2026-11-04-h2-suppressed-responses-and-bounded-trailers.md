@@ -671,5 +671,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 205/205 tests in Debug, ReleaseSafe, and ReleaseFast (149 unit,
+Results: 207/207 tests in Debug, ReleaseSafe, and ReleaseFast (151 unit,
 56 package).

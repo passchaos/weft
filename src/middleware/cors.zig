@@ -55,9 +55,10 @@ pub const Cors = struct {
         }
 
         if (self.expose_headers.len > 0) {
+            var expose_buffer: [512]u8 = undefined;
             try ctx.setHeader(
                 "Access-Control-Expose-Headers",
-                try std.mem.join(ctx.arena, ", ", self.expose_headers),
+                try joinList(ctx.arena, &expose_buffer, self.expose_headers),
             );
         }
         try ctx.next();
@@ -73,11 +74,13 @@ pub const Cors = struct {
             return;
         }
 
+        var methods_buffer: [256]u8 = undefined;
         try ctx.setHeader(
             "Access-Control-Allow-Methods",
-            try std.mem.join(ctx.arena, ", ", self.allow_methods),
+            try joinList(ctx.arena, &methods_buffer, self.allow_methods),
         );
 
+        var headers_buffer: [512]u8 = undefined;
         if (ctx.header("access-control-request-headers")) |requested| {
             try vary.add(ctx, "Access-Control-Request-Headers");
             if (self.allow_headers.len == 0) {
@@ -90,26 +93,29 @@ pub const Cors = struct {
                 }
                 try ctx.setHeader(
                     "Access-Control-Allow-Headers",
-                    try std.mem.join(ctx.arena, ", ", self.allow_headers),
+                    try joinList(ctx.arena, &headers_buffer, self.allow_headers),
                 );
             }
         } else if (self.allow_headers.len > 0) {
             try ctx.setHeader(
                 "Access-Control-Allow-Headers",
-                try std.mem.join(ctx.arena, ", ", self.allow_headers),
+                try joinList(ctx.arena, &headers_buffer, self.allow_headers),
             );
         }
 
         if (self.max_age_seconds) |seconds| {
+            var age_buffer: [10]u8 = undefined;
             try ctx.setHeader(
                 "Access-Control-Max-Age",
-                try std.fmt.allocPrint(ctx.arena, "{d}", .{seconds}),
+                std.fmt.bufPrint(&age_buffer, "{d}", .{seconds}) catch
+                    try std.fmt.allocPrint(ctx.arena, "{d}", .{seconds}),
             );
         }
         if (self.expose_headers.len > 0) {
+            var expose_buffer: [512]u8 = undefined;
             try ctx.setHeader(
                 "Access-Control-Expose-Headers",
-                try std.mem.join(ctx.arena, ", ", self.expose_headers),
+                try joinList(ctx.arena, &expose_buffer, self.expose_headers),
             );
         }
 
@@ -151,6 +157,42 @@ pub const Cors = struct {
         return true;
     }
 };
+
+/// Join a short header list into a stack buffer, falling back to the request
+/// arena when the list does not fit. The response copies the value.
+fn joinList(
+    arena: std.mem.Allocator,
+    buffer: []u8,
+    items: []const []const u8,
+) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    for (items, 0..) |item, index| {
+        if (index != 0) {
+            writer.writeAll(", ") catch
+                return std.mem.join(arena, ", ", items);
+        }
+        writer.writeAll(item) catch
+            return std.mem.join(arena, ", ", items);
+    }
+    return writer.buffered();
+}
+
+test "cors joins short lists on the stack and falls back for long ones" {
+    const allocator = std.testing.allocator;
+    const items = [_][]const u8{ "GET", "POST" };
+    var buffer: [32]u8 = undefined;
+    const short = try joinList(allocator, &buffer, &items);
+    try std.testing.expectEqualStrings("GET, POST", short);
+    try std.testing.expect(
+        @intFromPtr(short.ptr) == @intFromPtr(&buffer),
+    );
+
+    const long_items = [_][]const u8{ "abcdefghij", "klmnopqrst" };
+    var small_buffer: [4]u8 = undefined;
+    const fallback = try joinList(allocator, &small_buffer, &long_items);
+    defer allocator.free(fallback);
+    try std.testing.expectEqualStrings("abcdefghij, klmnopqrst", fallback);
+}
 
 test "cors reflects allowed origins and answers preflight" {
     const allocator = std.testing.allocator;

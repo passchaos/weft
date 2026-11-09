@@ -175,9 +175,10 @@ pub const StaticFiles = struct {
 
         const mime = self.contentType(relative);
 
-        // Cache the Range lookup once; the precompressed and precondition
-        // paths would otherwise rescan the request fields up to three times.
-        const range_header = ctx.header("range");
+        // Collect the conditional fields in one pass; the precompressed and
+        // precondition paths would otherwise rescan the request headers.
+        var condition_fields = conditionalFields(ctx.headers());
+        const range_header = condition_fields.range;
 
         var served_relative = relative;
         var served_stat = stat;
@@ -234,14 +235,12 @@ pub const StaticFiles = struct {
         ));
         const last_modified_value = precondition.formatDate(last_modified);
 
-        const preconditions = precondition.evaluate(.{
-            .if_match = ctx.header("if-match"),
-            .if_none_match = ctx.header("if-none-match"),
-            .if_modified_since = ctx.header("if-modified-since"),
-            .if_unmodified_since = ctx.header("if-unmodified-since"),
-            .if_range = ctx.header("if-range"),
-            .range = if (content_encoding == null) range_header else null,
-        }, etag, last_modified);
+        if (content_encoding != null) condition_fields.range = null;
+        const preconditions = precondition.evaluate(
+            condition_fields,
+            etag,
+            last_modified,
+        );
         switch (preconditions.outcome) {
             .precondition_failed => {
                 try ctx.setHeader("ETag", etag);
@@ -698,6 +697,41 @@ fn sidecarIsFresh(
     return sidecar.nanoseconds >= source.nanoseconds;
 }
 
+/// Collect the conditional request fields in one pass. Names that do not start
+/// with `if-` or `range` are skipped after a cheap prefix check. The first
+/// occurrence of each field wins, matching `Ctx.header`.
+fn conditionalFields(headers: []const ctx_mod.Header) precondition.Fields {
+    var fields = precondition.Fields{};
+    for (headers) |header| {
+        const name = header.name;
+        if (name.len < 3) continue;
+        const starts_with_if = name[0] == 'i' or name[0] == 'I';
+        const starts_with_range = name[0] == 'r' or name[0] == 'R';
+        if (!starts_with_if and !starts_with_range) continue;
+
+        if (std.ascii.eqlIgnoreCase(name, "if-match")) {
+            if (fields.if_match == null) fields.if_match = header.value;
+        } else if (std.ascii.eqlIgnoreCase(name, "if-none-match")) {
+            if (fields.if_none_match == null) {
+                fields.if_none_match = header.value;
+            }
+        } else if (std.ascii.eqlIgnoreCase(name, "if-modified-since")) {
+            if (fields.if_modified_since == null) {
+                fields.if_modified_since = header.value;
+            }
+        } else if (std.ascii.eqlIgnoreCase(name, "if-unmodified-since")) {
+            if (fields.if_unmodified_since == null) {
+                fields.if_unmodified_since = header.value;
+            }
+        } else if (std.ascii.eqlIgnoreCase(name, "if-range")) {
+            if (fields.if_range == null) fields.if_range = header.value;
+        } else if (std.ascii.eqlIgnoreCase(name, "range")) {
+            if (fields.range == null) fields.range = header.value;
+        }
+    }
+    return fields;
+}
+
 fn targetEndsWithSlash(target: []const u8) bool {
     const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
     return path_end > 0 and target[path_end - 1] == '/';
@@ -891,6 +925,23 @@ test "static path normalization rejects traversal and dotfiles" {
         error.InvalidPath,
         normalizePath(alloc, "css\\site.css", false),
     );
+}
+
+test "static conditional fields are collected in one pass" {
+    const headers = [_]ctx_mod.Header{
+        .{ .name = "Host", .value = "example.com" },
+        .{ .name = "if-none-match", .value = "\"a\"" },
+        .{ .name = "If-None-Match", .value = "\"b\"" },
+        .{ .name = "If-Modified-Since", .value = "date" },
+        .{ .name = "range", .value = "bytes=0-1" },
+    };
+    const fields = conditionalFields(&headers);
+    // The first occurrence wins, matching `Ctx.header`.
+    try std.testing.expectEqualStrings("\"a\"", fields.if_none_match.?);
+    try std.testing.expectEqualStrings("date", fields.if_modified_since.?);
+    try std.testing.expectEqualStrings("bytes=0-1", fields.range.?);
+    try std.testing.expect(fields.if_match == null);
+    try std.testing.expect(fields.if_range == null);
 }
 
 test "static range parsing handles single, suffix, and multiple ranges" {
