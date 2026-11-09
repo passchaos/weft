@@ -620,6 +620,7 @@ zig build bench-middleware -Doptimize=ReleaseFast
 zig build bench-accept -Doptimize=ReleaseFast
 zig build bench-static -Doptimize=ReleaseFast
 zig build bench-h2 -Doptimize=ReleaseFast
+zig build build-hello-server -Doptimize=ReleaseFast
 ```
 
 `run-upload` starts a server, drives one streaming upload, one streaming
@@ -673,6 +674,13 @@ server. On the reference host it reports roughly 9–16 µs per request (about
 60k–111k requests/s) depending on host load; this includes Netz HTTP/1 framing
 and runtime task wakeups, not just application dispatch. The latest quiet-host
 run measured 9.0 µs (111k requests/s).
+
+`build-hello-server` produces a minimal `GET /` server for framework
+comparisons. With 32 zio executors (`WEFT_EXECUTORS`) and 32 keep-alive
+connections, it reports about 730k–890k requests/s with a p90 of 56–66 µs on
+the reference host; axum 0.8.9 under the same load generator reports about
+700k–760k requests/s (p90 56–82 µs). Requests without a body are parsed and
+completed without the per-request producer task.
 
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32

@@ -706,6 +706,35 @@ Benchmarks (ReleaseFast, shared host, interleaved A/B):
 - HTTP/3 sequential 60.1 → 45.3–52.6 µs; batched 50.3 → 39.2–42.2 µs;
   upload 72.7 → 65.2–65.8 µs.
 
+## Comparison with axum
+
+A minimal `GET /` server was built for weft (`bench/hello_server.zig`,
+`zig build build-hello-server -Doptimize=ReleaseFast`) and for axum 0.8.9
+(`axum::serve` with the multi-thread tokio runtime). A standalone Rust load
+generator with 32 blocking keep-alive connections and one request in flight
+per connection drove both on the same host, alternating runs.
+
+ReleaseFast, 32 connections, 5–6 s rounds on the shared reference host:
+- axum: 700k–763k requests/s, p90 56–82 µs.
+- weft (32 zio executors, `max_connections = 32`): 729k–889k requests/s,
+  p90 56–66 µs — roughly 4–22% higher throughput.
+
+Isolated CPU accounting measured 14.2 µs CPU/request for weft versus 11.0 µs
+for axum; weft's higher throughput comes from using more of the 32 cores.
+
+The bodyless-request fast path in netz (`1a19d91b`) removes the per-request
+producer task: `readRequestBodyWithBuffer` parses and completes a request with
+no body (or `Content-Length: 0`) on the calling task. Requests with a body,
+`Expect`, obs-fold, or more than 128 fields keep the producer path with the
+buffered head untouched. On the same host this moved weft from ~565k to
+~850k requests/s at 32 connections and cut CPU per request from 22.7 µs to
+14.2 µs.
+
+Caveats: the host is shared with other agents, so absolute numbers move
+between runs; both servers use default framework settings except weft's
+executor count and connection cap. The axum project and load generator are
+one-off harnesses outside the repository.
+
 ## Verification
 
 ```sh

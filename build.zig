@@ -220,6 +220,25 @@ pub fn build(b: *std.Build) void {
     );
     bench_middleware_step.dependOn(&run_middleware_benchmark.step);
 
+    const hello_server = b.addExecutable(.{
+        .name = "hello-server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/hello_server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    const install_hello_server = b.addInstallArtifact(hello_server, .{});
+    const build_hello_server_step = b.step(
+        "build-hello-server",
+        "Build the minimal hello-world server used for framework comparisons",
+    );
+    build_hello_server_step.dependOn(&install_hello_server.step);
+
     const accept_benchmark = b.addExecutable(.{
         .name = "accept-bench",
         .root_module = b.createModule(.{
