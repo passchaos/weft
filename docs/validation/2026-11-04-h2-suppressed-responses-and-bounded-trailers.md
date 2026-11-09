@@ -868,32 +868,38 @@ body, or the route is streaming, so those requests keep the worker path. The
 option is only enabled when a route opts in
 (`Router.hasInlineBodylessRoutes`).
 
+The engine also submitted the response HEADERS block and the first DATA
+burst as two transport writes. `ServerDuplexStream.startResponseWithBody` now
+routes buffered responses through the connection's combined `writeResponse`
+path, which emits both in one logical write when flow-control credit permits.
+
 Interleaved measurements with the same client (20k sequential requests, 64k
 requests in 32-stream batches):
 
 - worker path: 56.6–59.2 µs sequential, 18.5–19.1 µs batched.
 - inline path: 29.3–29.9 µs sequential, 14.4–14.8 µs batched.
-- axum 0.8.9: 41.8–45.2 µs sequential, 10.5–10.8 µs batched.
+- inline + combined write, `work_stealing`: 25.7–29.5 µs sequential,
+  11.6–11.8 µs batched.
+- inline + combined write, `single_executor`: 25.6–33.1 µs sequential,
+  8.5–8.9 µs batched.
+- axum 0.8.9: 36.9–45.2 µs sequential, 10.5–10.8 µs batched.
 
-weft now beats axum on sequential HTTP/2 by about 1.45× and remains about
-1.37× behind on 32-stream batches, where the owner serializes inline handlers
-while axum serves streams on multiple runtime threads. The batch profile is
-dominated by idle zio executors: with `-Dscheduling=single_executor` the
-inline batch drops to 11.2–12.2 µs (sequential 33.9–41.2 µs), nearly matching
-axum, because the other executors no longer steal work for a single
-connection. Pinned is worse for inline (28.7–30.9 µs batched). The default
-stays `work_stealing` for multi-connection servers; a single-connection
-inline deployment can select `single_executor`.
+weft now beats axum on sequential HTTP/2 by about 1.35–1.45× and is within
+about 9% on 32-stream batches with the default `work_stealing`; with
+`single_executor` the batch also leads by about 1.2×. The remaining default
+batch cost is idle zio executor work stealing for a single connection.
+Pinned is worse for inline (28.7–30.9 µs batched). The default stays
+`work_stealing` for multi-connection servers; a single-connection inline
+deployment can select `single_executor`.
 
-The remaining single-executor batch profile is spread across kernel io_uring
-submission and small per-request costs: `c_allocator` free 1.84%, clock reads
-1.68%, socket writes 1.66%, executor task scheduling 1.59%, and command/list
-growth 1.58%. Pooling the per-request 64 KiB request-arena buffer measured
-neutral in an A/B and was reverted. The frame reader already buffers a 64 KiB
-tail and consumes adjacent frames without another syscall, so the batch gap is
-not on the read side; the remaining lever is coalescing each response's output
-flush across a request burst, which touches the response deadline and retry
-path, or zio-level idle-executor work.
+The combined write removed the second per-response transport submission. The
+remaining single-executor batch profile is spread across kernel io_uring work
+and small per-request costs (allocator free, clock reads, task scheduling,
+list growth). Pooling the per-request 64 KiB request-arena buffer measured
+neutral in an A/B and was reverted, and the frame reader already buffers a
+64 KiB tail so adjacent reads need no extra syscall. The default-scheduling
+batch gap is dominated by idle zio executors stealing work for a single
+connection.
 
 Verification: the full netz library suite passes (6871/6871) on `5c3bcace`
 plus this change, including the 1004 HTTP/2 tests, and weft passes 222/222 in
