@@ -715,22 +715,23 @@ generator with 32 blocking keep-alive connections and one request in flight
 per connection drove both on the same host, alternating runs.
 
 ReleaseFast, 32 connections, 5–6 s rounds on the shared reference host:
-- axum: 700k–763k requests/s, p90 56–82 µs.
-- weft (32 zio executors, `max_connections = 32`): 729k–889k requests/s,
-  p90 56–66 µs — roughly 4–22% higher throughput.
+- axum: 639k–763k requests/s, p90 56–82 µs.
+- weft (32 zio executors, `max_connections = 32`): 828k–889k requests/s,
+  p90 56–66 µs — roughly 13–33% higher throughput across runs.
 
-Isolated CPU accounting measured 14.2 µs CPU/request for weft versus 11.0 µs
+Isolated CPU accounting measured 13.7 µs CPU/request for weft versus 11.4 µs
 for axum; weft's higher throughput comes from using more of the 32 cores.
 
-The bodyless-request fast path in netz (`1a19d91b`, `a32c4efb`) removes the
-per-request producer task: `readRequestBodyWithBuffer` parses and completes a
-request with no body (or `Content-Length: 0`) on the calling task. Requests
-with a body, `Expect`, obs-fold, or more than 128 fields keep the producer
-path with the buffered head untouched. The completed head borrows the
-request's owned target and headers instead of copying them, removing two more
-allocations per bodyless request. On the same host this moved weft from ~565k
-to ~850k requests/s at 32 connections and cut CPU per request from 22.7 µs to
-14.2 µs.
+The bodyless-request fast path in netz (`1a19d91b`, `a32c4efb`, `89d70bd3`)
+removes the per-request producer task: `readRequestBodyWithBuffer` parses and
+completes a request with no body (or `Content-Length: 0`) on the calling task.
+Requests with a body, `Expect`, obs-fold, or more than 128 fields keep the
+producer path with the buffered head untouched. The completed head borrows the
+request's owned target and headers instead of copying them, the parsed slices
+are rebased into the copied head instead of parsing it again, and the
+completed reader skips its mutex and condition entirely. On the same host this
+moved weft from ~565k to ~850k requests/s at 32 connections and cut CPU per
+request from 22.7 µs to 13.7 µs.
 
 Caveats: the host is shared with other agents, so absolute numbers move
 between runs; both servers use default framework settings except weft's
