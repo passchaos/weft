@@ -1028,6 +1028,22 @@ Verification: weft passes 223/223 in Debug, ReleaseSafe, and ReleaseFast with
 the new default; the netz build accepts `-Dzio-backend` and the HTTP/1 suite
 still passes.
 
+## HTTP/2 recheck
+
+The earlier HTTP/2 comparison measured the 32-stream batch at 11.6–11.8 µs
+against axum's 10.5–10.8 µs. A fresh interleaved run with the current build
+(one h2c connection, 20k sequential requests, 64k requests in 32-stream
+batches, 8/16/32 executors and 8/32 axum workers) measured:
+
+- weft sequential: 24.7–29.0 µs; axum sequential: 32.4–38.3 µs.
+- weft batch: 10.5–11.3 µs; axum batch: 10.6–10.8 µs.
+
+The batch path is now level with axum within run-to-run noise, and the
+sequential path leads by roughly 1.2–1.5×. `single_executor` remains the
+fastest batch configuration for a single connection (8.5–8.9 µs in the
+earlier measurement); the default `work_stealing` is used for multi-connection
+servers.
+
 ## Verification
 
 ```sh
