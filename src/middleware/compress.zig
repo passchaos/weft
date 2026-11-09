@@ -1,5 +1,6 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const quality_mod = @import("../quality.zig");
 const vary = @import("../vary.zig");
 const stream_mod = @import("../stream.zig");
 const vort = @import("vort");
@@ -192,12 +193,12 @@ pub const Compress = struct {
     fn negotiate(self: *const Compress, ctx: *const ctx_mod.Ctx) Negotiation {
         const header = ctx.header("accept-encoding") orelse return .identity;
 
-        var gzip_quality: ?f64 = null;
-        var deflate_quality: ?f64 = null;
-        var br_quality: ?f64 = null;
-        var zstd_quality: ?f64 = null;
-        var identity_quality: ?f64 = null;
-        var wildcard_quality: ?f64 = null;
+        var gzip_quality: ?u16 = null;
+        var deflate_quality: ?u16 = null;
+        var br_quality: ?u16 = null;
+        var zstd_quality: ?u16 = null;
+        var identity_quality: ?u16 = null;
+        var wildcard_quality: ?u16 = null;
         var saw_known = false;
 
         var parts = std.mem.splitScalar(u8, header, ',');
@@ -211,9 +212,9 @@ pub const Compress = struct {
                 " \t",
             );
             const q = if (semicolon) |index|
-                quality(item[index + 1 ..]) orelse 1.0
+                quality(item[index + 1 ..]) orelse 1000
             else
-                1.0;
+                1000;
 
             if (std.ascii.eqlIgnoreCase(coding, "gzip") or
                 std.ascii.eqlIgnoreCase(coding, "x-gzip"))
@@ -237,31 +238,31 @@ pub const Compress = struct {
 
         if (!saw_known) return .identity;
 
-        const wildcard = wildcard_quality orelse 0.0;
+        const wildcard = wildcard_quality orelse 0;
         const gzip_q = if (self.enable_gzip)
             gzip_quality orelse wildcard
         else
-            0.0;
+            0;
         const deflate_q = if (self.enable_deflate)
             deflate_quality orelse wildcard
         else
-            0.0;
+            0;
         const br_q = if (self.enable_br)
             br_quality orelse wildcard
         else
-            0.0;
+            0;
         const zstd_q = if (self.enable_zstd)
             zstd_quality orelse wildcard
         else
-            0.0;
+            0;
         const identity_q = identity_quality orelse
             (if (wildcard_quality != null and wildcard == 0)
-                @as(f64, 0.0)
+                @as(u16, 0)
             else
-                @as(f64, 1.0));
+                @as(u16, 1000));
 
         var best: ?Coding = null;
-        var best_quality: f64 = 0;
+        var best_quality: u16 = 0;
         if (br_q > 0 and br_q > best_quality) {
             best = .br;
             best_quality = br_q;
@@ -599,7 +600,7 @@ fn noTransform(cache_control: ?[]const u8) bool {
     return false;
 }
 
-fn quality(params: []const u8) ?f64 {
+fn quality(params: []const u8) ?u16 {
     var parts = std.mem.splitScalar(u8, params, ';');
     while (parts.next()) |part| {
         const trimmed = std.mem.trim(u8, part, " \t");
@@ -608,21 +609,17 @@ fn quality(params: []const u8) ?f64 {
         const name = std.mem.trim(u8, trimmed[0..equals], " \t");
         if (!std.ascii.eqlIgnoreCase(name, "q")) continue;
         const value = std.mem.trim(u8, trimmed[equals + 1 ..], " \t");
-        const parsed = std.fmt.parseFloat(f64, value) catch return 0.0;
-        if (!std.math.isFinite(parsed) or parsed < 0 or parsed > 1) {
-            return 0.0;
-        }
-        return parsed;
+        return quality_mod.parse(value) orelse 0;
     }
     return null;
 }
 
 test "compress quality parsing accepts OWS and rejects invalid values" {
-    try std.testing.expectEqual(@as(?f64, 0.5), quality("q=0.5"));
-    try std.testing.expectEqual(@as(?f64, 0.5), quality(" q = 0.5 "));
-    try std.testing.expectEqual(@as(?f64, 0.0), quality("q=2"));
-    try std.testing.expectEqual(@as(?f64, 0.0), quality("q=abc"));
-    try std.testing.expectEqual(@as(?f64, 0.0), quality("q=-1"));
+    try std.testing.expectEqual(@as(?u16, 500), quality("q=0.5"));
+    try std.testing.expectEqual(@as(?u16, 500), quality(" q = 0.5 "));
+    try std.testing.expectEqual(@as(?u16, 0), quality("q=2"));
+    try std.testing.expectEqual(@as(?u16, 0), quality("q=abc"));
+    try std.testing.expectEqual(@as(?u16, 0), quality("q=-1"));
     try std.testing.expect(quality("foo=bar") == null);
     try std.testing.expect(quality("") == null);
 }

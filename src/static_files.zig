@@ -1,6 +1,7 @@
 const std = @import("std");
 const ctx_mod = @import("ctx.zig");
 const precondition = @import("precondition.zig");
+const quality_mod = @import("quality.zig");
 const stream_mod = @import("stream.zig");
 const vary = @import("vary.zig");
 
@@ -626,34 +627,7 @@ fn chooseVariant(header: ?[]const u8) ?Variant {
 
 /// Parse an HTTP `q` value into thousandths, e.g. `0.5` becomes `500`.
 fn parseQuality(text: []const u8) ?u16 {
-    const value = std.mem.trim(u8, text, " \t");
-    if (value.len == 0) return null;
-
-    var whole: u16 = 0;
-    var fraction: u16 = 0;
-    var fraction_digits: u16 = 0;
-    var seen_dot = false;
-    for (value) |char| {
-        if (char == '.') {
-            if (seen_dot) return null;
-            seen_dot = true;
-            continue;
-        }
-        if (char < '0' or char > '9') return null;
-        const digit: u16 = char - '0';
-        if (seen_dot) {
-            if (fraction_digits == 3) return null;
-            fraction = fraction * 10 + digit;
-            fraction_digits += 1;
-        } else {
-            if (whole >= 2) return null;
-            whole = whole * 10 + digit;
-        }
-    }
-    if (whole > 1) return null;
-    while (fraction_digits < 3) : (fraction_digits += 1) fraction *= 10;
-    if (whole == 1 and fraction != 0) return null;
-    return whole * 1000 + fraction;
+    return quality_mod.parse(std.mem.trim(u8, text, " \t"));
 }
 
 fn fileName(path: []const u8) []const u8 {

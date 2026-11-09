@@ -7,6 +7,7 @@
 //! fall back to the per-candidate scan.
 
 const std = @import("std");
+const quality_mod = @import("quality.zig");
 
 /// Maximum ranges parsed into the fast-path array. Real browsers send a
 /// handful; a larger header falls back to the per-candidate scan.
@@ -190,7 +191,7 @@ fn parseRange(raw: []const u8) ?Range {
         const equals = std.mem.indexOfScalar(u8, param, '=') orelse continue;
         const name = std.mem.trim(u8, param[0..equals], " \t");
         if (!std.ascii.eqlIgnoreCase(name, "q")) continue;
-        weight = parseWeight(
+        weight = quality_mod.parse(
             std.mem.trim(u8, param[equals + 1 ..], " \t"),
         ) orelse 0;
         break;
@@ -201,31 +202,6 @@ fn parseRange(raw: []const u8) ?Range {
         .subtype = split.subtype,
         .weight = weight,
     };
-}
-
-/// Parse an HTTP `q` value into thousandths, e.g. `0.5` becomes `500`.
-/// Only the RFC 9110 qvalue grammar is accepted; malformed values reject the
-/// range by returning null.
-fn parseWeight(value: []const u8) ?Weight {
-    if (value.len == 0) return null;
-    if (value[0] != '0' and value[0] != '1') return null;
-    const whole: Weight = value[0] - '0';
-    if (value.len == 1) return whole * 1000;
-    if (value[1] != '.') return null;
-
-    var fraction: Weight = 0;
-    var digits: usize = 0;
-    var index: usize = 2;
-    while (index < value.len) : (index += 1) {
-        const char = value[index];
-        if (char < '0' or char > '9') return null;
-        if (digits == 3) return null;
-        fraction = fraction * 10 + (char - '0');
-        digits += 1;
-    }
-    while (digits < 3) : (digits += 1) fraction *= 10;
-    if (whole == 1 and fraction != 0) return null;
-    return whole * 1000 + fraction;
 }
 
 test "accept negotiation handles exact, wildcard, and q=0" {

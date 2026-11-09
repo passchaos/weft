@@ -651,6 +651,16 @@ weight. The new `bench-accept` step reports 1576.8 → 818.2–827.3 ns per
 Unit test: `accept preferred matches the per-candidate scan above the range
 cap`.
 
+## Shared qvalue parsing
+
+`Accept`, `Compress`, and `StaticFiles` each carried their own qvalue parser;
+`Compress` still used `std.fmt.parseFloat`, so an `Accept-Encoding` field with
+q weights paid a float parse per coding. `src/quality.zig` now provides the
+single integer-thousandths parser used by all three. The grammar is the RFC
+9110 qvalue form (`0`/`1`, optional dot, at most three digits).
+
+Unit test: `quality parses RFC qvalues into thousandths`.
+
 ## Verification
 
 ```sh

@@ -80,6 +80,7 @@ comptime {
     _ = @import("query.zig");
     _ = @import("cookie.zig");
     _ = @import("accept.zig");
+    _ = @import("quality.zig");
     _ = @import("multipart.zig");
     _ = @import("multipart_stream.zig");
     _ = @import("precondition.zig");
