@@ -688,6 +688,9 @@ completed without the per-request producer task.
 32-connection comparison this measured lower p99/p999 tail latency (p99
 84–127 µs, p999 211–668 µs) with throughput in the same range as
 `work_stealing` (955k–1041k vs 832k–990k requests/s across noisy rounds).
+HTTP/2 batched and upload are neutral to slightly better with pinned, while
+HTTP/3 sequential is slower (43.5–46.5 → 45.4–52.7 µs), so the default stays
+`work_stealing`; use `pinned` when HTTP/1 tail latency matters most.
 
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32

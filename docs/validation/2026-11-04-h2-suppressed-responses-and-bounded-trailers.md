@@ -740,7 +740,13 @@ request from 22.7 µs to 13.7 µs.
 `pinned`, each connection task stays on the executor it was spawned on. In the
 32-connection hello comparison, pinned measured lower p99/p999 (p99 84–127 µs
 vs 101–158 µs; p999 211–668 µs vs 256–635 µs) with throughput in the same
-range (955k–1041k vs 832k–990k req/s across noisy rounds). Weft's Debug and
+range (955k–1041k vs 832k–990k req/s across noisy rounds).
+
+The HTTP/2 benchmark is neutral to slightly better with pinned (batched
+14.5/13.9 → 13.7/13.7 µs, upload 18.3/19.0 → 17.6/17.6 µs), while HTTP/3
+sequential is worse (43.5/46.5 → 45.4/52.7 µs; batched and upload unchanged).
+The default therefore stays `work_stealing`; use `pinned` when HTTP/1 tail
+latency matters and H3 sequential latency is not critical. Weft's Debug and
 ReleaseFast suites pass with both disciplines.
 
 ### Remaining performance limit
