@@ -885,6 +885,13 @@ connection. Pinned is worse for inline (28.7–30.9 µs batched). The default
 stays `work_stealing` for multi-connection servers; a single-connection
 inline deployment can select `single_executor`.
 
+The remaining single-executor batch profile is spread across kernel io_uring
+submission and small per-request costs: `c_allocator` free 1.84%, clock reads
+1.68%, socket writes 1.66%, executor task scheduling 1.59%, and command/list
+growth 1.58%. Pooling the per-request 64 KiB request-arena buffer measured
+neutral in an A/B and was reverted, so the residual gap needs zio-level idle
+executor or I/O batching work rather than weft changes.
+
 Verification: the full netz library suite passes (6871/6871) on `5c3bcace`
 plus this change, including the 1004 HTTP/2 tests, and weft passes 222/222 in
 Debug, ReleaseSafe, and ReleaseFast. The netz change is `ce39517f`; netz
