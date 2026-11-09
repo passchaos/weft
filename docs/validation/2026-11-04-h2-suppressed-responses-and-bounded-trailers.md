@@ -733,6 +733,16 @@ completed reader skips its mutex and condition entirely. On the same host this
 moved weft from ~565k to ~850k requests/s at 32 connections and cut CPU per
 request from 22.7 µs to 13.7 µs.
 
+### Scheduling discipline
+
+`zig build -Dscheduling=<discipline>` forwards `single_executor`, `pinned`, or
+`work_stealing` through netz to zio; the default stays `work_stealing`. With
+`pinned`, each connection task stays on the executor it was spawned on. In the
+32-connection hello comparison, pinned measured lower p99/p999 (p99 84–127 µs
+vs 101–158 µs; p999 211–668 µs vs 256–635 µs) with throughput in the same
+range (955k–1041k vs 832k–990k req/s across noisy rounds). Weft's Debug and
+ReleaseFast suites pass with both disciplines.
+
 ### Remaining performance limit
 
 A `perf record` sample of the 32-connection hello workload attributes 77–82%

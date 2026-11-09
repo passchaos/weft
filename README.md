@@ -682,6 +682,13 @@ the reference host; axum 0.8.9 under the same load generator reports about
 700k–760k requests/s (p90 56–82 µs). Requests without a body are parsed and
 completed without the per-request producer task.
 
+`zig build` forwards `-Dscheduling` to netz and zio (`single_executor`,
+`pinned`, or `work_stealing`; the default stays `work_stealing`). With
+`-Dscheduling=pinned` each connection task stays on one executor; in the
+32-connection comparison this measured lower p99/p999 tail latency (p99
+84–127 µs, p999 211–668 µs) with throughput in the same range as
+`work_stealing` (955k–1041k vs 832k–990k requests/s across noisy rounds).
+
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32
 concurrent streams. With netz's pooled concurrent handlers, the reference host
