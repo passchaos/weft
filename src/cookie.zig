@@ -100,18 +100,19 @@ pub fn write(writer: *std.Io.Writer, cookie: SetCookie) !void {
         return error.InsecurePartitioned;
     }
     try validatePrefix(cookie);
+    if (cookie.path) |path| try validateAttribute(path);
+    if (cookie.domain) |domain| try validateAttribute(domain);
+    if (cookie.expires) |expires| try validateAttribute(expires);
 
     try writer.writeAll(cookie.name);
     try writer.writeByte('=');
     try writer.writeAll(cookie.value);
 
     if (cookie.path) |path| {
-        try validateAttribute(path);
         try writer.writeAll("; Path=");
         try writer.writeAll(path);
     }
     if (cookie.domain) |domain| {
-        try validateAttribute(domain);
         try writer.writeAll("; Domain=");
         try writer.writeAll(domain);
     }
@@ -119,7 +120,6 @@ pub fn write(writer: *std.Io.Writer, cookie: SetCookie) !void {
         try writer.print("; Max-Age={d}", .{seconds});
     }
     if (cookie.expires) |expires| {
-        try validateAttribute(expires);
         try writer.writeAll("; Expires=");
         try writer.writeAll(expires);
     }
@@ -200,6 +200,20 @@ test "cookie serialization releases ownership on allocation failure" {
         testImpl.run,
         .{},
     );
+}
+
+test "cookie write validates before emitting bytes" {
+    var buffer: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try std.testing.expectError(
+        error.InvalidCookieAttribute,
+        write(&writer, .{
+            .name = "session",
+            .value = "abc",
+            .path = "/;bad",
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
 }
 
 test "cookie lookup scans multiple headers" {

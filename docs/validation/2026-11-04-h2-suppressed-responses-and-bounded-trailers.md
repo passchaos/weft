@@ -601,6 +601,14 @@ registration, and route-group registration:
 rejected request, adding an allocation exactly when the limiter is shedding
 load. The value is now formatted into a stack buffer.
 
+## Cookie validation before writing
+
+`cookie.write` validated `Path`, `Domain`, and `Expires` while emitting them,
+so a rejected attribute could leave a partial value in the caller's writer.
+All attributes are now validated before the first byte is written.
+
+Unit test: `cookie write validates before emitting bytes`.
+
 ## Verification
 
 ```sh
@@ -609,4 +617,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 200/200 tests in Debug and ReleaseFast (144 unit, 56 package).
+Results: 201/201 tests in Debug and ReleaseFast (145 unit, 56 package).
