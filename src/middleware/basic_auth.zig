@@ -45,16 +45,17 @@ pub const BasicAuth = struct {
         const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(
             encoded,
         ) catch return self.challenge(ctx);
-        const decoded = try ctx.arena.alloc(u8, decoded_len);
+        // Typical credentials fit on the stack; long ones keep the arena
+        // fallback.
+        var decoded_buffer: [256]u8 = undefined;
+        const decoded = if (decoded_len <= decoded_buffer.len)
+            decoded_buffer[0..decoded_len]
+        else
+            try ctx.arena.alloc(u8, decoded_len);
         std.base64.standard.Decoder.decode(decoded, encoded) catch
             return self.challenge(ctx);
 
-        const expected = try std.fmt.allocPrint(
-            ctx.arena,
-            "{s}:{s}",
-            .{ self.username, self.password },
-        );
-        if (!constantTimeEql(decoded, expected)) {
+        if (!credentialsMatch(decoded, self.username, self.password)) {
             return self.challenge(ctx);
         }
 
@@ -62,24 +63,43 @@ pub const BasicAuth = struct {
     }
 
     fn challenge(self: *BasicAuth, ctx: *ctx_mod.Ctx) anyerror!void {
+        var realm_buffer: [256]u8 = undefined;
+        const challenge_value = std.fmt.bufPrint(
+            &realm_buffer,
+            "Basic realm=\"{s}\"",
+            .{self.realm},
+        ) catch try std.fmt.allocPrint(
+            ctx.arena,
+            "Basic realm=\"{s}\"",
+            .{self.realm},
+        );
         ctx.setStatus(401);
         try ctx.setHeader("Cache-Control", "no-store");
-        try ctx.setHeader(
-            "WWW-Authenticate",
-            try std.fmt.allocPrint(
-                ctx.arena,
-                "Basic realm=\"{s}\"",
-                .{self.realm},
-            ),
-        );
+        try ctx.setHeader("WWW-Authenticate", challenge_value);
         try ctx.text("Unauthorized");
     }
 };
 
-fn constantTimeEql(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    var difference: u8 = 0;
-    for (a, b) |left, right| difference |= left ^ right;
+/// Compare `username:password` against decoded credentials without building
+/// the concatenation. The loop never exits early, preserving the constant-time
+/// comparison for equal-length inputs.
+fn credentialsMatch(
+    decoded: []const u8,
+    username: []const u8,
+    password: []const u8,
+) bool {
+    const expected_len = username.len + 1 + password.len;
+    var difference: u8 = @intFromBool(decoded.len != expected_len);
+    const common = @min(decoded.len, expected_len);
+    for (0..common) |index| {
+        const expected = if (index < username.len)
+            username[index]
+        else if (index == username.len)
+            ':'
+        else
+            password[index - username.len - 1];
+        difference |= decoded[index] ^ expected;
+    }
     return difference == 0;
 }
 
@@ -203,4 +223,60 @@ test "basic auth rejects a wrong password" {
 
     try context.run();
     try std.testing.expectEqual(@as(u16, 401), context.response.status);
+}
+
+test "basic auth compares long credentials without concatenating" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const long_password = "p" ** 400;
+    const plain = "admin:" ++ long_password;
+    var encoded_buffer: [std.base64.standard.Encoder.calcSize(plain.len)]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&encoded_buffer, plain);
+    const header = try std.fmt.allocPrint(
+        allocator,
+        "Basic {s}",
+        .{encoded},
+    );
+    defer allocator.free(header);
+
+    var headers = [_]netz.http1.Header{.{
+        .name = "Authorization",
+        .value = header,
+    }};
+    var request: netz.http1.Request = .{
+        .method = .GET,
+        .target = "/admin",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var auth = BasicAuth{ .username = "admin", .password = long_password };
+    var context = ctx_mod.Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = arena.allocator(),
+        .limits = .{},
+        .request = &request,
+        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{auth.handler()},
+        .final_handler = ctx_mod.handler(struct {
+            fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                try ctx.text("secret");
+            }
+        }.handle),
+    };
+
+    try context.run();
+    try std.testing.expectEqual(@as(u16, 200), context.response.status);
+
+    try std.testing.expect(credentialsMatch(
+        "admin:" ++ long_password,
+        "admin",
+        long_password,
+    ));
+    try std.testing.expect(!credentialsMatch("admin:wrong", "admin", long_password));
+    try std.testing.expect(!credentialsMatch("admin", "admin", long_password));
 }

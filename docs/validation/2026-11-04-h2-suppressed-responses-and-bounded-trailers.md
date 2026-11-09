@@ -517,6 +517,16 @@ HTTP/1 keep-alive benchmark: 8.57 µs/request (~117k requests/s). Static
 benchmarks: 6.30 µs (64 KiB), 3.21 µs (1 KiB), 0.87 µs (conditional 304),
 3.44 µs (1 KiB range).
 
+## Basic-auth credential comparison
+
+`BasicAuth` decoded the client credentials into the request arena and built
+`username:password` with `allocPrint` on every request. Credentials up to 256
+bytes now decode onto the stack, and the comparison walks the configured parts
+without concatenating them. The challenge realm is formatted on the stack as
+well, with the arena retained for oversized values.
+
+Unit test: `basic auth compares long credentials without concatenating`.
+
 ## Verification
 
 ```sh
@@ -525,4 +535,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 187/187 tests in Debug and ReleaseFast (131 unit, 56 package).
+Results: 188/188 tests in Debug and ReleaseFast (132 unit, 56 package).
