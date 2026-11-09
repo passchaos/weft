@@ -379,6 +379,11 @@ resident per-stream window with `max_streaming_window_bytes` and enforces
 `max_body_bytes` on the whole body. The advertised request-stream concurrency
 is capped to `min(max_concurrent_streams, max_concurrent_handlers)`.
 
+Routes can opt into the bodyless inline fast path with
+`RouteOptions.inline_bodyless`. When the request head already ends the stream,
+the handler runs on the QUIC owner and its buffered response is applied in
+place; request bodies and streaming routes keep the worker path.
+
 ## WebSockets
 
 `ctx.upgradeWebSocket(...)` selects an RFC 6455 session on HTTP/1.1. Weft
@@ -816,10 +821,10 @@ sequential path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
 
 `bench-h3` uses a synthetic QUIC handshake (no TLS): 10k sequential requests,
 32k batched GETs, and 32k batched 2 KiB uploads, all in batches of 32 streams.
-With the default 1 ms weft poll interval, the combined head+body command, and
-netz's single-packet buffered response emission, it reports roughly 45–53 µs
-per request sequentially, 39–42 µs for 32-stream batched GETs, and 65–66 µs
-for 32-stream batched uploads. `-Dh3-batch=8` reports ~39 µs GETs and ~57 µs
+With the default 1 ms weft poll interval, the combined head+body command,
+netz's single-packet buffered response emission, and the inline bodyless path,
+it reports roughly 30–31 µs per request sequentially, 28–29 µs for 32-stream
+batched GETs, and 60–61 µs for 32-stream batched uploads. `-Dh3-batch=8` reports ~39 µs GETs and ~57 µs
 uploads, so 32-stream uploads still show owner/worker contention above about
 eight concurrent streams. A 5 ms poll interval measured ~10.1 ms/req
 sequentially before these fixes, so the shorter default and the netz wake
