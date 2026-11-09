@@ -1128,64 +1128,6 @@ test "package: global middleware covers 404 responses" {
     try group.await(io);
 }
 
-test "package: HTTP/1.0 responses mirror the request version" {
-    const allocator = std.testing.allocator;
-
-    var backend = try netz.runtime.Backend.init(allocator);
-    defer backend.deinit();
-    const io = backend.io();
-
-    var server = try weft.Server(App).init(
-        io,
-        allocator,
-        .{
-            .address = .{ .ip4 = .loopback(0) },
-            .limits = .{
-                .max_head_bytes = 4096,
-                .max_body_bytes = 4096,
-                .max_request_arena_bytes = 64 * 1024,
-                .max_response_bytes = 64 * 1024,
-            },
-            .max_connections = 1,
-        },
-        .{},
-    );
-    defer server.deinit();
-
-    try server.router().get("/", home, .{});
-
-    var group: std.Io.Group = .init;
-    defer group.cancel(io);
-    try group.concurrent(io, serveServer, .{&server});
-
-    const uri = try std.fmt.allocPrint(
-        allocator,
-        "http://127.0.0.1:{d}/",
-        .{server.address().ip4.port},
-    );
-    defer allocator.free(uri);
-
-    var response = try netz.http1.runtime.Client.requestUri(
-        allocator,
-        io,
-        uri,
-        .{ .version = .http_1_0 },
-        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
-    );
-    defer response.deinit(allocator);
-    try std.testing.expectEqual(
-        netz.http1.Version.http_1_0,
-        response.response.version,
-    );
-    try std.testing.expectEqualStrings(
-        "hello from weft",
-        response.response.body,
-    );
-
-    server.stop();
-    try group.await(io);
-}
-
 test "package: stop drains an idle keep-alive connection" {
     const allocator = std.testing.allocator;
 

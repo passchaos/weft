@@ -412,9 +412,7 @@ pub fn Server(comptime H: type) type {
                     ),
                     .peer_certificates = connection.peerCertificates() orelse &.{},
                     .protocol = switch (head.version) {
-                        .http_1_0 => .http_1_0,
                         .http_1_1 => .http_1_1,
-                        else => .http_1_1,
                     },
                     .tls = connection.tls_server_conn != null,
                 };
@@ -546,8 +544,6 @@ pub fn Server(comptime H: type) type {
                     !self.shutdown.isSet();
                 if (!keep_alive) {
                     response.setHeader("Connection", "close") catch {};
-                } else if (head.version == .http_1_0) {
-                    response.setHeader("Connection", "keep-alive") catch {};
                 }
                 if (self.shutdown.isSet()) connection.gracefulShutdown();
 

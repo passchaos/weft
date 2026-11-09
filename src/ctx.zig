@@ -195,7 +195,6 @@ pub const Param = struct {
 
 /// Transport/version metadata for the current request.
 pub const Protocol = enum {
-    http_1_0,
     http_1_1,
     http_2,
     http_3,

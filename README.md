@@ -816,8 +816,8 @@ changes are both important for H3 latency.
 ## Status
 
 HTTP/1.1 is served through `netz.http1.runtime` with cleartext, TLS, and
-Unix-domain socket listeners, and mirrors HTTP/1.0 request versions with
-appropriate connection semantics. `Http2Server` and `Http3Server` provide
+Unix-domain socket listeners. HTTP/1.0 and other request versions are rejected
+by Netz with `400 Bad Request`. `Http2Server` and `Http3Server` provide
 h2c, TLS/ALPN h2, and QUIC/TLS HTTP/3 adapters over the same application
 surface. HTTP/1, HTTP/2, and HTTP/3 request bodies all stream incrementally.
 HTTP/2 and HTTP/3 requests run up to `max_concurrent_handlers` handler tasks

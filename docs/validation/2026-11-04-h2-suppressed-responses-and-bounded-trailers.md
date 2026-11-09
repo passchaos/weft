@@ -813,6 +813,32 @@ changed netz. The netz change is `5c3bcace`; verification ran against a clean
 worktree at that commit because the shared netz worktree carried unrelated
 in-progress HTTP/1 edits.
 
+## QUIC stream lookup cache
+
+The post-recovery H3 profile attributed 2.87% of sampled cycles to
+`quic.one_rtt.Connection.findSendStreamEntry` and 1.37% to
+`findRecvStreamEntry`. Both kept a single last-hit index in front of a
+`std.AutoHashMap`, but callers cycle through the request stream, control
+streams, and credit updates, so the single entry missed about 91% of server
+lookups.
+
+Each connection now keeps a 64-entry direct-mapped cache in front of its send
+and receive index maps, keyed by
+`(stream_id ^ (stream_id >> 3)) & 63`. Measured hit rates on the H3
+benchmark: 9.1% with one entry, 18.6% with 8, 45% with 32, and 91.6% send /
+96.8% receive with 64; 128 entries did not improve on 64, so the smaller size
+stays. Every hit is validated by stream id, so index moves from swap-remove
+and stream reuse fall through to the map safely; removing a stream clears its
+slot.
+
+In the post-change H3 profile `findSendStreamEntry` falls from 2.87% to 1.56%
+and `findRecvStreamEntry` from 1.37% to 0.68% of sampled cycles. Wall-clock
+and CPU-time A/B rounds on the shared host were neutral within noise, which is
+consistent with removing roughly 2% of userspace cycles from a workload
+dominated by kernel I/O and copies. The netz change is `a190a875`; the full
+netz library suite passes (6871/6871 Debug; 1180/1180 QUIC on the rebased
+main) and weft passes 221/221 against it.
+
 ## Verification
 
 ```sh
@@ -823,5 +849,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 213/213 tests in Debug, ReleaseSafe, and ReleaseFast (157 unit,
-56 package).
+Results: 221/221 tests in Debug, ReleaseSafe, and ReleaseFast (164 unit,
+57 package).
