@@ -889,8 +889,11 @@ The remaining single-executor batch profile is spread across kernel io_uring
 submission and small per-request costs: `c_allocator` free 1.84%, clock reads
 1.68%, socket writes 1.66%, executor task scheduling 1.59%, and command/list
 growth 1.58%. Pooling the per-request 64 KiB request-arena buffer measured
-neutral in an A/B and was reverted, so the residual gap needs zio-level idle
-executor or I/O batching work rather than weft changes.
+neutral in an A/B and was reverted. The frame reader already buffers a 64 KiB
+tail and consumes adjacent frames without another syscall, so the batch gap is
+not on the read side; the remaining lever is coalescing each response's output
+flush across a request burst, which touches the response deadline and retry
+path, or zio-level idle-executor work.
 
 Verification: the full netz library suite passes (6871/6871) on `5c3bcace`
 plus this change, including the 1004 HTTP/2 tests, and weft passes 222/222 in
