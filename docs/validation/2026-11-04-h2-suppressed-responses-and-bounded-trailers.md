@@ -722,12 +722,14 @@ ReleaseFast, 32 connections, 5–6 s rounds on the shared reference host:
 Isolated CPU accounting measured 14.2 µs CPU/request for weft versus 11.0 µs
 for axum; weft's higher throughput comes from using more of the 32 cores.
 
-The bodyless-request fast path in netz (`1a19d91b`) removes the per-request
-producer task: `readRequestBodyWithBuffer` parses and completes a request with
-no body (or `Content-Length: 0`) on the calling task. Requests with a body,
-`Expect`, obs-fold, or more than 128 fields keep the producer path with the
-buffered head untouched. On the same host this moved weft from ~565k to
-~850k requests/s at 32 connections and cut CPU per request from 22.7 µs to
+The bodyless-request fast path in netz (`1a19d91b`, `a32c4efb`) removes the
+per-request producer task: `readRequestBodyWithBuffer` parses and completes a
+request with no body (or `Content-Length: 0`) on the calling task. Requests
+with a body, `Expect`, obs-fold, or more than 128 fields keep the producer
+path with the buffered head untouched. The completed head borrows the
+request's owned target and headers instead of copying them, removing two more
+allocations per bodyless request. On the same host this moved weft from ~565k
+to ~850k requests/s at 32 connections and cut CPU per request from 22.7 µs to
 14.2 µs.
 
 Caveats: the host is shared with other agents, so absolute numbers move
