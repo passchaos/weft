@@ -928,6 +928,15 @@ vs 231–263 µs) and slightly higher throughput, but it removes Slowloris
 protection and is not a production recommendation. Closing the remaining
 ~80–100 µs needs zio-level wake and scheduling work.
 
+## HTTP/3 worker handoff
+
+The current H3 benchmark profile (74k requests) attributes 2.83% of sampled
+cycles to the concurrent engine's `submit`, 2.41% to executor task
+scheduling, 1.88% to the worker waiter, 1.40% to futex wake, 3.49% to the
+weft adapter, and 4.25% to `memcpy`. The H3 engine uses the same
+worker-per-stream handoff that HTTP/2 had before the inline path, so an
+equivalent inline bodyless path is the next structural HTTP/3 optimization.
+
 ## Verification
 
 ```sh
