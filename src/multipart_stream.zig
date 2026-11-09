@@ -74,7 +74,9 @@ pub const Stream = struct {
             allocator,
             content_type,
         );
-        errdefer allocator.free(boundary);
+        // `defer`, not `errdefer`: the boundary is released on both paths, and
+        // the error paths below must not free it a second time.
+        defer allocator.free(boundary);
         const delimiter = try std.fmt.allocPrint(
             allocator,
             "--{s}",
@@ -87,7 +89,6 @@ pub const Stream = struct {
             .{boundary},
         );
         errdefer allocator.free(next_delimiter);
-        allocator.free(boundary);
 
         if (options.buffer_bytes <= next_delimiter.len + 8) {
             return error.InvalidMultipart;
@@ -739,6 +740,20 @@ test "streaming multipart rejects a missing boundary" {
     );
     defer stream.deinit();
     try std.testing.expectError(error.InvalidMultipart, stream.nextPart());
+}
+
+test "streaming multipart rejects a window that cannot hold the delimiter" {
+    var source = TestSource{ .body = "--weft--\r\n" };
+    try std.testing.expectError(
+        error.InvalidMultipart,
+        Stream.init(
+            std.testing.allocator,
+            source.source(),
+            "multipart/form-data; boundary=weft",
+            // The next delimiter is 8 bytes, so this window is too small.
+            .{ .buffer_bytes = 8 },
+        ),
+    );
 }
 
 test "streaming multipart enforces the total body budget" {

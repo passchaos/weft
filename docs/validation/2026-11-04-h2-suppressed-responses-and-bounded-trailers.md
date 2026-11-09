@@ -537,6 +537,17 @@ scan and the per-bucket `last_seen` timestamp are gone.
 
 Unit test: `rate limit eviction follows most-recent use`.
 
+## Streaming multipart window rejection
+
+`Stream.init` registered `errdefer allocator.free(boundary)` and then freed the
+boundary explicitly after building the delimiter strings. Any later error (an
+undersized window or a failed buffer allocation) freed it a second time. The
+boundary now uses a plain `defer`, so it is released exactly once on both
+paths.
+
+Unit test: `streaming multipart rejects a window that cannot hold the
+delimiter`.
+
 ## Verification
 
 ```sh
@@ -545,4 +556,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 189/189 tests in Debug and ReleaseFast (133 unit, 56 package).
+Results: 190/190 tests in Debug and ReleaseFast (134 unit, 56 package).
