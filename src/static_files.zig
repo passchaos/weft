@@ -221,11 +221,13 @@ pub const StaticFiles = struct {
         }
 
         const size: usize = @intCast(served_stat.size);
-        const etag = try std.fmt.allocPrint(
-            ctx.arena,
+        // u64 size plus i96 nanosecond timestamp fits in 64 bytes.
+        var etag_buffer: [64]u8 = undefined;
+        const etag = std.fmt.bufPrint(
+            &etag_buffer,
             "\"{d}-{d}\"",
             .{ served_stat.size, served_stat.mtime.nanoseconds },
-        );
+        ) catch return error.ResponseTooLarge;
         const last_modified: i64 = @intCast(@divFloor(
             served_stat.mtime.nanoseconds,
             std.time.ns_per_s,
@@ -238,10 +240,7 @@ pub const StaticFiles = struct {
             .if_modified_since = ctx.header("if-modified-since"),
             .if_unmodified_since = ctx.header("if-unmodified-since"),
             .if_range = ctx.header("if-range"),
-            .range = if (content_encoding == null)
-                ctx.header("range")
-            else
-                null,
+            .range = if (content_encoding == null) range_header else null,
         }, etag, last_modified);
         switch (preconditions.outcome) {
             .precondition_failed => {
