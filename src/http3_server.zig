@@ -422,15 +422,20 @@ pub fn Http3Server(comptime H: type) type {
                 route.streaming
             else
                 false;
-            var reader: ?ctx_mod.H3StreamReader = null;
+            // Keep the 16 KiB reader buffer uninitialized. An optional holding
+            // it would zero the whole payload on every request, including
+            // non-streaming routes.
+            var h3_reader: ctx_mod.H3StreamReader = undefined;
+            var body_reader: ?ctx_mod.BodyReader = null;
             var body: []const u8 = "";
             var trailers: []netz.http1.Header = &.{};
 
             if (streaming) {
-                reader = ctx_mod.H3StreamReader.init(
+                h3_reader = ctx_mod.H3StreamReader.init(
                     stream,
                     self.options.limits.max_streaming_window_bytes,
                 );
+                body_reader = .{ .h3_stream = &h3_reader };
             } else {
                 body = readWholeBody(
                     arena,
@@ -488,7 +493,7 @@ pub fn Http3Server(comptime H: type) type {
                 &request,
                 client_info,
                 arena,
-                if (reader) |*value| .{ .h3_stream = value } else null,
+                body_reader,
                 &prepared,
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;

@@ -767,6 +767,19 @@ between runs; both servers use default framework settings except weft's
 executor count and connection cap. The axum project and load generator are
 one-off harnesses outside the repository.
 
+## HTTP/3 reader buffer initialization
+
+`serveConcurrentStream` declared `var reader: ?H3StreamReader = null`. The
+optional zeroed the reader's 16 KiB buffer on every request, including
+non-streaming routes that never use it; `perf` attributed about 23% of the
+sampled cycles to that `memset`. The reader is now a plain `undefined` local
+with a separate `?BodyReader`, so the buffer is only written when a streaming
+route is selected. H3 user CPU per benchmark run (74k requests) dropped from
+3.66–4.06 s to 3.25–3.99 s, and the `memset` disappeared from the profile.
+
+The existing HTTP/3 adapter package test covers both streaming and
+non-streaming routes.
+
 ## Verification
 
 ```sh
