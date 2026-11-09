@@ -527,6 +527,16 @@ well, with the arena retained for oversized values.
 
 Unit test: `basic auth compares long credentials without concatenating`.
 
+## Rate-limit eviction
+
+When the client table was full, `RateLimit` scanned every bucket to find the
+least-recently-seen victim, so inserting a new client cost O(clients). Buckets
+now form an intrusive least-recently-used list: an existing client moves to
+the tail on access, and a full table evicts the head in O(1). The unused-slot
+scan and the per-bucket `last_seen` timestamp are gone.
+
+Unit test: `rate limit eviction follows most-recent use`.
+
 ## Verification
 
 ```sh
@@ -535,4 +545,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 188/188 tests in Debug and ReleaseFast (132 unit, 56 package).
+Results: 189/189 tests in Debug and ReleaseFast (133 unit, 56 package).

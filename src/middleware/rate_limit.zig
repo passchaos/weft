@@ -23,6 +23,13 @@ pub const RateLimit = struct {
     mutex: std.Io.Mutex = .init,
     global_bucket: Bucket = .{},
     key_header: ?[]const u8 = null,
+    /// Number of never-used bucket slots. Slots at or above this index have
+    /// never held a client; reused slots stay on the LRU list instead.
+    free_next: usize = 0,
+    /// Least-recently-used bucket head (eviction victim) and most-recently-used
+    /// tail.
+    lru_head: u32 = invalid_slot,
+    lru_tail: u32 = invalid_slot,
 
     pub const Options = struct {
         max_requests: usize = 100,
@@ -47,8 +54,13 @@ pub const RateLimit = struct {
         used: bool = false,
         tokens: u64 = 0,
         last_refill_ns: i96 = 0,
-        last_seen_ns: i96 = 0,
+        /// Intrusive least-recently-used list links. `invalid_slot` terminates
+        /// the list.
+        prev: u32 = invalid_slot,
+        next: u32 = invalid_slot,
     };
+
+    const invalid_slot = std.math.maxInt(u32);
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -112,7 +124,6 @@ pub const RateLimit = struct {
 
             const bucket = try self.bucketFor(address, override_key, now);
             self.refill(bucket, now);
-            bucket.last_seen_ns = now;
             if (bucket.tokens == 0) {
                 limited = true;
                 retry_after = self.retryAfter(bucket, now);
@@ -148,49 +159,80 @@ pub const RateLimit = struct {
                     .used = true,
                     .tokens = self.max_requests,
                     .last_refill_ns = now,
-                    .last_seen_ns = now,
                 };
             }
             return &self.global_bucket;
         }
 
         if (self.index.get(key.?)) |slot| {
+            self.touch(slot);
             return &self.buckets[slot];
         }
 
-        // Prefer an unused bucket, otherwise evict the least-recently-seen
-        // client. The hash index is bounded by the same table size, so a
-        // lookup never scans every bucket.
-        var victim_index: usize = 0;
-        var found_free = false;
-        for (self.buckets, 0..) |*bucket, index| {
-            if (!bucket.used) {
-                victim_index = index;
-                found_free = true;
-                break;
-            }
-            if (bucket.last_seen_ns <
-                self.buckets[victim_index].last_seen_ns)
-            {
-                victim_index = index;
-            }
+        // Prefer a never-used slot; once the table is full, evict the
+        // least-recently-used bucket in O(1) through the intrusive list.
+        var slot: usize = undefined;
+        if (self.free_next < self.buckets.len) {
+            slot = self.free_next;
+            self.free_next += 1;
+        } else {
+            const victim = self.lru_head;
+            std.debug.assert(victim != invalid_slot);
+            slot = victim;
+            self.unlink(victim);
+            if (self.buckets[slot].key) |old_key| _ = self.index.remove(old_key);
         }
-        const victim = &self.buckets[victim_index];
-        if (!found_free) {
-            if (victim.key) |old_key| _ = self.index.remove(old_key);
-        }
+        const victim = &self.buckets[slot];
         victim.* = .{
             .key = key,
             .used = true,
             .tokens = self.max_requests,
             .last_refill_ns = now,
-            .last_seen_ns = now,
         };
+        self.appendTail(@intCast(slot));
         // Capacity for `max_clients` entries is reserved in `init` and an
         // eviction removes one entry first, so this insert cannot grow the
         // table. Keep the bucket usable if an allocator failure still occurs.
-        self.index.put(self.allocator, key.?, victim_index) catch {};
+        self.index.put(self.allocator, key.?, slot) catch {};
         return victim;
+    }
+
+    /// Move a used bucket to the most-recently-used end of the list.
+    fn touch(self: *RateLimit, slot: usize) void {
+        const index: u32 = @intCast(slot);
+        if (self.lru_tail == index) return;
+        self.unlink(index);
+        self.appendTail(index);
+    }
+
+    fn unlink(self: *RateLimit, index: u32) void {
+        const bucket = &self.buckets[index];
+        const prev = bucket.prev;
+        const next = bucket.next;
+        if (prev != invalid_slot) {
+            self.buckets[prev].next = next;
+        } else {
+            self.lru_head = next;
+        }
+        if (next != invalid_slot) {
+            self.buckets[next].prev = prev;
+        } else {
+            self.lru_tail = prev;
+        }
+        bucket.prev = invalid_slot;
+        bucket.next = invalid_slot;
+    }
+
+    fn appendTail(self: *RateLimit, index: u32) void {
+        const bucket = &self.buckets[index];
+        bucket.prev = self.lru_tail;
+        bucket.next = invalid_slot;
+        if (self.lru_tail != invalid_slot) {
+            self.buckets[self.lru_tail].next = index;
+        } else {
+            self.lru_head = index;
+        }
+        self.lru_tail = index;
     }
 
     fn keyFor(address: std.Io.net.IpAddress) Key {
@@ -490,5 +532,62 @@ test "rate limit index tracks evicted buckets" {
     try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, third));
     try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, first));
     try std.testing.expectEqual(@as(u16, 429), try run.once(&limiter, first));
+    try std.testing.expectEqual(@as(u16, 429), try run.once(&limiter, third));
+}
+
+test "rate limit eviction follows most-recent use" {
+    const allocator = std.testing.allocator;
+    var limiter = try RateLimit.init(allocator, .{
+        .max_requests = 1,
+        .window = .fromSeconds(1),
+        .max_clients = 2,
+    });
+    defer limiter.deinit();
+
+    const run = struct {
+        fn once(
+            limiter_: *RateLimit,
+            address: std.Io.net.IpAddress,
+        ) !u16 {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var request: @import("netz").http1.Request = .{
+                .method = .GET,
+                .target = "/",
+                .version = .http_1_1,
+                .headers = &.{},
+                .body = "",
+                .consumed = 0,
+            };
+            var context = ctx_mod.Ctx{
+                .app = undefined,
+                .io = std.testing.io,
+                .arena = arena.allocator(),
+                .limits = .{},
+                .request = &request,
+                .client_info = .{ .address = address },
+                .response = ctx_mod.Response.init(arena.allocator(), 1024),
+                .middleware = &.{limiter_.handler()},
+                .final_handler = ctx_mod.handler(struct {
+                    fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
+                        try ctx.text("ok");
+                    }
+                }.handle),
+            };
+            try context.run();
+            return context.response.status;
+        }
+    };
+
+    const first = try std.Io.net.IpAddress.parse("127.0.0.1", 1000);
+    const second = try std.Io.net.IpAddress.parse("127.0.0.2", 1000);
+    const third = try std.Io.net.IpAddress.parse("127.0.0.3", 1000);
+
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, first));
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, second));
+    // Re-using `first` makes it the most recent, so `third` evicts `second`.
+    try std.testing.expectEqual(@as(u16, 429), try run.once(&limiter, first));
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, third));
+    try std.testing.expectEqual(@as(u16, 200), try run.once(&limiter, second));
     try std.testing.expectEqual(@as(u16, 429), try run.once(&limiter, third));
 }
