@@ -958,6 +958,14 @@ the owner and runs the handler after the stream finishes, so a streaming
 reader sees a complete body and cannot block. Unknown or oversized bodies and
 streaming responses keep the worker path.
 
+An upload-phase-only profile attributes 10.3% of sampled cycles to
+`memcpy`, but the callers are the in-process client's request-body
+packetization (`sendRequestBodyPaced`, `trySendConnectionBodyChunk`) and the
+shared frame encoding, not the server's body buffering; the server's
+session→slot and slot→reader copies stay below the top symbols. Further
+upload gains therefore need QUIC send-path packet assembly rather than
+engine buffering changes.
+
 Verification: the netz HTTP/3 filter passes (953/953) and weft passes 223/223
 in Debug, ReleaseSafe, and ReleaseFast, including a new H3 inline package
 test covering the inline GET and the body fallback.
