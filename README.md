@@ -617,6 +617,7 @@ zig build run-upload
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
 zig build bench-middleware -Doptimize=ReleaseFast
+zig build bench-accept -Doptimize=ReleaseFast
 zig build bench-static -Doptimize=ReleaseFast
 zig build bench-h2 -Doptimize=ReleaseFast
 ```
@@ -635,10 +636,10 @@ stat, validators, and streamed reads) against a 64 KiB file and a 1 KiB file,
 plus conditional and range responses:
 
 ```text
-static large.bin:      6.7–10.4 µs/request, 96k–150k requests/s
-static small.txt:      4.7–7.8 µs/request, 129k–213k requests/s
-static conditional 304: 1.55 µs/request, ~643k requests/s
-static range 1 KiB:    5.2–6.3 µs/request, 158k–193k requests/s
+static large.bin:      6.3–10.4 µs/request, 96k–159k requests/s
+static small.txt:      3.2–5.4 µs/request, 186k–311k requests/s
+static conditional 304: 0.87–1.24 µs/request, 808k–1.15M requests/s
+static range 1 KiB:    3.4–5.9 µs/request, 170k–291k requests/s
 ```
 
 Host load moves the file-read numbers; the `304` validator path is stable
@@ -648,16 +649,24 @@ because it never opens the file.
 no I/O, isolating weft's overhead from netz framing:
 
 ```text
-middleware baseline (handler only):            75 ns/request
-middleware requestId:                         196 ns/request
-middleware Metrics:                           141 ns/request
-middleware Etag:                              152 ns/request
-middleware Compress:                           96 ns/request
-middleware requestId+Metrics+Etag+Compress:   322 ns/request
+middleware baseline (handler only):            32–40 ns/request
+middleware requestId:                          84–104 ns/request
+middleware securityHeaders:                   224–242 ns/request
+middleware Metrics:                            88–103 ns/request
+middleware Etag:                               72–82 ns/request
+middleware Compress:                           35–41 ns/request
+middleware requestId+Metrics+Etag+Compress:   198–210 ns/request
 ```
 
 `requestId` seeds a per-thread PRNG once and then generates ids without a
-syscall, which cut its cost from ~505 ns to ~196 ns.
+syscall. `Compress` now adds `Vary: Accept-Encoding` only when a coding is
+actually possible, and `securityHeaders` uses a single-lookup default-field
+helper.
+
+`bench-accept` measures allocation-free `Accept` negotiation against a
+browser-style header and three candidates; parsing the header once and using
+integer quality weights reports about 0.82 µs per `preferred`+`accepts` pair
+on the reference host (down from ~1.58 µs).
 
 `bench-server` measures one keep-alive HTTP/1 client against a one-worker
 server. On the reference host it reports roughly 9–16 µs per request (about

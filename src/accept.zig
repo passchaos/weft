@@ -2,8 +2,18 @@
 //!
 //! Parsing is allocation-free: ranges are scanned on demand, so `accepts` and
 //! `preferred` can run on every request without touching the arena.
+//! `preferred` parses the header once and evaluates every candidate against
+//! the parsed ranges; only headers with more than `max_parsed_ranges` ranges
+//! fall back to the per-candidate scan.
 
 const std = @import("std");
+
+/// Maximum ranges parsed into the fast-path array. Real browsers send a
+/// handful; a larger header falls back to the per-candidate scan.
+const max_parsed_ranges = 16;
+
+/// Quality in thousandths, matching HTTP's three-digit `q` grammar.
+const Weight = u16;
 
 /// Return true when `accept` (the raw `Accept` field value) allows
 /// `media_type` (`type/subtype`). A missing or empty header accepts anything.
@@ -15,7 +25,7 @@ pub fn accepts(accept: ?[]const u8, media_type: []const u8) bool {
 
     const candidate = splitMediaType(media_type) orelse return false;
     var best_specificity: u8 = 0;
-    var best_quality: ?f64 = null;
+    var best_weight: ?Weight = null;
 
     var ranges = std.mem.splitScalar(u8, header, ',');
     while (ranges.next()) |raw| {
@@ -23,13 +33,13 @@ pub fn accepts(accept: ?[]const u8, media_type: []const u8) bool {
         const specificity = range.specificity(candidate) orelse continue;
         if (specificity > best_specificity) {
             best_specificity = specificity;
-            best_quality = range.quality;
-        } else if (specificity == best_specificity and best_quality == null) {
-            best_quality = range.quality;
+            best_weight = range.weight;
+        } else if (specificity == best_specificity and best_weight == null) {
+            best_weight = range.weight;
         }
     }
-    const quality = best_quality orelse return false;
-    return quality > 0;
+    const weight = best_weight orelse return false;
+    return weight > 0;
 }
 
 /// Choose the candidate with the highest accepted quality. Ties keep the
@@ -47,24 +57,66 @@ pub fn preferred(
         return if (candidates.len != 0) candidates[0] else null;
     }
 
+    var parsed = Parsed{};
+    var ranges = std.mem.splitScalar(u8, header, ',');
+    while (ranges.next()) |raw| {
+        const range = parseRange(raw) orelse continue;
+        if (parsed.len == max_parsed_ranges) {
+            return preferredByScan(header, candidates);
+        }
+        parsed.items[parsed.len] = range;
+        parsed.len += 1;
+    }
+
     var best: ?[]const u8 = null;
-    var best_quality: f64 = 0;
+    var best_weight: Weight = 0;
     for (candidates) |candidate| {
-        const quality = qualityFor(header, candidate) orelse continue;
-        if (quality <= 0) continue;
-        if (best == null or quality > best_quality) {
+        const weight = qualityFromRanges(
+            parsed.items[0..parsed.len],
+            candidate,
+        ) orelse continue;
+        if (weight == 0) continue;
+        if (best == null or weight > best_weight) {
             best = candidate;
-            best_quality = quality;
+            best_weight = weight;
         }
     }
     return best;
 }
 
 /// Effective quality for one candidate, or null when no range matches.
+/// Values are returned as a fraction so callers can compare them directly.
 pub fn qualityFor(accept: []const u8, media_type: []const u8) ?f64 {
+    const weight = qualityWeight(accept, media_type) orelse return null;
+    return @as(f64, @floatFromInt(weight)) / 1000.0;
+}
+
+const Parsed = struct {
+    items: [max_parsed_ranges]Range = undefined,
+    len: usize = 0,
+};
+
+fn preferredByScan(
+    header: []const u8,
+    candidates: []const []const u8,
+) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_weight: Weight = 0;
+    for (candidates) |candidate| {
+        const weight = qualityWeight(header, candidate) orelse continue;
+        if (weight == 0) continue;
+        if (best == null or weight > best_weight) {
+            best = candidate;
+            best_weight = weight;
+        }
+    }
+    return best;
+}
+
+fn qualityWeight(accept: []const u8, media_type: []const u8) ?Weight {
     const candidate = splitMediaType(media_type) orelse return null;
     var best_specificity: u8 = 0;
-    var best_quality: ?f64 = null;
+    var best_weight: ?Weight = null;
 
     var ranges = std.mem.splitScalar(u8, accept, ',');
     while (ranges.next()) |raw| {
@@ -72,12 +124,28 @@ pub fn qualityFor(accept: []const u8, media_type: []const u8) ?f64 {
         const specificity = range.specificity(candidate) orelse continue;
         if (specificity > best_specificity) {
             best_specificity = specificity;
-            best_quality = range.quality;
-        } else if (specificity == best_specificity and best_quality == null) {
-            best_quality = range.quality;
+            best_weight = range.weight;
+        } else if (specificity == best_specificity and best_weight == null) {
+            best_weight = range.weight;
         }
     }
-    return best_quality;
+    return best_weight;
+}
+
+fn qualityFromRanges(ranges: []const Range, media_type: []const u8) ?Weight {
+    const candidate = splitMediaType(media_type) orelse return null;
+    var best_specificity: u8 = 0;
+    var best_weight: ?Weight = null;
+    for (ranges) |range| {
+        const specificity = range.specificity(candidate) orelse continue;
+        if (specificity > best_specificity) {
+            best_specificity = specificity;
+            best_weight = range.weight;
+        } else if (specificity == best_specificity and best_weight == null) {
+            best_weight = range.weight;
+        }
+    }
+    return best_weight;
 }
 
 const MediaType = struct {
@@ -96,7 +164,7 @@ fn splitMediaType(value: []const u8) ?MediaType {
 const Range = struct {
     type: []const u8,
     subtype: []const u8,
-    quality: f64 = 1.0,
+    weight: Weight = 1000,
 
     /// 3 for `type/subtype`, 2 for `type/*`, 1 for `*/*`, null for no match.
     fn specificity(self: Range, candidate: MediaType) ?u8 {
@@ -116,29 +184,48 @@ fn parseRange(raw: []const u8) ?Range {
     const media = std.mem.trim(u8, parts.next() orelse return null, " \t");
     const split = splitMediaType(media) orelse return null;
 
-    var quality: f64 = 1.0;
+    var weight: Weight = 1000;
     while (parts.next()) |raw_param| {
         const param = std.mem.trim(u8, raw_param, " \t");
         const equals = std.mem.indexOfScalar(u8, param, '=') orelse continue;
         const name = std.mem.trim(u8, param[0..equals], " \t");
         if (!std.ascii.eqlIgnoreCase(name, "q")) continue;
-        quality = parseQuality(
+        weight = parseWeight(
             std.mem.trim(u8, param[equals + 1 ..], " \t"),
-        ) orelse 0.0;
+        ) orelse 0;
         break;
     }
 
     return .{
         .type = split.type,
         .subtype = split.subtype,
-        .quality = quality,
+        .weight = weight,
     };
 }
 
-fn parseQuality(value: []const u8) ?f64 {
-    const parsed = std.fmt.parseFloat(f64, value) catch return null;
-    if (!std.math.isFinite(parsed) or parsed < 0 or parsed > 1) return null;
-    return parsed;
+/// Parse an HTTP `q` value into thousandths, e.g. `0.5` becomes `500`.
+/// Only the RFC 9110 qvalue grammar is accepted; malformed values reject the
+/// range by returning null.
+fn parseWeight(value: []const u8) ?Weight {
+    if (value.len == 0) return null;
+    if (value[0] != '0' and value[0] != '1') return null;
+    const whole: Weight = value[0] - '0';
+    if (value.len == 1) return whole * 1000;
+    if (value[1] != '.') return null;
+
+    var fraction: Weight = 0;
+    var digits: usize = 0;
+    var index: usize = 2;
+    while (index < value.len) : (index += 1) {
+        const char = value[index];
+        if (char < '0' or char > '9') return null;
+        if (digits == 3) return null;
+        fraction = fraction * 10 + (char - '0');
+        digits += 1;
+    }
+    while (digits < 3) : (digits += 1) fraction *= 10;
+    if (whole == 1 and fraction != 0) return null;
+    return whole * 1000 + fraction;
 }
 
 test "accept negotiation handles exact, wildcard, and q=0" {
@@ -195,6 +282,20 @@ test "accept ignores media-type parameters and malformed quality" {
     ));
     try std.testing.expect(!accepts("application/json;q=abc", "application/json"));
     try std.testing.expect(!accepts("application/json;q=2", "application/json"));
+}
+
+test "accept preferred matches the per-candidate scan above the range cap" {
+    const candidates = [_][]const u8{
+        "application/json",
+        "text/html",
+    };
+    // Seventeen ranges force the fallback path; the last range is the match.
+    const header = "a/a, b/b, c/c, d/d, e/e, f/f, g/g, h/h, i/i, j/j, " ++
+        "k/k, l/l, m/m, n/n, o/o, p/p, text/html;q=0.7";
+    try std.testing.expectEqualStrings(
+        "text/html",
+        preferred(header, &candidates).?,
+    );
 }
 
 test "accept parsing is total for arbitrary headers" {

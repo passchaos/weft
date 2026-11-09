@@ -636,12 +636,28 @@ handler baseline is unchanged.
 
 Unit test: `setHeaderIfAbsent keeps an existing field`.
 
+## Accept negotiation
+
+`accept.preferred` re-parsed the whole `Accept` header for every candidate and
+used `std.fmt.parseFloat` for each quality value. It now parses the header
+once into a bounded range array, evaluates all candidates against it, and uses
+an integer thousandths parser that accepts only the RFC 9110 qvalue grammar.
+Headers with more than 16 valid ranges keep the per-candidate fallback.
+
+`qualityFor` keeps its public `?f64` signature and converts from the integer
+weight. The new `bench-accept` step reports 1576.8 → 818.2–827.3 ns per
+`preferred`+`accepts` pair.
+
+Unit test: `accept preferred matches the per-candidate scan above the range
+cap`.
+
 ## Verification
 
 ```sh
 zig fmt --check src test bench examples build.zig
 zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
+zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 203/203 tests in Debug and ReleaseFast (147 unit, 56 package).
+Results: 204/204 tests in Debug and ReleaseFast (148 unit, 56 package).

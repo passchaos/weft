@@ -220,6 +220,24 @@ pub fn build(b: *std.Build) void {
     );
     bench_middleware_step.dependOn(&run_middleware_benchmark.step);
 
+    const accept_benchmark = b.addExecutable(.{
+        .name = "accept-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/accept.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+            },
+        }),
+    });
+    const run_accept_benchmark = b.addRunArtifact(accept_benchmark);
+    const bench_accept_step = b.step(
+        "bench-accept",
+        "Run the Accept negotiation benchmark",
+    );
+    bench_accept_step.dependOn(&run_accept_benchmark.step);
+
     const h3_batch = b.option(
         u32,
         "h3-batch",
