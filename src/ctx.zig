@@ -642,8 +642,10 @@ pub const Ctx = struct {
         if (self.request_allocator != null and decoded.owned != null) {
             // Decoder growth cannot reclaim intermediate blocks from the
             // fixed request arena; copy the final bytes once instead.
-            const cached = self.arena.dupe(u8, decoded.bytes) catch
+            const cached = self.arena.dupe(u8, decoded.bytes) catch {
+                decoded.deinit(staging);
                 return error.PayloadTooLarge;
+            };
             decoded.deinit(staging);
             return cached;
         }
@@ -1300,6 +1302,65 @@ test "setCookie falls back to the arena for large values" {
     try std.testing.expect(serialized.len > 700);
     try std.testing.expect(std.mem.startsWith(u8, serialized, "big="));
     try std.testing.expect(std.mem.endsWith(u8, serialized, "; HttpOnly"));
+}
+
+test "decodedBody releases staging when the arena is too small" {
+    const allocator = std.testing.allocator;
+    const plain = try allocator.alloc(u8, 3000);
+    defer allocator.free(plain);
+    @memset(plain, 'a');
+
+    var compressed_output = try std.Io.Writer.Allocating.initCapacity(
+        allocator,
+        64,
+    );
+    defer compressed_output.deinit();
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var encoder = try std.compress.flate.Compress.init(
+        &compressed_output.writer,
+        &window,
+        .gzip,
+        .default,
+    );
+    try encoder.writer.writeAll(plain);
+    try encoder.finish();
+
+    var headers = [_]netz.http1.Header{.{
+        .name = "Content-Encoding",
+        .value = "gzip",
+    }};
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var replay = ReplayReader{ .body = compressed_output.written() };
+    // The compressed body fits the arena, but the decoded bytes do not.
+    var arena_buffer: [64]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .request_allocator = allocator,
+        .limits = .{ .max_body_bytes = 8192 },
+        .request = &request,
+        .body_reader = .{ .replay = &replay },
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectError(
+        error.PayloadTooLarge,
+        context.decodedBody(),
+    );
 }
 
 test "typed locals round-trip through the request arena" {

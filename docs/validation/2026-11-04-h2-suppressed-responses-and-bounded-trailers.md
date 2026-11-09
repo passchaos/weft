@@ -560,6 +560,23 @@ published only after the last fallible operation.
 Unit test: `streaming multipart releases part state on allocation failure`
 injects every allocation failure across init and part parsing.
 
+## JSON and decoded-body staging cleanup
+
+`Response.json` skipped releasing its staging buffer when no staging allocator
+was configured, so a serialization or size failure leaked it. It also leaked
+the finished body when appending the `Content-Type` field failed. The writer is
+now released unconditionally (a no-op after `toOwnedSlice`), and the body has
+an error-path release.
+
+`Ctx.decodedBody` returned `PayloadTooLarge` when the arena could not hold the
+decoded bytes without releasing the server-allocator buffer returned by the
+decoder. The failure path now releases it.
+
+Unit tests:
+- `json releases staging when serialization fails` injects every allocation
+  failure.
+- `decodedBody releases staging when the arena is too small`.
+
 ## Verification
 
 ```sh
@@ -568,4 +585,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 191/191 tests in Debug and ReleaseFast (135 unit, 56 package).
+Results: 193/193 tests in Debug and ReleaseFast (137 unit, 56 package).

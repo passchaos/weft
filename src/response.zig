@@ -246,7 +246,9 @@ pub const Response = struct {
 
         const staging = self.staging_allocator orelse self.allocator;
         var output = std.Io.Writer.Allocating.init(staging);
-        defer if (self.staging_allocator != null) output.deinit();
+        // Unconditional: on success `toOwnedSlice` empties the buffer, so
+        // `deinit` is a no-op; on any error it releases the staging bytes.
+        defer output.deinit();
         std.json.Stringify.value(value, .{}, &output.writer) catch
             return error.OutOfMemory;
         const written = output.written();
@@ -257,6 +259,7 @@ pub const Response = struct {
                 return error.OutOfMemory
         else
             output.toOwnedSlice() catch return error.OutOfMemory;
+        errdefer self.allocator.free(body);
         if (self.findHeader("content-type") == null) {
             try self.appendValidated("Content-Type", "application/json");
         }
@@ -566,6 +569,22 @@ test "response trailers are validated and gated by request acceptance" {
     try std.testing.expectError(
         error.InvalidHeaderValue,
         response.addTrailer("X-Bad", "a\r\nb"),
+    );
+}
+
+test "json releases staging when serialization fails" {
+    const testImpl = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var response = Response.init(allocator, 1024 * 1024);
+            defer response.deinit();
+            try response.json(.{ .data = "abcdef" });
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
     );
 }
 
