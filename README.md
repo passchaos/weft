@@ -677,24 +677,22 @@ run measured 9.0 µs (111k requests/s).
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32
 concurrent streams. With netz's pooled concurrent handlers, the reference host
-reports roughly 26 µs per request (about 38k requests/s) sequentially, 15 µs
-(about 67k requests/s) for batched GETs, and 19 µs (about 52k requests/s) for
-batched uploads. HTTP/1 keep-alive on the same host is about 16 µs (~61k
-requests/s); H2 batched GET throughput exceeds HTTP/1, while the sequential
-path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
+reports roughly 22–25 µs per request sequentially, 14–16 µs for batched GETs,
+and 18–19 µs for batched uploads. The adapter submits the response head and
+the buffered body as one owner command, so a sequential request no longer pays
+two command round trips. HTTP/1 keep-alive on the same host is about 16 µs
+(~61k requests/s); H2 batched GET throughput exceeds HTTP/1, while the
+sequential path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
 `-Dh2-batch-iterations=<n>` override the shape.
 
 `bench-h3` uses a synthetic QUIC handshake (no TLS): 10k sequential requests,
 32k batched GETs, and 32k batched 2 KiB uploads, all in batches of 32 streams.
-With the default 1 ms weft poll interval and netz's single-packet buffered
-response emission (`e0d72d80`), it reports roughly 61 µs per request (about
-16k requests/s) sequentially, 52 µs (~19k requests/s) for 32-stream batched
-GETs, and 77 µs (~13k requests/s) for 32-stream batched uploads. `-Dh3-batch=8`
-reports ~53 µs (~19k requests/s) for GETs and ~61 µs (~16k requests/s) for
-uploads, so 32-stream batching is now within ~10–25% of the eight-stream path
-instead of ~3× slower. `-Dh3-batch=8` raises batched
-GET throughput to ~19k requests/s, indicating owner/worker contention above
-about eight concurrent streams. A 5 ms poll interval measured ~10.1 ms/req
+With the default 1 ms weft poll interval, the combined head+body command, and
+netz's single-packet buffered response emission, it reports roughly 45–53 µs
+per request sequentially, 39–42 µs for 32-stream batched GETs, and 65–66 µs
+for 32-stream batched uploads. `-Dh3-batch=8` reports ~39 µs GETs and ~57 µs
+uploads, so 32-stream uploads still show owner/worker contention above about
+eight concurrent streams. A 5 ms poll interval measured ~10.1 ms/req
 sequentially before these fixes, so the shorter default and the netz wake
 changes are both important for H3 latency.
 

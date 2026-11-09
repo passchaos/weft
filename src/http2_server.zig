@@ -661,13 +661,16 @@ pub fn Http2Server(comptime H: type) type {
                 .headers = try headerFields(response, arena),
                 .request_method = method,
             };
-            try stream.startResponse(options);
 
             // Netz ends the stream in the response head for HEAD/204/304, so
             // any DATA or finish command here would target a finished stream.
-            if (body_forbidden) return;
+            if (body_forbidden) {
+                try stream.startResponse(options);
+                return;
+            }
 
             if (response.stream) |body| {
+                try stream.startResponse(options);
                 var state = H2ConcurrentWriterState{
                     .stream = stream,
                     .remaining = body.length orelse
@@ -693,13 +696,27 @@ pub fn Http2Server(comptime H: type) type {
                 return;
             }
 
+            // Head and the buffered body share one owner turn; a sequential
+            // request would otherwise pay two command round trips.
             if (response.trailers.items.len != 0) {
-                try stream.writeData(response.body, false);
+                if (response.body.len == 0) {
+                    try stream.startResponse(options);
+                } else {
+                    try stream.startResponseWithBody(
+                        options,
+                        response.body,
+                        false,
+                    );
+                }
                 try stream.finishWithTrailers(
                     try trailerFields(response, arena),
                 );
             } else {
-                try stream.writeData(response.body, true);
+                try stream.startResponseWithBody(
+                    options,
+                    response.body,
+                    true,
+                );
             }
         }
 

@@ -701,20 +701,29 @@ pub fn Http3Server(comptime H: type) type {
                 return;
             }
 
+            // Head and the buffered body share one owner turn; the engine can
+            // also emit a complete sequential response in one QUIC packet.
             if (response.trailers.items.len != 0) {
-                try stream.startResponse(
-                    h3_response,
-                    if (response.body.len == 0) null else response.body.len,
-                );
-                if (response.body.len != 0) {
-                    try stream.writeData(response.body, false);
+                if (response.body.len == 0) {
+                    try stream.startResponse(h3_response, null);
+                } else {
+                    try stream.startResponseWithBody(
+                        h3_response,
+                        response.body.len,
+                        response.body,
+                        false,
+                    );
                 }
                 try stream.finishWithTrailers(
                     try trailerFields(response, arena),
                 );
             } else {
-                try stream.startResponse(h3_response, response.body.len);
-                try stream.writeData(response.body, true);
+                try stream.startResponseWithBody(
+                    h3_response,
+                    response.body.len,
+                    response.body,
+                    true,
+                );
             }
         }
     };

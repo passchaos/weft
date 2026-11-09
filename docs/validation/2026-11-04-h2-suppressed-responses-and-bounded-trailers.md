@@ -687,6 +687,25 @@ Unit tests: `sse formats fields and splits multiline data` asserts one write
 for a complete event, and `sse streams events larger than the batch buffer`
 covers the fallback.
 
+## Combined response head and body
+
+The HTTP/2 and HTTP/3 adapters submitted the response head and the buffered
+body as two owner commands. Both engines expose `startResponseWithBody`, which
+commits the head and the first DATA contribution in one owner turn; the HTTP/3
+engine can also emit a complete sequential response in one QUIC packet. Weft
+uses the combined command for buffered responses and keeps the two-step path
+for streamed bodies and for the empty-body-with-trailers case.
+
+The HTTP/3 fast path requires the endpoint control streams. Netz now falls
+back to the regular head+body path when SETTINGS/QPACK prefixes are not ready
+yet instead of failing the stream (`netz` 9c99f7e5); the weft HTTP/3 package
+test covers a first response during the handshake.
+
+Benchmarks (ReleaseFast, shared host, interleaved A/B):
+- HTTP/2 sequential 25.1 → 22.3–23.9 µs.
+- HTTP/3 sequential 60.1 → 45.3–52.6 µs; batched 50.3 → 39.2–42.2 µs;
+  upload 72.7 → 65.2–65.8 µs.
+
 ## Verification
 
 ```sh
