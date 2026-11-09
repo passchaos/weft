@@ -839,6 +839,29 @@ dominated by kernel I/O and copies. The netz change is `a190a875`; the full
 netz library suite passes (6871/6871 Debug; 1180/1180 QUIC on the rebased
 main) and weft passes 221/221 against it.
 
+## HTTP/2 comparison with axum
+
+The earlier external h2 harness reported pathological axum batching because
+neither side disabled Nagle. Both servers now set `TCP_NODELAY`, and a single
+hyper HTTP/2 client drives one h2c connection per run:
+
+- sequential, 20k requests: axum 34–43 µs/request; weft 54–56 µs.
+- batched, 64k requests in 32-stream batches: axum 10.1–10.7 µs/request;
+  weft 18.0–18.6 µs.
+
+weft is therefore about 1.5× slower sequentially and 1.7× slower batched on
+HTTP/2; the HTTP/1 result does not carry over. A server-side profile of the
+weft run attributes most sampled cycles to zio executor work (`stealWork`,
+`Loop.poll`, futex wakes, timer checks) and to the HTTP/2 concurrent engine,
+not to routing or response building. Pinned scheduling did not close the gap
+(sequential 68–76 µs, batched 21.9–24.9 µs on a later, noisier round).
+
+The engine hands every accepted stream to a worker thread, and the handler
+submits response commands back to the connection owner, so each request pays
+two cross-thread wakeups. Closing the gap needs an inline bodyless/buffered
+fast path in netz's HTTP/2 engine (or zio scheduler work); that is the next
+structural optimization.
+
 ## Verification
 
 ```sh

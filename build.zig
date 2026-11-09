@@ -266,6 +266,28 @@ pub fn build(b: *std.Build) void {
     );
     build_hello_server_step.dependOn(&install_hello_server.step);
 
+    const h2_hello_server = b.addExecutable(.{
+        .name = "h2-hello-server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/h2_hello_server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    const install_h2_hello_server = b.addInstallArtifact(
+        h2_hello_server,
+        .{},
+    );
+    const build_h2_hello_server_step = b.step(
+        "build-h2-hello-server",
+        "Build the minimal h2c hello-world server used for framework comparisons",
+    );
+    build_h2_hello_server_step.dependOn(&install_h2_hello_server.step);
+
     const accept_benchmark = b.addExecutable(.{
         .name = "accept-bench",
         .root_module = b.createModule(.{

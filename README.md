@@ -839,6 +839,9 @@ so the status is not lost to a TCP RST.
 
 ## Limitations
 
+- HTTP/2 throughput is below axum in external single-connection comparisons
+  (about 1.5× slower sequentially and 1.7× slower with 32-stream batches);
+  netz's HTTP/2 engine currently pays two cross-thread wakeups per request.
 - HTTP/3 sequential latency is higher than HTTP/2 (roughly 61 µs vs 25 µs per
   request on the reference host); QUIC framing and recovery dominate.
 - `CONNECT` requests (HTTP/1 authority-form, HTTP/2/3 tunnel or extended
