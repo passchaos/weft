@@ -294,10 +294,19 @@ pub const Stream = struct {
                 return error.InvalidMultipart;
             const header_name = std.mem.trim(u8, line[0..colon], " \t");
             const header_value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-            try headers.append(self.allocator, .{
-                .name = try self.allocator.dupe(u8, header_name),
-                .value = try self.allocator.dupe(u8, header_value),
-            });
+            // Block-scoped ownership: once the pair is appended, the header
+            // list owns both copies, so a later failure must not free them
+            // again through the block errdefers.
+            {
+                const name_copy = try self.allocator.dupe(u8, header_name);
+                errdefer self.allocator.free(name_copy);
+                const value_copy = try self.allocator.dupe(u8, header_value);
+                errdefer self.allocator.free(value_copy);
+                try headers.append(self.allocator, .{
+                    .name = name_copy,
+                    .value = value_copy,
+                });
+            }
 
             if (std.ascii.eqlIgnoreCase(header_name, "content-disposition")) {
                 try multipart.parseDisposition(
@@ -316,11 +325,15 @@ pub const Stream = struct {
             }
         }
 
-        self.part_name = name orelse return error.InvalidMultipart;
-        if (self.part_name.?.len == 0) return error.InvalidMultipart;
+        // Publish the part only after the last fallible operation succeeds;
+        // otherwise an error would leave dangling names for `freePart`.
+        const part_name = name orelse return error.InvalidMultipart;
+        if (part_name.len == 0) return error.InvalidMultipart;
+        const part_headers = try headers.toOwnedSlice(self.allocator);
+        self.part_name = part_name;
         self.part_filename = filename;
         self.part_content_type = content_type_value;
-        self.part_headers = try headers.toOwnedSlice(self.allocator);
+        self.part_headers = part_headers;
     }
 
     /// Ensure at least `wanted` buffered bytes, filling from the source.
@@ -753,6 +766,37 @@ test "streaming multipart rejects a window that cannot hold the delimiter" {
             // The next delimiter is 8 bytes, so this window is too small.
             .{ .buffer_bytes = 8 },
         ),
+    );
+}
+
+test "streaming multipart releases part state on allocation failure" {
+    const testImpl = struct {
+        const body =
+            "--weft\r\n" ++
+            "Content-Disposition: form-data; name=\"field\"\r\n" ++
+            "\r\n" ++
+            "value\r\n" ++
+            "--weft--\r\n";
+
+        fn run(allocator: std.mem.Allocator) !void {
+            var source = TestSource{ .body = body };
+            var stream = try Stream.init(
+                allocator,
+                source.source(),
+                "multipart/form-data; boundary=weft",
+                .{ .buffer_bytes = 256 },
+            );
+            defer stream.deinit();
+            while (try stream.nextPart()) |part| {
+                while (try part.data.next()) |_| {}
+            }
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
     );
 }
 

@@ -548,6 +548,18 @@ paths.
 Unit test: `streaming multipart rejects a window that cannot hold the
 delimiter`.
 
+## Streaming multipart part ownership
+
+`parseHeaderBlock` duplicated a header name and value inside an append
+argument; a failure between the two copies leaked the name. It also published
+`part_name`, `part_filename`, and `part_content_type` before the final
+`toOwnedSlice`, so an allocation failure left dangling slices that `deinit`
+freed again. Each pair now has block-scoped ownership, and the part fields are
+published only after the last fallible operation.
+
+Unit test: `streaming multipart releases part state on allocation failure`
+injects every allocation failure across init and part parsing.
+
 ## Verification
 
 ```sh
@@ -556,4 +568,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 190/190 tests in Debug and ReleaseFast (134 unit, 56 package).
+Results: 191/191 tests in Debug and ReleaseFast (135 unit, 56 package).
