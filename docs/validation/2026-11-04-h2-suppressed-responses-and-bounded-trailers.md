@@ -468,6 +468,21 @@ and copied into the arena once.
 Package test: `package: HTTP/2 buffered body survives a small request arena`
 posts a 3000-byte body against a 4 KiB arena.
 
+## Failed route registration
+
+`Router.addRaw` appended the route to the trie before registering it in
+`all_routes`; an allocation failure on the latter left a freed route pointer
+in the trie. The route is now registered in `all_routes` first and rolled back
+if the trie append fails.
+
+The same audit found that the capture-name array used a block-scoped
+`errdefer`, so an allocation failure after that block leaked the names. The
+release is now function-scoped.
+
+Unit test: `failed registration leaves no route in the trie` injects every
+allocation failure and asserts the trie, the ownership list, and the
+allocation balance stay empty/clean.
+
 ## Verification
 
 ```sh
@@ -476,4 +491,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 185/185 tests in Debug and ReleaseFast (129 unit, 56 package).
+Results: 186/186 tests in Debug and ReleaseFast (130 unit, 56 package).

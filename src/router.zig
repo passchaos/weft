@@ -477,12 +477,16 @@ pub fn Router(comptime H: type) type {
             errdefer self.allocator.free(middleware_copy);
 
             var capture_names: []const []const u8 = &.{};
+            // Function-scoped so a later allocation failure also releases the
+            // names array; a block-scoped `errdefer` would end with the block.
+            errdefer if (capture_names.len != 0) {
+                self.allocator.free(capture_names);
+            };
             if (info.captures != 0) {
                 const names = try self.allocator.alloc(
                     []const u8,
                     info.captures,
                 );
-                errdefer self.allocator.free(names);
                 var capture_index: usize = 0;
                 var name_segments = SegmentIterator{
                     .source = std.mem.trim(u8, pattern_copy, "/"),
@@ -512,6 +516,11 @@ pub fn Router(comptime H: type) type {
                 .capture_names = capture_names,
             };
 
+            // Register ownership before touching the trie so a failed node
+            // append cannot leave a dangling route pointer behind.
+            try self.all_routes.append(self.allocator, route);
+            errdefer _ = self.all_routes.pop();
+
             const trimmed = std.mem.trim(u8, pattern_copy, "/");
             var node = &self.root;
             var segments = SegmentIterator{ .source = trimmed };
@@ -535,7 +544,6 @@ pub fn Router(comptime H: type) type {
             if (!wildcard) {
                 try node.routes.append(self.allocator, route);
             }
-            try self.all_routes.append(self.allocator, route);
         }
 
         pub fn get(
@@ -1005,6 +1013,18 @@ pub fn Router(comptime H: type) type {
     };
 }
 
+/// Count route entries reachable from a trie node. The allocation-failure
+/// test uses it to assert that a failed registration leaves no route pointer
+/// behind in the trie.
+fn countTrieRoutes(node: *const Node) usize {
+    var count = node.routes.items.len + node.wildcard_routes.items.len;
+    if (node.single_child) |child| count += countTrieRoutes(child);
+    var iterator = node.static_children.iterator();
+    while (iterator.next()) |entry| count += countTrieRoutes(entry.value_ptr.*);
+    if (node.param) |child| count += countTrieRoutes(child);
+    return count;
+}
+
 fn checkRoutesConflict(
     routes: []const *Route,
     method: ?netz.http1.Method,
@@ -1369,5 +1389,55 @@ test "lookup cost stays flat across many routes" {
     try std.testing.expectEqualStrings(
         "/api/v1/resource511",
         matched.route.pattern,
+    );
+}
+
+test "failed registration leaves no route in the trie" {
+    const Dummy = struct {
+        fn handle(ctx: *Ctx) anyerror!void {
+            _ = ctx;
+        }
+    };
+
+    const testImpl = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var router = Router(void).init(allocator);
+            defer router.deinit();
+
+            router.addRaw(
+                .GET,
+                "/users/:id",
+                ctx_mod.handler(Dummy.handle),
+                .{},
+            ) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                // The route is freed by the error path, so the trie and the
+                // ownership list must both be empty afterwards.
+                try std.testing.expectEqual(
+                    @as(usize, 0),
+                    countTrieRoutes(&router.root),
+                );
+                try std.testing.expectEqual(
+                    @as(usize, 0),
+                    router.all_routes.items.len,
+                );
+                return err;
+            };
+
+            try std.testing.expectEqual(
+                @as(usize, 1),
+                countTrieRoutes(&router.root),
+            );
+            try std.testing.expectEqual(
+                @as(usize, 1),
+                router.all_routes.items.len,
+            );
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
     );
 }
