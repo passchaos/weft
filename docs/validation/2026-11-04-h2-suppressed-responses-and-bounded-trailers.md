@@ -661,6 +661,18 @@ single integer-thousandths parser used by all three. The grammar is the RFC
 
 Unit test: `quality parses RFC qvalues into thousandths`.
 
+## Body-helper arena exhaustion
+
+`bodyJson`, `bodyForm`, `multipart`, and `multipartStream` parsed into the
+fixed request arena and surfaced arena exhaustion as `OutOfMemory`, which
+dispatch mapped to `500`. Since the arena is a request budget, exhaustion now
+maps to `PayloadTooLarge` (`413`), matching `readBody`.
+
+Unit tests: `bodyForm maps arena exhaustion to PayloadTooLarge`,
+`bodyJson maps arena exhaustion to PayloadTooLarge`,
+`multipart maps arena exhaustion to PayloadTooLarge`, and
+`multipartStream maps arena exhaustion to PayloadTooLarge`.
+
 ## Verification
 
 ```sh
@@ -671,5 +683,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 207/207 tests in Debug, ReleaseSafe, and ReleaseFast (151 unit,
+Results: 211/211 tests in Debug, ReleaseSafe, and ReleaseFast (155 unit,
 56 package).

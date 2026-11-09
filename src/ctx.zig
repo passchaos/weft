@@ -706,7 +706,9 @@ pub const Ctx = struct {
             try self.decodedBody(),
             .{},
         ) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+            // The fixed request arena is a request budget, not a system
+            // allocation; exhaustion means the body is too large.
+            error.OutOfMemory => return error.PayloadTooLarge,
             else => return error.InvalidJson,
         };
     }
@@ -731,7 +733,7 @@ pub const Ctx = struct {
             try self.decodedBody(),
             self.limits.max_query_params,
         ) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+            error.OutOfMemory => return error.PayloadTooLarge,
             else => return error.BadRequest,
         };
     }
@@ -746,7 +748,10 @@ pub const Ctx = struct {
             content_type,
             try self.decodedBody(),
             .{ .max_parts = self.limits.max_multipart_parts },
-        );
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.PayloadTooLarge,
+            else => return err,
+        };
     }
 
     /// Incremental request-body decoder for `Content-Encoding`. Returns null
@@ -775,15 +780,17 @@ pub const Ctx = struct {
                 @min(self.limits.max_streaming_window_bytes, 4 * 1024),
             ),
         }) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+            error.OutOfMemory => return error.PayloadTooLarge,
             else => return error.UnsupportedMediaType,
         };
         const chunk = @max(
             1,
             @min(self.limits.max_streaming_window_bytes, 4 * 1024),
         );
-        const output = try self.arena.alloc(u8, chunk);
-        const decoded = try self.arena.create(DecodedReader);
+        const output = self.arena.alloc(u8, chunk) catch
+            return error.PayloadTooLarge;
+        const decoded = self.arena.create(DecodedReader) catch
+            return error.PayloadTooLarge;
         decoded.* = .{
             .inner = reader,
             .decoder = decoder,
@@ -807,7 +814,8 @@ pub const Ctx = struct {
         // the request arena. Encoded bodies are decoded incrementally, and the
         // parse window shrinks so decoder state still fits the arena.
         const decoded = try self.decodedReader();
-        const holder = try self.arena.create(BodyReader);
+        const holder = self.arena.create(BodyReader) catch
+            return error.PayloadTooLarge;
         if (decoded) |value| {
             holder.* = .{ .decoded = value };
         } else {
@@ -829,7 +837,10 @@ pub const Ctx = struct {
                     window_cap,
                 ),
             },
-        );
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.PayloadTooLarge,
+            else => return err,
+        };
     }
 
     fn bodyReaderNext(raw: ?*anyopaque) anyerror!?[]const u8 {
@@ -1211,6 +1222,144 @@ test "readBody releases staging when the arena is too small" {
     };
 
     try std.testing.expectError(error.PayloadTooLarge, context.readBody());
+}
+
+test "bodyForm maps arena exhaustion to PayloadTooLarge" {
+    var headers = [_]netz.http1.Header{.{
+        .name = "Content-Type",
+        .value = "application/x-www-form-urlencoded",
+    }};
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "a=1&b=2&c=3",
+        .consumed = 0,
+    };
+    var arena_buffer: [16]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .limits = .{ .max_body_bytes = 64, .max_request_arena_bytes = 16 },
+        .request = &request,
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectError(error.PayloadTooLarge, context.bodyForm());
+}
+
+test "bodyJson maps arena exhaustion to PayloadTooLarge" {
+    const Payload = struct { data: []const u8 };
+    var headers = [_]netz.http1.Header{.{
+        .name = "Content-Type",
+        .value = "application/json",
+    }};
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "{\"data\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        .consumed = 0,
+    };
+    var arena_buffer: [16]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .limits = .{ .max_body_bytes = 128, .max_request_arena_bytes = 16 },
+        .request = &request,
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectError(
+        error.PayloadTooLarge,
+        context.bodyJson(Payload),
+    );
+}
+
+test "multipart maps arena exhaustion to PayloadTooLarge" {
+    var headers = [_]netz.http1.Header{.{
+        .name = "Content-Type",
+        .value = "multipart/form-data; boundary=weft",
+    }};
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "--weft\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n" ++
+            "1\r\n--weft--\r\n",
+        .consumed = 0,
+    };
+    var arena_buffer: [16]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .limits = .{ .max_body_bytes = 256, .max_request_arena_bytes = 16 },
+        .request = &request,
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectError(error.PayloadTooLarge, context.multipart());
+}
+
+test "multipartStream maps arena exhaustion to PayloadTooLarge" {
+    var headers = [_]netz.http1.Header{.{
+        .name = "Content-Type",
+        .value = "multipart/form-data; boundary=weft",
+    }};
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &headers,
+        .body = "",
+        .consumed = 0,
+    };
+    var replay = ReplayReader{ .body = "--weft--\r\n" };
+    var arena_buffer: [16]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        .limits = .{ .max_body_bytes = 256, .max_request_arena_bytes = 16 },
+        .request = &request,
+        .body_reader = .{ .replay = &replay },
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectError(
+        error.PayloadTooLarge,
+        context.multipartStream(),
+    );
 }
 
 test "body returns the cached streaming body" {
