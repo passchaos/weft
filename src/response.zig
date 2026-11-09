@@ -130,7 +130,7 @@ pub const Response = struct {
             return;
         }
 
-        try self.appendHeader(name, value);
+        try self.appendValidated(name, value);
     }
 
     /// Append a header field, preserving duplicates. Use this for
@@ -142,6 +142,15 @@ pub const Response = struct {
     ) !void {
         try validateHeaderName(name);
         try validateHeaderValue(value);
+        try self.appendValidated(name, value);
+    }
+
+    /// Append a field whose name and value the caller has already validated.
+    fn appendValidated(
+        self: *Response,
+        name: []const u8,
+        value: []const u8,
+    ) !void {
         if (self.headers.items.len + 1 > self.max_headers) {
             return error.ResponseHeadersTooLarge;
         }
@@ -220,8 +229,13 @@ pub const Response = struct {
     pub fn text(self: *Response, body: []const u8) !void {
         if (self.stream != null) return error.StreamAlreadySet;
         if (self.upgrade != null) return error.UpgradeAlreadySet;
-        if (!self.hasHeader("content-type")) {
-            try self.setHeader("Content-Type", "text/plain; charset=utf-8");
+        // One lookup instead of `hasHeader` followed by a scanning
+        // `setHeader`; the field is absent when this branch appends it.
+        if (self.findHeader("content-type") == null) {
+            try self.appendValidated(
+                "Content-Type",
+                "text/plain; charset=utf-8",
+            );
         }
         try self.setBody(body);
     }
@@ -243,8 +257,8 @@ pub const Response = struct {
                 return error.OutOfMemory
         else
             output.toOwnedSlice() catch return error.OutOfMemory;
-        if (!self.hasHeader("content-type")) {
-            try self.setHeader("Content-Type", "application/json");
+        if (self.findHeader("content-type") == null) {
+            try self.appendValidated("Content-Type", "application/json");
         }
         if (self.body_owned) self.allocator.free(self.body);
         self.body = body;

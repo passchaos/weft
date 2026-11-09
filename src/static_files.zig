@@ -174,14 +174,26 @@ pub const StaticFiles = struct {
 
         const mime = self.contentType(relative);
 
+        // Cache the Range lookup once; the precompressed and precondition
+        // paths would otherwise rescan the request fields up to three times.
+        const range_header = ctx.header("range");
+
         var served_relative = relative;
         var served_stat = stat;
         var content_encoding: ?[]const u8 = null;
+        // Stack buffer for the common short path; long paths fall back to the
+        // request arena. Declared outside the block so the slice stays valid
+        // until the file is opened.
+        var sidecar_buffer: [512]u8 = undefined;
         if (self.precompressed) {
             try vary.add(ctx, "Accept-Encoding");
-            if (ctx.header("range") == null) {
+            if (range_header == null) {
                 if (chooseVariant(ctx.header("accept-encoding"))) |variant| {
-                    const sidecar = try std.fmt.allocPrint(
+                    const sidecar = std.fmt.bufPrint(
+                        &sidecar_buffer,
+                        "{s}{s}",
+                        .{ relative, variant.extension },
+                    ) catch try std.fmt.allocPrint(
                         ctx.arena,
                         "{s}{s}",
                         .{ relative, variant.extension },
@@ -257,18 +269,19 @@ pub const StaticFiles = struct {
         var ranges: ?RangeSet = null;
         const range_allowed = preconditions.range_allowed;
         if (range_allowed) {
-            if (ctx.header("range")) |range_header| {
-                switch (parseRange(range_header, size)) {
+            if (range_header) |range_value| {
+                switch (parseRange(range_value, size)) {
                     .ignore => {},
                     .unsatisfiable => {
+                        var range_buffer: [32]u8 = undefined;
                         ctx.setStatus(416);
                         try ctx.setHeader(
                             "Content-Range",
-                            try std.fmt.allocPrint(
-                                ctx.arena,
+                            std.fmt.bufPrint(
+                                &range_buffer,
                                 "bytes */{d}",
                                 .{size},
-                            ),
+                            ) catch return error.ResponseTooLarge,
                         );
                         return ctx.text("Range Not Satisfiable");
                     },
@@ -355,14 +368,15 @@ pub const StaticFiles = struct {
 
         try ctx.setHeader("Content-Type", mime);
         if (partial) {
+            var range_buffer: [96]u8 = undefined;
             ctx.setStatus(206);
             try ctx.setHeader(
                 "Content-Range",
-                try std.fmt.allocPrint(
-                    ctx.arena,
+                std.fmt.bufPrint(
+                    &range_buffer,
                     "bytes {d}-{d}/{d}",
                     .{ start, start + length - 1, size },
-                ),
+                ) catch return error.ResponseTooLarge,
             );
         }
 

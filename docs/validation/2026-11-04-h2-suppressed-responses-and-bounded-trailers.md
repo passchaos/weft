@@ -483,6 +483,29 @@ Unit test: `failed registration leaves no route in the trie` injects every
 allocation failure and asserts the trie, the ownership list, and the
 allocation balance stay empty/clean.
 
+## Static-file request formatting
+
+`StaticFiles.serve` formatted the `ETag`, `Content-Range`, and precompressed
+sidecar path with `allocPrint` into the request arena on every request, and
+looked up the `Range` field up to three times. The values are now formatted
+into stack buffers (falling back to the arena only for sidecar paths longer
+than 512 bytes), and the `Range` lookup is cached.
+
+Static benchmark (ReleaseFast, shared host, interleaved A/B against the
+previous commit; directional because the host is noisy): small file
+3.2–3.8 µs vs 4.6 µs, conditional 304 0.99–1.17 µs vs 1.36 µs, 1 KiB range
+3.6–4.5 µs vs 4.9 µs.
+
+## Response header validation
+
+`Response.setHeader` validated the field name and value and then called
+`appendHeader`, which validated both again. Appending is now a private
+validated step shared by `setHeader` and `appendHeader`, and the constant
+`Content-Type` fields added by `text` and `json` skip validation entirely.
+
+Middleware benchmark (ReleaseFast, interleaved A/B): bare handler 36.4–38.2 ns
+vs 59.6 ns, and the four-middleware chain 233–237 ns vs 297 ns.
+
 ## Verification
 
 ```sh
