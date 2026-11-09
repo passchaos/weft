@@ -733,6 +733,19 @@ completed reader skips its mutex and condition entirely. On the same host this
 moved weft from ~565k to ~850k requests/s at 32 connections and cut CPU per
 request from 22.7 µs to 13.7 µs.
 
+### Remaining performance limit
+
+A `perf record` sample of the 32-connection hello workload attributes 77–82%
+of cycles to the kernel's io_uring submission and wake paths; userspace
+(netz, weft, and zio's executor loop) is under a quarter of the total.
+
+Forcing zio's epoll backend (`zio_options.backend = .epoll`) was tested as an
+alternative: 778k–838k requests/s versus 837k–900k with the default io_uring
+backend in an interleaved A/B, so the default stays. The experiment (a direct
+zio dependency plus a root-module declaration in the benchmark server) was
+reverted. Further HTTP/1 gains therefore need zio-level I/O changes rather
+than netz or weft application-layer work.
+
 Caveats: the host is shared with other agents, so absolute numbers move
 between runs; both servers use default framework settings except weft's
 executor count and connection cap. The axum project and load generator are
