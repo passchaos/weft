@@ -6268,3 +6268,102 @@ test "package: mcp initialize, tools/list, tools/call, and notifications" {
     server.stop();
     try group.await(io);
 }
+
+test "package: HTTP/2 inline bodyless route and body fallback" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Http2Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .max_http2_concurrent_streams = 8,
+            },
+            .max_connections = 1,
+            .max_concurrent_handlers = 8,
+            .accept_timeout = .fromMilliseconds(100),
+            .idle_timeout = .fromMilliseconds(100),
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/inline", home, .{ .inline_bodyless = true });
+    try router.post(
+        "/inline-echo",
+        echoJson,
+        .{ .inline_bodyless = true },
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp2Server, .{&server});
+
+    const base = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(base);
+
+    const inline_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/inline",
+        .{base},
+    );
+    defer allocator.free(inline_uri);
+    var inline_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        inline_uri,
+        .{},
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer inline_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), inline_response.status);
+    try std.testing.expectEqualStrings(
+        "hello from weft",
+        inline_response.body,
+    );
+
+    const echo_uri = try std.fmt.allocPrint(
+        allocator,
+        "{s}/inline-echo",
+        .{base},
+    );
+    defer allocator.free(echo_uri);
+    var echo_headers = [_]netz.http2.Hpack.HeaderField{.{
+        .name = "content-type",
+        .value = "application/json",
+    }};
+    var echo_response = try netz.http2.runtime.Client.requestUri(
+        allocator,
+        io,
+        echo_uri,
+        .{
+            .method = "POST",
+            .body = "{\"message\":\"weft\"}",
+            .headers = &echo_headers,
+        },
+        .{ .max_frame_payload = 4096, .max_body_bytes = 4096 },
+    );
+    defer echo_response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), echo_response.status);
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"weft\"}",
+        echo_response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}

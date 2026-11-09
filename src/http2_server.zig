@@ -357,6 +357,7 @@ pub fn Http2Server(comptime H: type) type {
                     .shutdown = &context.session_shutdown,
                     .poll_interval = self.options.handler_poll_interval,
                     .max_worker_threads = self.options.max_handler_threads,
+                    .inline_bodyless = self.app_router.hasInlineBodylessRoutes(),
                 },
             ) catch |err| {
                 if (err == error.Canceled) return err;
@@ -405,6 +406,34 @@ pub fn Http2Server(comptime H: type) type {
                 stream.reset(.protocol_error) catch {};
                 return;
             };
+            const target = if (head.path.len == 0) "/" else head.path;
+
+            // Route matching uses the path, never the query string carried by
+            // the `:path` pseudo-header. The result is reused by dispatch.
+            var prepared: router_mod.Prepared = .{};
+            dispatch_mod.prepareRoute(
+                H,
+                &self.app_router,
+                method,
+                target,
+                &prepared,
+            );
+
+            // Inline handlers run on the connection owner. Decline before any
+            // side effect when the route did not opt in, needs a streaming
+            // request body, or hits a rejection path.
+            if (stream.isInline()) {
+                const route = prepared.route orelse
+                    return error.InlineDeclined;
+                if (method == .CONNECT or
+                    !route.inline_bodyless or
+                    route.streaming or
+                    target.len > self.options.limits.max_request_target_bytes)
+                {
+                    return error.InlineDeclined;
+                }
+            }
+
             // Weft has no CONNECT tunnel or extended-CONNECT API; reject the
             // stream instead of routing the authority target as a request.
             if (method == .CONNECT) {
@@ -416,7 +445,6 @@ pub fn Http2Server(comptime H: type) type {
                     arena,
                 );
             }
-            const target = if (head.path.len == 0) "/" else head.path;
             if (target.len > self.options.limits.max_request_target_bytes) {
                 return self.rejectConcurrent(
                     stream,
@@ -441,16 +469,6 @@ pub fn Http2Server(comptime H: type) type {
             // avoid waiting for a body that cannot arrive, and keep the
             // streaming reader for routes that opted in or for unknown-length
             // bodies.
-            // Route matching uses the path, never the query string carried by
-            // the `:path` pseudo-header. The result is reused by dispatch.
-            var prepared: router_mod.Prepared = .{};
-            dispatch_mod.prepareRoute(
-                H,
-                &self.app_router,
-                method,
-                target,
-                &prepared,
-            );
             const route_streaming = if (prepared.route) |route|
                 route.streaming
             else
@@ -600,6 +618,11 @@ pub fn Http2Server(comptime H: type) type {
             response: *Response,
             arena: std.mem.Allocator,
         ) !void {
+            if (stream.isInline() and response.stream != null) {
+                response.stream.?.cancel();
+                response.stream = null;
+                return error.InlineStreamingUnsupported;
+            }
             if (response.upgrade != null) {
                 response.reset();
                 response.setStatus(400);

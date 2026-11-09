@@ -843,15 +843,8 @@ main) and weft passes 221/221 against it.
 
 The earlier external h2 harness reported pathological axum batching because
 neither side disabled Nagle. Both servers now set `TCP_NODELAY`, and a single
-hyper HTTP/2 client drives one h2c connection per run:
-
-- sequential, 20k requests: axum 34–43 µs/request; weft 54–56 µs.
-- batched, 64k requests in 32-stream batches: axum 10.1–10.7 µs/request;
-  weft 18.0–18.6 µs.
-
-weft is therefore about 1.5× slower sequentially and 1.7× slower batched on
-HTTP/2; the HTTP/1 result does not carry over. A server-side profile of the
-weft run attributes most sampled cycles to zio executor work (`stealWork`,
+hyper HTTP/2 client drives one h2c connection per run. A server-side profile
+attributed most sampled cycles to zio executor work (`stealWork`,
 `Loop.poll`, futex wakes, timer checks) and to the HTTP/2 concurrent engine,
 not to routing or response building. Three cheaper mitigations were measured
 and all came out neutral:
@@ -863,12 +856,35 @@ and all came out neutral:
 - a bounded spin (1k and 16k iterations) before the worker blocks on a
   command event: throughput and latency within noise.
 
-The engine hands every accepted stream to a worker thread, and the handler
-submits response commands back to the connection owner, so each request pays
-two cross-thread wakeups. The remaining gap is the owner wakeup and executor
-scheduling path, so closing it needs an inline bodyless/buffered fast path in
-netz's HTTP/2 engine (or zio scheduler work); that is the next structural
-optimization.
+The engine handed every accepted stream to a worker thread, and the handler
+submitted response commands back to the connection owner, so a sequential
+request paid two cross-thread wakeups. Routes can now opt into
+`RouteOptions.inline_bodyless`. When the request head already carries
+END_STREAM, the engine runs the handler on the connection owner and applies
+its commands in place; flow-control, congestion, and pacing blocks pump one
+inbound event and retry. Handlers decline before side effects
+(`error.InlineDeclined`) when the route did not opt in, the request declares a
+body, or the route is streaming, so those requests keep the worker path. The
+option is only enabled when a route opts in
+(`Router.hasInlineBodylessRoutes`).
+
+Interleaved measurements with the same client (20k sequential requests, 64k
+requests in 32-stream batches):
+
+- worker path: 56.6–59.2 µs sequential, 18.5–19.1 µs batched.
+- inline path: 29.3–29.9 µs sequential, 14.4–14.8 µs batched.
+- axum 0.8.9: 41.8–45.2 µs sequential, 10.5–10.8 µs batched.
+
+weft now beats axum on sequential HTTP/2 by about 1.45× and remains about
+1.37× behind on 32-stream batches, where the owner serializes inline handlers
+while axum serves streams on multiple runtime threads. Closing the batch gap
+needs a parallel inline policy or a cheaper worker handoff.
+
+Verification: the full netz library suite passes (6871/6871) on `5c3bcace`
+plus this change, including the 1004 HTTP/2 tests, and weft passes 222/222 in
+Debug, ReleaseSafe, and ReleaseFast. The netz change is `ce39517f`; netz
+`main` also carries an unrelated flaky HTTP/2 test hang that reproduces
+without this change, so the full suite was verified on the known-good base.
 
 ## Verification
 
@@ -880,5 +896,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 221/221 tests in Debug, ReleaseSafe, and ReleaseFast (164 unit,
-57 package).
+Results: 222/222 tests in Debug, ReleaseSafe, and ReleaseFast (164 unit,
+58 package).

@@ -333,6 +333,14 @@ tasks; handlers pull request DATA from bounded per-stream buffers and may
 submit buffered or chunked responses with trailers. Advertised stream
 concurrency is capped to the same handler bound.
 
+Routes can opt into the bodyless inline fast path with
+`RouteOptions.inline_bodyless`. When the request head already carries
+END_STREAM, the handler runs on the connection owner and its buffered
+response is applied in place, removing the worker handoff. Inline handlers
+must produce a buffered response: `ctx.stream`, `ctx.sse`, and WebSocket
+upgrades are rejected. Requests with bodies and streaming routes stay on the
+worker path.
+
 ## HTTP/3
 
 `weft.Http3Server(H)` serves HTTP/3 over QUIC/TLS with ALPN `h3`. It reuses the
@@ -839,9 +847,11 @@ so the status is not lost to a TCP RST.
 
 ## Limitations
 
-- HTTP/2 throughput is below axum in external single-connection comparisons
-  (about 1.5× slower sequentially and 1.7× slower with 32-stream batches);
-  netz's HTTP/2 engine currently pays two cross-thread wakeups per request.
+- HTTP/2 batch throughput is below axum in external single-connection
+  comparisons (about 1.4× slower with 32-stream batches). Routes that opt into
+  `inline_bodyless` run bodyless handlers on the connection owner and are now
+  faster than axum on sequential requests; the batched path still pays the
+  worker handoff.
 - HTTP/3 sequential latency is higher than HTTP/2 (roughly 61 µs vs 25 µs per
   request on the reference host); QUIC framing and recovery dominate.
 - `CONNECT` requests (HTTP/1 authority-form, HTTP/2/3 tunnel or extended

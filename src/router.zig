@@ -34,6 +34,11 @@ pub const RouteOptions = struct {
     /// Optional OpenAPI operation metadata used by `Router.openapiRoutes` and
     /// `openapi.Document`.
     openapi: ?openapi_mod.Operation = null,
+    /// Allow the HTTP/2 engine to run this route's handler on the connection
+    /// owner for already-complete (bodyless) requests. Inline handlers must
+    /// produce a buffered response: `ctx.stream`, `ctx.sse`, and WebSocket
+    /// upgrades are rejected. Leave false for handlers that may block.
+    inline_bodyless: bool = false,
 };
 
 pub const GroupOptions = struct {
@@ -55,6 +60,8 @@ pub const Route = struct {
     timeout: ?std.Io.Duration = null,
     /// Optional OpenAPI operation metadata.
     openapi: ?openapi_mod.Operation = null,
+    /// True when the HTTP/2 engine may run this route inline.
+    inline_bodyless: bool = false,
     /// Segment weights used for diagnostics and tie-breaking documentation.
     /// Matching itself walks the trie, where precedence is structural.
     specificity: u32,
@@ -243,6 +250,7 @@ pub fn Router(comptime H: type) type {
                         .max_body_bytes = route_options.max_body_bytes,
                         .timeout = route_options.timeout,
                         .openapi = route_options.openapi,
+                        .inline_bodyless = route_options.inline_bodyless,
                     },
                 );
             }
@@ -519,6 +527,7 @@ pub fn Router(comptime H: type) type {
                 .max_body_bytes = route_options.max_body_bytes,
                 .timeout = route_options.timeout,
                 .openapi = route_options.openapi,
+                .inline_bodyless = route_options.inline_bodyless,
                 .specificity = computeSpecificity(pattern),
                 .capture_count = info.captures,
                 .capture_names = capture_names,
@@ -802,6 +811,14 @@ pub fn Router(comptime H: type) type {
                 }
             }
             return allowed;
+        }
+
+        /// Whether any route opted into the HTTP/2 inline bodyless path.
+        pub fn hasInlineBodylessRoutes(self: *const @This()) bool {
+            for (self.all_routes.items) |route| {
+                if (route.inline_bodyless) return true;
+            }
+            return false;
         }
 
         /// Project the registered routes for `openapi.Document`. The returned

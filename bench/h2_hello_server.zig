@@ -49,11 +49,16 @@ pub fn main(init: std.process.Init) !void {
         break :blk std.fmt.parseInt(usize, text, 10) catch 32;
     };
 
+    const port: u16 = blk: {
+        const text = init.environ_map.get("WEFT_H2_PORT") orelse
+            break :blk 28082;
+        break :blk std.fmt.parseInt(u16, text, 10) catch 28082;
+    };
     var server = try weft.Http2Server(App).init(
         io,
         allocator,
         .{
-            .address = .{ .ip4 = .loopback(28082) },
+            .address = .{ .ip4 = .loopback(port) },
             .limits = .{
                 .max_head_bytes = 16 * 1024,
                 .max_body_bytes = 64 * 1024,
@@ -75,7 +80,7 @@ pub fn main(init: std.process.Init) !void {
         .{},
     );
     defer server.deinit();
-    try server.router().get("/", home, .{});
+    try server.router().get("/", home, .{ .inline_bodyless = true });
 
     std.debug.print("weft h2 listening on http://{f}\n", .{server.address()});
 
