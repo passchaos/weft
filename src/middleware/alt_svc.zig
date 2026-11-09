@@ -15,10 +15,8 @@ pub const AltSvc = struct {
     }
 
     fn call(self: *AltSvc, ctx: *ctx_mod.Ctx) anyerror!void {
-        if (!(self.skip_http3 and ctx.protocol() == .http_3) and
-            !ctx.response.hasHeader("alt-svc"))
-        {
-            try ctx.setHeader("Alt-Svc", self.value);
+        if (!(self.skip_http3 and ctx.protocol() == .http_3)) {
+            try ctx.response.setHeaderIfAbsent("Alt-Svc", self.value);
         }
         try ctx.next();
     }

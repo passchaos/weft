@@ -624,6 +624,18 @@ chain 234.4 → 198.1–202.9 ns.
 
 Unit test: `compress middleware omits Vary for bodies that never compress`.
 
+## Default response fields
+
+Middleware that supplies a default field performed `responseHeader` followed
+by `setHeader`, scanning the response header list twice and validating twice.
+`Response.setHeaderIfAbsent` performs one lookup and one validation pass.
+`SecurityHeaders`, `AltSvc`, `Server`, and the SSE defaults use it.
+
+Middleware benchmark: `securityHeaders` 273.4 → 224.2–242.1 ns; the bare
+handler baseline is unchanged.
+
+Unit test: `setHeaderIfAbsent keeps an existing field`.
+
 ## Verification
 
 ```sh
@@ -632,4 +644,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 201/201 tests in Debug and ReleaseFast (145 unit, 56 package).
+Results: 203/203 tests in Debug and ReleaseFast (147 unit, 56 package).

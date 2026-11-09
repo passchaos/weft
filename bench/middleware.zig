@@ -23,6 +23,7 @@ pub fn main(init: std.process.Init) !void {
     const io = threaded.io();
 
     const request_id_middleware = weft.handler(weft.middleware.requestId);
+    const security_middleware = weft.handler(weft.middleware.securityHeaders);
     var metrics_middleware = weft.middleware.Metrics{};
     var etag_middleware = weft.middleware.Etag{};
     var compress_middleware = weft.middleware.Compress{};
@@ -38,6 +39,12 @@ pub fn main(init: std.process.Init) !void {
         io,
         "requestId",
         &.{request_id_middleware},
+    );
+    try bench(
+        allocator,
+        io,
+        "securityHeaders",
+        &.{security_middleware},
     );
     try bench(
         allocator,

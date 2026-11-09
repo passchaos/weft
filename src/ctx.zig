@@ -946,15 +946,12 @@ pub const Ctx = struct {
     /// Select an incremental `text/event-stream` body. Defaults `Content-Type`
     /// and `Cache-Control` only when the handler has not set them.
     pub fn sse(self: *Ctx, stream_body: StreamBody) !void {
-        if (self.responseHeader("content-type") == null) {
-            try self.setHeader("Content-Type", "text/event-stream");
-        }
-        if (self.responseHeader("cache-control") == null) {
-            try self.setHeader("Cache-Control", "no-cache");
-        }
-        if (self.responseHeader("x-accel-buffering") == null) {
-            try self.setHeader("X-Accel-Buffering", "no");
-        }
+        try self.response.setHeaderIfAbsent(
+            "Content-Type",
+            "text/event-stream",
+        );
+        try self.response.setHeaderIfAbsent("Cache-Control", "no-cache");
+        try self.response.setHeaderIfAbsent("X-Accel-Buffering", "no");
         try self.stream(stream_body);
     }
 

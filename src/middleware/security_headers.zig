@@ -49,9 +49,7 @@ fn setIfAbsent(
     value: ?[]const u8,
 ) !void {
     const header_value = value orelse return;
-    if (ctx.responseHeader(name) == null) {
-        try ctx.setHeader(name, header_value);
-    }
+    try ctx.response.setHeaderIfAbsent(name, header_value);
 }
 
 test "security headers are applied and can be overridden" {

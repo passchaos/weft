@@ -133,6 +133,20 @@ pub const Response = struct {
         try self.appendValidated(name, value);
     }
 
+    /// Set a header only when the response does not already carry it. One
+    /// lookup and one validation pass replace `hasHeader` followed by
+    /// `setHeader` for middleware that supplies defaults.
+    pub fn setHeaderIfAbsent(
+        self: *Response,
+        name: []const u8,
+        value: []const u8,
+    ) !void {
+        try validateHeaderName(name);
+        try validateHeaderValue(value);
+        if (self.findHeader(name) != null) return;
+        try self.appendValidated(name, value);
+    }
+
     /// Append a header field, preserving duplicates. Use this for
     /// `Set-Cookie` and other list-valued fields.
     pub fn appendHeader(
@@ -485,6 +499,21 @@ test "response helpers commit and set headers" {
     try std.testing.expect(response.committed);
     try std.testing.expect(response.hasHeader("content-type"));
     try std.testing.expectEqualStrings("hello", response.body);
+}
+
+test "setHeaderIfAbsent keeps an existing field" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var response = Response.init(arena.allocator(), 1024);
+
+    try response.setHeaderIfAbsent("X-Test", "one");
+    try response.setHeaderIfAbsent("x-test", "two");
+    try std.testing.expectEqualStrings("one", response.header("X-Test").?);
+    try std.testing.expectEqual(@as(usize, 1), response.headers.items.len);
+    try std.testing.expectError(
+        error.InvalidHeaderName,
+        response.setHeaderIfAbsent("Bad Name", "x"),
+    );
 }
 
 test "response header limits and replacement" {
