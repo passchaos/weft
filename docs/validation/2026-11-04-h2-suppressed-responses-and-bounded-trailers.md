@@ -853,14 +853,22 @@ weft is therefore about 1.5× slower sequentially and 1.7× slower batched on
 HTTP/2; the HTTP/1 result does not carry over. A server-side profile of the
 weft run attributes most sampled cycles to zio executor work (`stealWork`,
 `Loop.poll`, futex wakes, timer checks) and to the HTTP/2 concurrent engine,
-not to routing or response building. Pinned scheduling did not close the gap
-(sequential 68–76 µs, batched 21.9–24.9 µs on a later, noisier round).
+not to routing or response building. Three cheaper mitigations were measured
+and all came out neutral:
+
+- handler poll intervals from 10 µs to 5 ms: 60–71 µs sequential and
+  20–22 µs batched regardless;
+- pinned scheduling: sequential 68–76 µs, batched 21.9–24.9 µs on a noisier
+  round, no gap closure;
+- a bounded spin (1k and 16k iterations) before the worker blocks on a
+  command event: throughput and latency within noise.
 
 The engine hands every accepted stream to a worker thread, and the handler
 submits response commands back to the connection owner, so each request pays
-two cross-thread wakeups. Closing the gap needs an inline bodyless/buffered
-fast path in netz's HTTP/2 engine (or zio scheduler work); that is the next
-structural optimization.
+two cross-thread wakeups. The remaining gap is the owner wakeup and executor
+scheduling path, so closing it needs an inline bodyless/buffered fast path in
+netz's HTTP/2 engine (or zio scheduler work); that is the next structural
+optimization.
 
 ## Verification
 
