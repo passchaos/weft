@@ -970,6 +970,64 @@ Verification: the netz HTTP/3 filter passes (953/953) and weft passes 223/223
 in Debug, ReleaseSafe, and ReleaseFast, including a new H3 inline package
 test covering the inline GET and the body fallback.
 
+## HTTP/1 executor count and the p999 tail
+
+The remaining HTTP/1 gap was the p99/p999 tail: throughput, p90, and p99 led
+axum, but p999 trailed by roughly 80–140 µs. The earlier profile spread the
+cost across zio executor poll/steal/timer work, netz parsing and response
+writing, and kernel io_uring submission, with no userspace hotspot. The
+executor count turned out to be the dominant variable.
+
+The benchmark server creates one executor per connection by default
+(`min(cpu_count, 32)` for 32 connections), so every executor mostly parks
+between requests and pays a wake-up for each read and write completion.
+Interleaved 32-connection rounds with the same client (4 s per round) show:
+
+- weft, 8 executors: 1.02M–1.14M requests/s, p90 31–37 µs, p99 41–49 µs,
+  p999 55–68 µs.
+- weft, 16 executors: 1.04M–1.09M requests/s, p90 38–44 µs, p99 66–90 µs,
+  p999 191–273 µs.
+- weft, 32 executors: 888k–955k requests/s, p90 46–54 µs, p99 77–99 µs,
+  p999 173–241 µs.
+- axum 0.8.9, default 32 tokio workers: 840k–867k requests/s, p90 49–51 µs,
+  p99 64–68 µs, p999 113–168 µs.
+- axum 0.8.9, 8 tokio workers: 728k–775k requests/s, p90 56–59 µs, p99
+  71–75 µs, p999 90–135 µs.
+
+With eight executors weft leads axum on throughput and on every percentile,
+including p999; the lead holds against axum with the same eight workers. A
+separate sweep confirmed the shape (32 connections, 4–5 s rounds): 8
+executors stayed at p999 51–68 µs, while 16 and 32 executors produced p999
+191–308 µs. Server CPU time explained the difference: eight executors burned
+about 32 CPU-seconds over a 4-second round at 1.1M requests/s, while 32
+executors burned about 55 CPU-seconds at 829k requests/s, so the extra
+executors were spending cycles parking, waking, and stealing rather than
+serving. The executor count must stay below the connection count; this is a
+runtime sizing rule, not an application-code change.
+
+`pinned` scheduling removes migration and produced the best HTTP/1 tail in
+the sweep: 16 executors measured 993k–1.01M requests/s, p90 31–34 µs, p99
+41–44 µs, and p999 48–54 µs. The global default stays `work_stealing` because
+pinned is slower for HTTP/3 sequential requests and neutral for HTTP/2; a
+pure HTTP/1 deployment that cares about the tail can select `pinned` with 16
+executors.
+
+The zio event-loop backend also matters. `auto` resolves to io_uring on this
+host and matched the explicit `io_uring` build: 1.07M–1.12M requests/s with
+p999 64–67 µs at eight executors. `epoll` measured 818k–918k requests/s with
+p999 111–306 µs. The benchmark now forwards `-Dzio-backend` through netz so
+the backend can be selected without changing zio's defaults.
+
+Change: `bench/hello_server.zig` now defaults to `min(cpu_count, 8)` executors
+for the 32-connection comparison (`WEFT_EXECUTORS` still overrides it), and
+both build files forward `-Dzio-backend`. Closing the high-executor-count
+tail itself needs zio-level wake and scheduling work; the application layer
+cannot remove the park/wake cost of an idle executor.
+
+Verification: weft passes 223/223 in Debug, ReleaseSafe, and ReleaseFast with
+the new default; the netz build accepts `-Dzio-backend` and the HTTP/1 suite
+still passes.
+
 ## Verification
 
 ```sh
@@ -980,5 +1038,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 222/222 tests in Debug, ReleaseSafe, and ReleaseFast (164 unit,
-58 package).
+Results: 223/223 tests in Debug, ReleaseSafe, and ReleaseFast (164 unit,
+59 package).

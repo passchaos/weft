@@ -23,10 +23,16 @@ pub fn build(b: *std.Build) void {
         "scheduling",
         "zio scheduling discipline: single_executor, pinned, or work_stealing",
     );
+    const zio_backend = b.option(
+        []const u8,
+        "zio-backend",
+        "zio event loop backend: poll, linux, epoll, kqueue, io_uring, or iocp",
+    );
     const netz_dep = b.dependency("netz", .{
         .target = target,
         .optimize = optimize,
         .scheduling = scheduling orelse "work_stealing",
+        .@"zio-backend" = zio_backend,
     });
     const netz_mod = netz_dep.module("netz");
     const vort_dep = b.dependency("vort", .{

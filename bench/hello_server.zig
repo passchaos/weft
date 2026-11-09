@@ -28,13 +28,18 @@ fn serveServer(server: *weft.Server(App)) std.Io.Cancelable!void {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
-    // Match a production multi-core deployment: zio defaults to one executor.
+    // The comparison runs 32 keep-alive connections. Zio executors are most
+    // efficient when each one owns several connections; sizing the executor
+    // count to the connection count leaves every executor mostly parked and
+    // adds wake-up latency to the tail. Eight executors keep the server
+    // saturated while staying below the connection count. Override with
+    // WEFT_EXECUTORS for other concurrency levels.
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const executors: u8 = blk: {
         const text = init.environ_map.get("WEFT_EXECUTORS") orelse
-            break :blk @intCast(@min(cpu_count, 32));
+            break :blk @intCast(@min(cpu_count, 8));
         break :blk std.fmt.parseInt(u8, text, 10) catch
-            @intCast(@min(cpu_count, 32));
+            @intCast(@min(cpu_count, 8));
     };
     var backend = try netz.runtime.Backend.initWithExecutors(
         allocator,

@@ -788,25 +788,37 @@ and runtime task wakeups, not just application dispatch. The latest quiet-host
 run measured 9.0 µs (111k requests/s).
 
 `build-hello-server` produces a minimal `GET /` server for framework
-comparisons. With 32 zio executors (`WEFT_EXECUTORS`) and 32 keep-alive
-connections, it reports about 730k–890k requests/s with a p90 of 56–66 µs on
-the reference host; axum 0.8.9 under the same load generator reports about
-700k–760k requests/s (p90 56–82 µs). Requests without a body are parsed and
-completed without the per-request producer task.
+comparisons. It defaults to `min(cpu_count, 8)` executors; override with
+`WEFT_EXECUTORS`. Zio executors are most efficient when each one owns several
+connections, so a 32-connection comparison should use fewer executors than
+connections. With eight executors and 32 keep-alive connections, the reference
+host reports about 1.02M–1.14M requests/s, p90 31–37 µs, p99 41–49 µs, and
+p999 55–68 µs. axum 0.8.9 with its default 32 tokio workers reports about
+840k–867k requests/s, p90 49–51 µs, p99 64–68 µs, and p999 113–168 µs; axum
+with eight workers is slower still (728k–775k requests/s, p90 56–59 µs, p99
+71–75 µs, p999 90–135 µs). Sizing zio to 32 executors for 32 connections
+still wins throughput (about 830k–955k requests/s) but leaves every executor
+mostly parked, and the extra wake-up latency shows in the tail (p99 77–99 µs,
+p999 173–241 µs). Requests without a body are parsed and completed without the
+per-request producer task.
 
 `zig build` forwards `-Dscheduling` to netz and zio (`single_executor`,
-`pinned`, or `work_stealing`; the default stays `work_stealing`). With
-`-Dscheduling=pinned` each connection task stays on one executor; in the
-32-connection comparison this measured lower p99/p999 tail latency (p99
-84–127 µs, p999 211–668 µs) with throughput in the same range as
-`work_stealing` (955k–1041k vs 832k–990k requests/s across noisy rounds).
-HTTP/2 batched and upload are neutral to slightly better with pinned, while
-HTTP/3 sequential is slower (43.5–46.5 → 45.4–52.7 µs), so the default stays
-`work_stealing`; use `pinned` when HTTP/1 tail latency matters most. For a
-single-connection HTTP/2 deployment using `inline_bodyless` handlers,
-`single_executor` removes idle-executor work stealing and brings the 32-stream
-batch from 14.4–14.8 µs to 11.2–12.2 µs; multi-connection servers keep the
-default.
+`pinned`, or `work_stealing`; the default stays `work_stealing`) and
+`-Dzio-backend` selects the event loop (`poll`, `linux`, `epoll`, `kqueue`,
+`io_uring`, or `iocp`). On the reference Linux host the default (`linux`,
+which resolves to io_uring) beats `epoll` for HTTP/1: eight executors measured
+1.07M–1.12M requests/s with p999 64–67 µs on io_uring versus 818k–918k
+requests/s with p999 111–306 µs on epoll. With `-Dscheduling=pinned` each
+connection task stays on one executor; in the 32-connection comparison this
+measured lower p99/p999 tail latency (p99 84–127 µs, p999 211–668 µs) with
+throughput in the same range as `work_stealing` (955k–1041k vs 832k–990k
+requests/s across noisy rounds). HTTP/2 batched and upload are neutral to
+slightly better with pinned, while HTTP/3 sequential is slower
+(43.5–46.5 → 45.4–52.7 µs), so the default stays `work_stealing`; use
+`pinned` when HTTP/1 tail latency matters most. For a single-connection HTTP/2
+deployment using `inline_bodyless` handlers, `single_executor` removes
+idle-executor work stealing and brings the 32-stream batch from 14.4–14.8 µs
+to 11.2–12.2 µs; multi-connection servers keep the default.
 
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32
@@ -856,13 +868,18 @@ so the status is not lost to a TCP RST.
 
 ## Limitations
 
-- HTTP/2 batch throughput is below axum in external single-connection
-  comparisons (about 1.4× slower with 32-stream batches). Routes that opt into
-  `inline_bodyless` run bodyless handlers on the connection owner and are now
-  faster than axum on sequential requests; the batched path still pays the
-  worker handoff.
-- HTTP/3 sequential latency is higher than HTTP/2 (roughly 61 µs vs 25 µs per
-  request on the reference host); QUIC framing and recovery dominate.
+- HTTP/2 batch throughput is close to axum in external single-connection
+  comparisons: with the default `work_stealing` scheduling the 32-stream batch
+  is within about 9% of axum, and `single_executor` leads it by about 1.2×.
+  Routes that opt into `inline_bodyless` run bodyless handlers on the
+  connection owner and are faster than axum on sequential requests.
+- HTTP/1 p99/p999 tail latency depends on the zio executor count. Eight
+  executors for 32 keep-alive connections beat axum on every percentile;
+  sizing executors close to the connection count leaves each executor mostly
+  parked and adds wake-up latency to the tail even though throughput stays
+  ahead. Closing that last gap needs zio-level wake and scheduling work.
+- HTTP/3 sequential latency is higher than HTTP/2 (roughly 31 µs vs 26–30 µs
+  per request on the reference host); QUIC framing and recovery dominate.
 - `CONNECT` requests (HTTP/1 authority-form, HTTP/2/3 tunnel or extended
   CONNECT) receive `501`; weft exposes no tunnel writer.
 - Handlers cannot be preempted while running CPU-bound code without reaching a
