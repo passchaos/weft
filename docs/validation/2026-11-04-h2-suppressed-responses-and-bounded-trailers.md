@@ -589,6 +589,12 @@ Unit tests: `buffered multipart releases ownership on allocation failure`,
 `cookie serialization releases ownership on allocation failure`, and
 `static download disposition releases ownership on allocation failure`.
 
+The same coverage now includes streaming `readBody` staging, wildcard route
+registration, and route-group registration:
+`readBody releases staging when the arena is too small`,
+`failed wildcard registration leaves no route in the trie`, and
+`failed group registration releases ownership`.
+
 ## Verification
 
 ```sh
@@ -597,4 +603,4 @@ zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 ```
 
-Results: 197/197 tests in Debug and ReleaseFast (141 unit, 56 package).
+Results: 200/200 tests in Debug and ReleaseFast (144 unit, 56 package).

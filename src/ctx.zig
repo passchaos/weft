@@ -1180,6 +1180,42 @@ test "readBody maps arena exhaustion to PayloadTooLarge" {
     try std.testing.expectError(error.PayloadTooLarge, context.readBody());
 }
 
+test "readBody releases staging when the arena is too small" {
+    var request = netz.http1.Request{
+        .method = .POST,
+        .target = "/",
+        .version = .http_1_1,
+        .headers = &.{},
+        .body = "",
+        .consumed = 0,
+    };
+    var arena_buffer: [8]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_buffer);
+    var replay = ReplayReader{ .body = "0123456789abcdef" };
+    var context = Ctx{
+        .app = undefined,
+        .io = std.testing.io,
+        .arena = fixed.allocator(),
+        // Staging uses the testing allocator, which reports a leak if the
+        // failed arena copy does not release it.
+        .request_allocator = std.testing.allocator,
+        .limits = .{
+            .max_body_bytes = 64,
+            .max_request_arena_bytes = 64,
+        },
+        .request = &request,
+        .body_reader = .{ .replay = &replay },
+        .response = Response.init(fixed.allocator(), 1024),
+        .final_handler = handler(struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        }.handle),
+    };
+
+    try std.testing.expectError(error.PayloadTooLarge, context.readBody());
+}
+
 test "body returns the cached streaming body" {
     var request = netz.http1.Request{
         .method = .POST,

@@ -1441,3 +1441,82 @@ test "failed registration leaves no route in the trie" {
         .{},
     );
 }
+
+test "failed wildcard registration leaves no route in the trie" {
+    const testImpl = struct {
+        const Dummy = struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        };
+        const middleware = [_]Handler{ctx_mod.handler(Dummy.handle)};
+
+        fn run(allocator: std.mem.Allocator) !void {
+            var router = Router(void).init(allocator);
+            defer router.deinit();
+
+            router.addRaw(
+                null,
+                "/assets/*",
+                ctx_mod.handler(Dummy.handle),
+                .{ .middleware = &middleware },
+            ) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(
+                    @as(usize, 0),
+                    countTrieRoutes(&router.root),
+                );
+                try std.testing.expectEqual(
+                    @as(usize, 0),
+                    router.all_routes.items.len,
+                );
+                return err;
+            };
+
+            try std.testing.expectEqual(
+                @as(usize, 1),
+                countTrieRoutes(&router.root),
+            );
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
+    );
+}
+
+test "failed group registration releases ownership" {
+    const testImpl = struct {
+        const Dummy = struct {
+            fn handle(ctx: *Ctx) anyerror!void {
+                _ = ctx;
+            }
+        };
+        const middleware = [_]Handler{ctx_mod.handler(Dummy.handle)};
+
+        fn run(allocator: std.mem.Allocator) !void {
+            var router = Router(void).init(allocator);
+            defer router.deinit();
+
+            var api = try router.group("/api", .{ .middleware = &middleware });
+            try api.addRaw(
+                .GET,
+                "/users/:id",
+                ctx_mod.handler(Dummy.handle),
+                .{},
+            );
+            try std.testing.expectEqual(
+                @as(usize, 1),
+                router.all_routes.items.len,
+            );
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testImpl.run,
+        .{},
+    );
+}
