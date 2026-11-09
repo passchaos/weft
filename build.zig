@@ -113,9 +113,30 @@ pub fn build(b: *std.Build) void {
     );
     run_upload_step.dependOn(&run_upload_example.step);
 
+    const agent_example = b.addExecutable(.{
+        .name = "agent",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/agent.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+            },
+        }),
+    });
+    b.installArtifact(agent_example);
+    const run_agent_example = b.addRunArtifact(agent_example);
+    const run_agent_step = b.step(
+        "run-agent",
+        "Run the OpenAPI + MCP agent example",
+    );
+    run_agent_step.dependOn(&run_agent_example.step);
+
     const examples_step = b.step("examples", "Build all examples");
     examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
     examples_step.dependOn(&b.addInstallArtifact(upload_example, .{}).step);
+    examples_step.dependOn(&b.addInstallArtifact(agent_example, .{}).step);
 
     const benchmark = b.addExecutable(.{
         .name = "router-bench",

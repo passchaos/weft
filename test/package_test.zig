@@ -6050,3 +6050,257 @@ test "package: HTTP/2 buffered body survives a small request arena" {
     server.stop();
     try group.await(io);
 }
+
+fn mcpEchoTool(tool_ctx: *weft.mcp.ToolContext) anyerror!void {
+    const message = tool_ctx.stringArgument("message") orelse "";
+    try tool_ctx.text(message);
+}
+
+test "package: openapi document reflects route metadata" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .max_requests_per_connection = 4,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/hello/:name", home, .{
+        .openapi = .{
+            .summary = "Greet a caller",
+            .operation_id = "greet",
+            .parameters = &.{
+                .{
+                    .name = "lang",
+                    .location = .query,
+                    .schema = .{ .type = "string" },
+                },
+            },
+            .responses = &.{
+                .{
+                    .status = 200,
+                    .description = "Greeting",
+                    .content_type = "text/plain",
+                },
+            },
+        },
+    });
+
+    const routes = try router.openapiRoutes(allocator);
+    defer allocator.free(routes);
+    var document = try weft.openapi.Document.init(allocator, routes, .{
+        .info = .{ .title = "weft package test", .version = "1.0.0" },
+    });
+    defer document.deinit();
+    try router.addRaw(.GET, "/openapi.json", document.handler(), .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/openapi.json",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var response = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), response.response.status);
+    try std.testing.expectEqualStrings(
+        "application/json",
+        response.response.header("content-type").?,
+    );
+
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        response.response.body,
+        .{},
+    );
+    defer parsed.deinit();
+    const path = parsed.value.object.get("paths").?.object
+        .get("/hello/{name}").?.object.get("get").?.object;
+    try std.testing.expectEqualStrings(
+        "greet",
+        path.get("operationId").?.string,
+    );
+    const parameters = path.get("parameters").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), parameters.len);
+    try std.testing.expectEqualStrings(
+        "name",
+        parameters[0].object.get("name").?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "path",
+        parameters[0].object.get("in").?.string,
+    );
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: mcp initialize, tools/list, tools/call, and notifications" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var mcp_server = weft.mcp.Server.init(allocator, .{
+        .server_name = "weft-test",
+        .server_version = "0.0.1",
+    });
+    defer mcp_server.deinit();
+    try mcp_server.addTool(.{
+        .name = "echo",
+        .description = "Echo a message",
+        .input_schema_json =
+        \\{"type":"object","properties":{"message":{"type":"string"}}}
+        ,
+        .handler = mcpEchoTool,
+    });
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .max_requests_per_connection = 8,
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.addRaw(.POST, "/mcp", mcp_server.handler(), .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}/mcp",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    const json_headers = [_]netz.http1.Header{
+        .{ .name = "Content-Type", .value = "application/json" },
+    };
+
+    const initialize_body =
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}
+    ;
+    var initialize = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .headers = &json_headers,
+            .body = initialize_body,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer initialize.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), initialize.response.status);
+    var initialize_json = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        initialize.response.body,
+        .{},
+    );
+    defer initialize_json.deinit();
+    try std.testing.expectEqualStrings(
+        "weft-test",
+        initialize_json.value.object.get("result").?.object
+            .get("serverInfo").?.object.get("name").?.string,
+    );
+
+    const call_body =
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}
+    ;
+    var call = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .headers = &json_headers,
+            .body = call_body,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer call.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), call.response.status);
+    var call_json = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        call.response.body,
+        .{},
+    );
+    defer call_json.deinit();
+    const content = call_json.value.object.get("result").?.object
+        .get("content").?.array.items;
+    try std.testing.expectEqualStrings(
+        "hi",
+        content[0].object.get("text").?.string,
+    );
+
+    const notification_body =
+        \\{"jsonrpc":"2.0","method":"notifications/initialized"}
+    ;
+    var notification = try netz.http1.runtime.Client.requestUri(
+        allocator,
+        io,
+        uri,
+        .{
+            .method = .POST,
+            .headers = &json_headers,
+            .body = notification_body,
+        },
+        .{ .max_head_bytes = 4096, .max_body_bytes = 64 * 1024 },
+    );
+    defer notification.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 202),
+        notification.response.status,
+    );
+    try std.testing.expectEqualStrings("", notification.response.body);
+
+    server.stop();
+    try group.await(io);
+}

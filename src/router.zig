@@ -1,6 +1,7 @@
 const std = @import("std");
 const netz = @import("netz");
 const ctx_mod = @import("ctx.zig");
+const openapi_mod = @import("openapi.zig");
 
 pub const Ctx = ctx_mod.Ctx;
 pub const Handler = ctx_mod.Handler;
@@ -30,6 +31,9 @@ pub const RouteOptions = struct {
     /// Optional per-route handler budget. Null inherits
     /// `Limits.request_timeout`; zero is rejected by the router.
     timeout: ?std.Io.Duration = null,
+    /// Optional OpenAPI operation metadata used by `Router.openapiRoutes` and
+    /// `openapi.Document`.
+    openapi: ?openapi_mod.Operation = null,
 };
 
 pub const GroupOptions = struct {
@@ -49,6 +53,8 @@ pub const Route = struct {
     max_body_bytes: ?usize = null,
     /// Optional per-route handler budget; null inherits the server timeout.
     timeout: ?std.Io.Duration = null,
+    /// Optional OpenAPI operation metadata.
+    openapi: ?openapi_mod.Operation = null,
     /// Segment weights used for diagnostics and tie-breaking documentation.
     /// Matching itself walks the trie, where precedence is structural.
     specificity: u32,
@@ -236,6 +242,7 @@ pub fn Router(comptime H: type) type {
                         .streaming = route_options.streaming,
                         .max_body_bytes = route_options.max_body_bytes,
                         .timeout = route_options.timeout,
+                        .openapi = route_options.openapi,
                     },
                 );
             }
@@ -511,6 +518,7 @@ pub fn Router(comptime H: type) type {
                 .streaming = route_options.streaming,
                 .max_body_bytes = route_options.max_body_bytes,
                 .timeout = route_options.timeout,
+                .openapi = route_options.openapi,
                 .specificity = computeSpecificity(pattern),
                 .capture_count = info.captures,
                 .capture_names = capture_names,
@@ -794,6 +802,30 @@ pub fn Router(comptime H: type) type {
                 }
             }
             return allowed;
+        }
+
+        /// Project the registered routes for `openapi.Document`. The returned
+        /// views borrow route patterns and operation metadata; free the slice
+        /// with the same allocator after building the document.
+        pub fn openapiRoutes(
+            self: *const @This(),
+            allocator: std.mem.Allocator,
+        ) ![]openapi_mod.RouteView {
+            const views = try allocator.alloc(
+                openapi_mod.RouteView,
+                self.all_routes.items.len,
+            );
+            for (self.all_routes.items, 0..) |route, index| {
+                views[index] = .{
+                    .method = if (route.method) |method|
+                        method.string()
+                    else
+                        null,
+                    .pattern = route.pattern,
+                    .operation = route.openapi,
+                };
+            }
+            return views;
         }
 
         /// Match a method and path, returning null for both a missing path and
