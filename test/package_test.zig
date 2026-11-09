@@ -6367,3 +6367,120 @@ test "package: HTTP/2 inline bodyless route and body fallback" {
     server.stop();
     try group.await(io);
 }
+
+test "package: HTTP/3 inline bodyless route and body fallback" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server_cid = [_]u8{ 0xec, 0xed, 0xee, 0xef };
+    const original_dcid = [_]u8{ 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7 };
+    const client_cid = [_]u8{ 0xe8, 0xe9, 0xea, 0xeb };
+
+    var server = try weft.Http3Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+                .max_streaming_window_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .max_concurrent_streams = 8,
+            .max_concurrent_handlers = 8,
+            .accept_timeout = .fromMilliseconds(500),
+            .idle_timeout = .fromMilliseconds(100),
+            .quic_limits = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+            .handshake = .{
+                .local_connection_id = &server_cid,
+                .random = [_]u8{0xe2} ** 32,
+                .x25519_secret_key = [_]u8{0xe4} ** 32,
+            },
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/inline", home, .{ .inline_bodyless = true });
+    try router.post(
+        "/inline-echo",
+        echoJson,
+        .{ .inline_bodyless = true },
+    );
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp3Server, .{&server});
+
+    var client = try netz.http3.runtime.HandshakeClient.connect(
+        allocator,
+        io,
+        .{ .ip4 = .loopback(0) },
+        server.address(),
+        .{
+            .quic = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+        },
+        .{
+            .handshake = .{
+                .original_destination_connection_id = &original_dcid,
+                .local_connection_id = &client_cid,
+                .server_name = "localhost",
+                .random = [_]u8{0xe1} ** 32,
+                .x25519_secret_key = [_]u8{0xe3} ** 32,
+            },
+        },
+    );
+    defer client.deinit();
+
+    var inline_response = try client.request(.{
+        .method = "GET",
+        .path = "/inline",
+        .authority = "localhost",
+    });
+    defer inline_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        inline_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "hello from weft",
+        inline_response.response.body,
+    );
+
+    var echo_headers = [_]netz.http3.Qpack.HeaderField{.{
+        .name = "content-type",
+        .value = "application/json",
+    }};
+    var echo_response = try client.request(.{
+        .method = "POST",
+        .path = "/inline-echo",
+        .authority = "localhost",
+        .headers = &echo_headers,
+        .body = "{\"message\":\"weft\"}",
+    });
+    defer echo_response.deinit(allocator);
+    try std.testing.expectEqual(
+        @as(u16, 200),
+        echo_response.response.status,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"message\":\"weft\"}",
+        echo_response.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}

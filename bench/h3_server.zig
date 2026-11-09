@@ -112,7 +112,7 @@ pub fn main(init: std.process.Init) !void {
         .{},
     );
     defer server.deinit();
-    try server.router().get("/", home, .{});
+    try server.router().get("/", home, .{ .inline_bodyless = true });
     try server.router().post("/upload", upload, .{ .streaming = true });
 
     var group: std.Io.Group = .init;

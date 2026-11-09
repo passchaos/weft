@@ -299,6 +299,7 @@ pub fn Http3Server(comptime H: type) type {
                     .poll_interval = self.options.handler_poll_interval,
                     .max_worker_threads = self.options.max_handler_threads,
                     .max_buffered_body_bytes = self.options.limits.max_streaming_window_bytes,
+                    .inline_bodyless = self.app_router.hasInlineBodylessRoutes(),
                 },
             ) catch |err| {
                 if (err == error.Canceled) return err;
@@ -347,6 +348,32 @@ pub fn Http3Server(comptime H: type) type {
                 ) catch {};
                 return;
             };
+            const target = if (head.path.len == 0) "/" else head.path;
+
+            // Inline handlers run on the QUIC owner. Decline before any side
+            // effect when the route did not opt in, needs a streaming body,
+            // or hits a rejection path.
+            if (stream.isInline()) {
+                var inline_prepared: router_mod.Prepared = .{};
+                dispatch_mod.prepareRoute(
+                    H,
+                    &self.app_router,
+                    method,
+                    target,
+                    &inline_prepared,
+                );
+                const route = inline_prepared.route orelse
+                    return error.InlineDeclined;
+                if (method == .CONNECT or
+                    !route.inline_bodyless or
+                    route.streaming or
+                    target.len > self.options.limits.max_request_target_bytes or
+                    head.headers.len > self.options.limits.max_request_headers)
+                {
+                    return error.InlineDeclined;
+                }
+            }
+
             // Weft has no CONNECT tunnel or extended-CONNECT API; reject the
             // stream instead of routing the authority target as a request.
             if (method == .CONNECT) {
@@ -358,7 +385,6 @@ pub fn Http3Server(comptime H: type) type {
                     arena,
                 );
             }
-            const target = if (head.path.len == 0) "/" else head.path;
             if (target.len > self.options.limits.max_request_target_bytes) {
                 return self.rejectConcurrent(
                     stream,
@@ -594,6 +620,11 @@ pub fn Http3Server(comptime H: type) type {
             response: *Response,
             arena: std.mem.Allocator,
         ) !void {
+            if (stream.isInline() and response.stream != null) {
+                response.stream.?.cancel();
+                response.stream = null;
+                return error.InlineStreamingUnsupported;
+            }
             if (response.upgrade != null) {
                 response.reset();
                 response.setStatus(400);

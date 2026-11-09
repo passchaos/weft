@@ -930,12 +930,31 @@ protection and is not a production recommendation. Closing the remaining
 
 ## HTTP/3 worker handoff
 
-The current H3 benchmark profile (74k requests) attributes 2.83% of sampled
-cycles to the concurrent engine's `submit`, 2.41% to executor task
-scheduling, 1.88% to the worker waiter, 1.40% to futex wake, 3.49% to the
-weft adapter, and 4.25% to `memcpy`. The H3 engine uses the same
-worker-per-stream handoff that HTTP/2 had before the inline path, so an
-equivalent inline bodyless path is the next structural HTTP/3 optimization.
+The H3 benchmark profile (74k requests) attributed 2.83% of sampled cycles to
+the concurrent engine's `submit`, 2.41% to executor task scheduling, 1.88% to
+the worker waiter, 1.40% to futex wake, 3.49% to the weft adapter, and 4.25%
+to `memcpy`: the engine used the same worker-per-stream handoff that HTTP/2
+had before its inline path.
+
+The H3 reader now marks a request head as `request_finished` when the stream
+ended with the head, and the concurrent engine runs such handlers on the QUIC
+owner when the route opts into `RouteOptions.inline_bodyless`. Inline
+submissions execute in place; congestion, pacing, and flow-control blocks
+pump one inbound event and retry. Handlers decline before side effects with
+`error.InlineDeclined` when the route opts out, the request carries a body,
+or the route is streaming.
+
+Interleaved H3 benchmark rounds:
+
+- sequential: 39.98–40.81 µs before, 30.53–31.09 µs after (about 24% faster).
+- batched 32 streams: 35.15–36.76 µs before, 28.70–28.82 µs after (about 21%
+  faster).
+- batched 2 KiB uploads are unchanged (60.2–60.7 µs) because request bodies
+  keep the worker path.
+
+Verification: the netz HTTP/3 filter passes (953/953) and weft passes 223/223
+in Debug, ReleaseSafe, and ReleaseFast, including a new H3 inline package
+test covering the inline GET and the body fallback.
 
 ## Verification
 

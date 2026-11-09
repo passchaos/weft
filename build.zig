@@ -351,4 +351,11 @@ pub fn build(b: *std.Build) void {
         "Run the HTTP/3 sequential and batched throughput benchmark",
     );
     bench_h3_step.dependOn(&run_h3_benchmark.step);
+
+    const install_h3_benchmark = b.addInstallArtifact(h3_benchmark, .{});
+    const build_h3_bench_step = b.step(
+        "build-h3-bench",
+        "Build the HTTP/3 benchmark binary without running it",
+    );
+    build_h3_bench_step.dependOn(&install_h3_benchmark.step);
 }
