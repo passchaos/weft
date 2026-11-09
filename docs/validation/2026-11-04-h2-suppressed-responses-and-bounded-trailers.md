@@ -595,6 +595,12 @@ registration, and route-group registration:
 `failed wildcard registration leaves no route in the trie`, and
 `failed group registration releases ownership`.
 
+## Rate-limit rejection formatting
+
+`RateLimit` formatted the `Retry-After` value with `allocPrint` on every
+rejected request, adding an allocation exactly when the limiter is shedding
+load. The value is now formatted into a stack buffer.
+
 ## Verification
 
 ```sh

@@ -133,11 +133,16 @@ pub const RateLimit = struct {
         }
 
         if (limited) {
+            // Rejections are the busiest path under a flood; format the field
+            // on the stack instead of allocating per response.
+            var retry_buffer: [24]u8 = undefined;
+            const retry_value = std.fmt.bufPrint(
+                &retry_buffer,
+                "{d}",
+                .{retry_after},
+            ) catch "1";
             ctx.setStatus(429);
-            try ctx.setHeader(
-                "Retry-After",
-                try std.fmt.allocPrint(ctx.arena, "{d}", .{retry_after}),
-            );
+            try ctx.setHeader("Retry-After", retry_value);
             try ctx.text("Too Many Requests");
             return;
         }
