@@ -144,3 +144,16 @@ test "bounded arena enforces the request budget and frees chunks" {
         allocator.alloc(u8, 100),
     );
 }
+
+test "bounded arena does not allocate until first use" {
+    var tiny: [1]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&tiny);
+    var arena = BoundedArena.init(fixed.allocator(), 256);
+    // Init and deinit must not touch the one-byte backing store; a request
+    // whose handler never uses `ctx.arena` performs no heap allocation.
+    defer arena.deinit();
+    try std.testing.expectError(
+        error.OutOfMemory,
+        arena.allocator().alloc(u8, 2),
+    );
+}
