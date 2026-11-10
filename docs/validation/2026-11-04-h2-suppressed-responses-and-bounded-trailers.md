@@ -1044,6 +1044,39 @@ fastest batch configuration for a single connection (8.5–8.9 µs in the
 earlier measurement); the default `work_stealing` is used for multi-connection
 servers.
 
+## HTTP/1 bodyless allocation reuse
+
+The post-executor HTTP/1 profile still showed `malloc` at 0.98% and `cfree`
+at 0.48% under `serveConnection`. The synchronous bodyless path allocated
+three heap objects per request even though the request was already complete:
+a copy of the head bytes, a copy of the header array, and the
+`RequestBodyReader` itself.
+
+netz now keeps a per-connection `ArenaAllocator` for the head copy and header
+array. The arena is reset at the start of the next bodyless request, so the
+two allocations become bump allocations and the old buffers are released as a
+unit. `Streaming.Request` carries an `owned` flag so `deinit` does not try to
+free arena memory with the caller's allocator. The reader itself stays
+heap-allocated: callers such as the CONNECT rejection path deinit it after
+`Connection.close`, and moving it into the arena would turn that into a
+use-after-free. A new `Connection.releaseBuffers` releases the input buffer,
+write scratch, and arena when a WebSocket upgrade moves the socket to another
+owner; `Connection.close` now delegates to it.
+
+The arena is bounded by `max_head_bytes` plus the header array
+(`max_request_headers` entries) and is retained per connection, so it cannot
+grow with request count. The post-change profile removes `malloc`/`cfree`
+from the top symbols and shows `ArenaAllocator.alloc` at 0.61%, replacing
+about 1.46% of allocator work with 0.61% of bump allocation. Wall-clock A/B
+rounds were inconclusive because host load rose during the run (overlapping
+ranges around 1.0M–1.11M requests/s), so the profile delta is the primary
+evidence; the change is kept because it strictly removes heap traffic from
+the hot path without changing the allocation bound.
+
+Verification: the netz HTTP/1 filter passes (544/544), the full netz library
+suite passes (6896/6896), and weft passes 223/223 in Debug, ReleaseSafe, and
+ReleaseFast with leak checking enabled.
+
 ## Verification
 
 ```sh

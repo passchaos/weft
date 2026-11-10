@@ -704,11 +704,10 @@ pub fn Server(comptime H: type) type {
             ws.inbuf = tunnel.inbuf.*;
             tunnel.inbuf.* = .empty;
 
-            // Transport ownership moved to the WebSocket connection. Free the
-            // HTTP connection's write scratch without closing the shared
+            // Transport ownership moved to the WebSocket connection. Release
+            // the HTTP connection's buffers without closing the shared
             // transport.
-            connection.inbuf.deinit(self.allocator);
-            connection.write_scratch.deinit(self.allocator);
+            connection.releaseBuffers();
 
             var session = websocket_mod.Session{ .connection = ws };
             defer session.close();
