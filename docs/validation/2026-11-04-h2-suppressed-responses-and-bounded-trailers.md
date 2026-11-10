@@ -1228,6 +1228,44 @@ frame processing for sibling streams. The experiment was reverted; HTTP/2
 uploads keep the worker path. HTTP/3 keeps its deferred small-body inline path
 because the QUIC owner/worker handoff is more expensive there.
 
+## Fresh axum comparison
+
+A later interleaved recheck (host load about 7) confirms the same shape.
+
+HTTP/1, 32 keep-alive connections, 5-second rounds (one round excluded
+because a host spike degraded both servers):
+
+- weft, eight executors: 926k–1.06M requests/s, p90 36–37 µs, p99 51–55 µs,
+  p999 81–97 µs.
+- axum 0.8.9, 32 workers: 749k–782k requests/s, p90 55–60 µs, p99 81–101 µs,
+  p999 195–226 µs.
+- axum 0.8.9, eight workers: 721k–748k requests/s, p90 57–60 µs, p99
+  74–79 µs, p999 119–161 µs.
+
+HTTP/2, one h2c connection, 20k sequential requests and 64k requests in
+32-stream batches:
+
+- weft, eight executors: 33.4–36.8 µs sequential, 12.0–12.9 µs batched (one
+  20.0 µs outlier).
+- axum 0.8.9: 46.1–49.3 µs sequential, 11.2–11.9 µs batched.
+
+The sequential lead is about 1.3–1.4×; the default `work_stealing` batch
+remains about 5–8% behind, matching the documented idle-executor gap.
+`single_executor` remains the faster batch configuration for a single
+connection.
+
+## HTTP/2/HTTP/3 inline slot retirement
+
+Inline handlers previously called the full `reap()` after each handler. That
+walked every live slot and took its body mutex to find completed work; a
+32-stream inline batch therefore performed an O(N²) lock/flag sweep. Inline
+handlers now retire their own slot directly (`reapSlot`), and `reap` uses the
+same helper for worker-completed slots. The slot is created at the end of the
+slot list and usually found by the first reverse comparison. The H2 batch GET
+measured 7.84–8.09 µs and the H3 batched GET 28.0–28.6 µs after the change;
+both remain within the previous ranges, and the reduced owner work is the
+deterministic effect. The full netz suite passes (6896/6896).
+
 ## Verification
 
 ```sh
