@@ -1266,6 +1266,18 @@ measured 7.84–8.09 µs and the H3 batched GET 28.0–28.6 µs after the change
 both remain within the previous ranges, and the reduced owner work is the
 deterministic effect. The full netz suite passes (6896/6896).
 
+## HTTP/2 buffered-input batch detection (rejected)
+
+An attempt to parallelize batches used `Connection.hasBufferedInput()`: if the
+frame reader already held more frames, the request went to a worker so the
+owner could keep reading; an empty buffer kept the inline path. In practice the
+buffer was also non-empty for many sequential requests, so sequential latency
+regressed to about 31 µs and the batched phase to about 12.9 µs. Reverting
+restored 18.8 µs sequential, 7.7 µs batched, and 11.9 µs uploads in the
+in-process benchmark. The owner-serialized inline path is faster than the
+worker handoff for this workload; the remaining external h2c batch gap (about
+5–8% versus axum) is the zio idle-executor cost, not a missing parallel path.
+
 ## Verification
 
 ```sh
