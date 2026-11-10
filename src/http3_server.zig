@@ -350,23 +350,24 @@ pub fn Http3Server(comptime H: type) type {
             };
             const target = if (head.path.len == 0) "/" else head.path;
 
-            // `prepareRoute` resets the counts before any read and the backing
-            // arrays are only accessed up to those counts, so the match result
-            // does not need to be zeroed per request.
-            //
+            // Route matching uses the path, never the query string carried by
+            // the `:path` pseudo-header. Match once and reuse the result for
+            // both the inline eligibility check and dispatch; `prepareRoute`
+            // resets the counts before any read.
+            var prepared: router_mod.Prepared = undefined;
+            dispatch_mod.prepareRoute(
+                H,
+                &self.app_router,
+                method,
+                target,
+                &prepared,
+            );
+
             // Inline handlers run on the QUIC owner. Decline before any side
             // effect when the route did not opt in, needs a streaming body,
             // or hits a rejection path.
             if (stream.isInline()) {
-                var inline_prepared: router_mod.Prepared = undefined;
-                dispatch_mod.prepareRoute(
-                    H,
-                    &self.app_router,
-                    method,
-                    target,
-                    &inline_prepared,
-                );
-                const route = inline_prepared.route orelse
+                const route = prepared.route orelse
                     return error.InlineDeclined;
                 if (method == .CONNECT or
                     !route.inline_bodyless or
@@ -438,17 +439,6 @@ pub fn Http3Server(comptime H: type) type {
                 return;
             };
 
-            // Route matching uses the path, never the query string carried by
-            // the `:path` pseudo-header. The result is reused by dispatch;
-            // `prepareRoute` resets the counts before any read.
-            var prepared: router_mod.Prepared = undefined;
-            dispatch_mod.prepareRoute(
-                H,
-                &self.app_router,
-                method,
-                target,
-                &prepared,
-            );
             const streaming = if (prepared.route) |route|
                 route.streaming
             else

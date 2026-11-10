@@ -1100,6 +1100,12 @@ disassembly no longer contains the 664-byte `memset`, and the H3 benchmark
 measured about 0.5–1% lower latency across sequential, batched, and upload
 phases.
 
+The H3 adapter also ran `prepareRoute` twice for every inline request: once to
+decide inline eligibility and once again before dispatch. It now matches once
+and reuses the result for both; a declined request still re-matches when it
+falls back to the worker path. Batched GET and upload measured another 1–2%
+lower latency after this change.
+
 ## HTTP/3 by-value connection copies
 
 A fresh H3 profile after the inline work attributed 14.2% of sampled cycles to
