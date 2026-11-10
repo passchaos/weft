@@ -1180,6 +1180,19 @@ request headers; the server half is small. There is no remaining single
 server-side userspace hotspot comparable to the 11 KiB connection copies, so
 further gains need zio wake/scheduling work or deeper QUIC recovery changes.
 
+## HTTP/2 and HTTP/3 request arena
+
+The H2 and H3 adapters allocated a `max_request_arena_bytes` (64 KiB in the
+benchmarks) `FixedBufferAllocator` buffer for every request, even when the
+handler never touched `ctx.arena`. They now use `src/bounded_arena.zig`, a
+lazy arena that allocates backing chunks only on first use and enforces
+`Limits.max_request_arena_bytes` by counting requested bytes. A handler that
+never allocates (the hello path) performs no request-arena heap allocation;
+a small handler allocates a small chunk instead of the full configured bound.
+Frees remain arena no-ops, so a freed allocation cannot be reused to exceed
+the budget. The unit test covers the bound and the no-reuse rule; the full
+suite passes in Debug, ReleaseSafe, and ReleaseFast.
+
 ## Verification
 
 ```sh

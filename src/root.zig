@@ -99,6 +99,7 @@ comptime {
     _ = @import("http3_server.zig");
     _ = middleware;
     _ = @import("logging.zig");
+    _ = @import("bounded_arena.zig");
     _ = @import("openapi.zig");
     _ = @import("mcp.zig");
 }

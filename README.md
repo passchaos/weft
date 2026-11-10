@@ -872,11 +872,12 @@ to 11.2–12.2 µs; multi-connection servers keep the default.
 
 `bench-h2` measures one cleartext h2c connection: 100k sequential requests,
 128k batched GETs, and 128k batched 2 KiB uploads, all in batches of 32
-concurrent streams. With netz's pooled concurrent handlers, the reference host
-reports roughly 22–25 µs per request sequentially, 14–16 µs for batched GETs,
-and 18–19 µs for batched uploads. The adapter submits the response head and
-the buffered body as one owner command, so a sequential request no longer pays
-two command round trips. HTTP/1 keep-alive on the same host is about 16 µs
+concurrent streams. With the `inline_bodyless` handler path and the combined
+head+body owner write, the reference host reports roughly 18.7–19.3 µs per
+request sequentially, 7.6–8.0 µs for batched GETs, and 11.9–12.8 µs for
+batched uploads. The adapter submits the response head and the buffered body
+as one owner command, so a sequential request no longer pays two command
+round trips. HTTP/1 keep-alive on the same host is about 16 µs
 (~61k requests/s); H2 batched GET throughput exceeds HTTP/1, while the
 sequential path still pays HTTP/2 framing. `-Dh2-batch=<n>` and
 `-Dh2-batch-iterations=<n>` override the shape.

@@ -1,6 +1,7 @@
 const std = @import("std");
 const netz = @import("netz");
 const logging_mod = @import("logging.zig");
+const bounded_arena_mod = @import("bounded_arena.zig");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -400,13 +401,12 @@ pub fn Http2Server(comptime H: type) type {
             peer_address: ?std.Io.net.IpAddress,
             peer_certificates: []const []const u8,
         ) !void {
-            const arena_buffer = try self.allocator.alloc(
-                u8,
+            var bounded_arena = bounded_arena_mod.BoundedArena.init(
+                self.allocator,
                 self.options.limits.max_request_arena_bytes,
             );
-            defer self.allocator.free(arena_buffer);
-            var fixed = std.heap.FixedBufferAllocator.init(arena_buffer);
-            const arena = fixed.allocator();
+            defer bounded_arena.deinit();
+            const arena = bounded_arena.allocator();
 
             const head = stream.head();
             const method = netz.http1.Method.parse(head.method) catch {
