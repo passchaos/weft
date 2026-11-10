@@ -8,7 +8,9 @@ kron's current design.
 
 - `weft.logging.AccessLog` is a normal middleware handler. It emits one typed
   kron event per request with `request_id`, `method`, `path`, `query`,
-  `status`, `duration_ns`, `protocol`, `remote`, and `err`.
+  `status`, `duration_ns`, `protocol`, `remote`, and `err`. Field construction
+  uses `tryEmitLazy`, so kron's admission runs first; a filtered or sampled
+  route skips the remote formatting and target split entirely.
 - `weft.logging.logf`/`logWarn`/`logErr`/`logInfo`/`logDebug` route weft's
   internal diagnostics through kron's process-wide owner when the application
   installs one with `kron.setGlobalLogging`, and fall back to `std.log`
@@ -87,6 +89,8 @@ kron's design is appropriate for weft's use case:
 - Prefer asynchronous mode with a bounded memory queue for production access
   logs; sync mode performs encoding and sink writes on the request thread.
 - Use route filters, sampling, or a separate access-log route to bound cost.
+  `AccessLog` defers field construction until admission, so filtered requests
+  only pay the middleware call and the request timer.
 - For JSON-heavy asynchronous routes, kron's opt-in `render_cache` can move
   rendering to the producer; it is a per-route option and remains disabled by
   default.

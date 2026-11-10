@@ -77,38 +77,62 @@ pub const AccessLog = struct {
         return ctx_mod.withContext(AccessLog, self, call);
     }
 
-    fn call(self: *AccessLog, ctx: *ctx_mod.Ctx) anyerror!void {
-        const started = std.Io.Timestamp.now(ctx.io, .awake);
-        var failure: ?anyerror = null;
-        defer {
-            const elapsed = started.untilNow(ctx.io, .awake);
-            const id = request_id.from(ctx) orelse "-";
-            var remote_buffer: [64]u8 = undefined;
-            const remote = if (ctx.clientAddress()) |address|
-                std.fmt.bufPrint(&remote_buffer, "{f}", .{address}) catch "-"
+    const Fields = struct {
+        request_id: []const u8,
+        method: []const u8,
+        path: []const u8,
+        query: []const u8,
+        status: u16,
+        duration_ns: kron.fields.Duration,
+        protocol: []const u8,
+        remote: []const u8,
+        err: []const u8,
+    };
+
+    /// Field construction is deferred until after kron admission, so a
+    /// filtered or sampled route skips the remote formatting and target split.
+    const Provider = struct {
+        ctx: *ctx_mod.Ctx,
+        started: std.Io.Timestamp,
+        failure: ?anyerror,
+        remote_buffer: [64]u8 = undefined,
+
+        pub fn fields(self: *Provider) Fields {
+            const elapsed = self.started.untilNow(self.ctx.io, .awake);
+            const split = target_mod.split(self.ctx.target());
+            const remote = if (self.ctx.clientAddress()) |address|
+                std.fmt.bufPrint(&self.remote_buffer, "{f}", .{address}) catch "-"
             else
                 "-";
-            const status = resolveStatus(ctx.response.status, failure);
-            const split = target_mod.split(ctx.target());
-            const duration_ns: i64 = @intCast(@max(
-                elapsed.nanoseconds,
-                0,
-            ));
-            var logger = self.logging.scoped(self.scope);
-            _ = logger.tryEmit(self.level, self.message, .{
-                .request_id = id,
-                .method = ctx.method().string(),
+            return .{
+                .request_id = request_id.from(self.ctx) orelse "-",
+                .method = self.ctx.method().string(),
                 .path = split.path,
                 .query = split.query,
-                .status = status,
-                .duration_ns = kron.durationNs(duration_ns),
-                .protocol = @tagName(ctx.protocol()),
+                .status = resolveStatus(self.ctx.response.status, self.failure),
+                .duration_ns = kron.durationNs(@intCast(@max(
+                    elapsed.nanoseconds,
+                    0,
+                ))),
+                .protocol = @tagName(self.ctx.protocol()),
                 .remote = remote,
-                .err = if (failure) |failure_err| @errorName(failure_err) else "",
-            }) catch {};
+                .err = if (self.failure) |err| @errorName(err) else "",
+            };
+        }
+    };
+
+    fn call(self: *AccessLog, ctx: *ctx_mod.Ctx) anyerror!void {
+        var provider = Provider{
+            .ctx = ctx,
+            .started = std.Io.Timestamp.now(ctx.io, .awake),
+            .failure = null,
+        };
+        defer {
+            var logger = self.logging.scoped(self.scope);
+            _ = logger.tryEmitLazy(self.level, self.message, &provider) catch {};
         }
         ctx.next() catch |err| {
-            failure = err;
+            provider.failure = err;
             return err;
         };
     }
@@ -120,25 +144,11 @@ pub fn resolveStatus(response_status: u16, failure: ?anyerror) u16 {
     return errors_mod.statusForHandlerError(err);
 }
 
-test "structured access log emits typed kron fields" {
-    const allocator = std.testing.allocator;
-    var output: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output);
-    const logging = try kron.Logging.create(allocator, std.testing.io, .{
-        .outputs = &.{.{
-            .name = "test",
-            .target = .{ .writer = &writer },
-            .mode = .sync,
-            .format = .json,
-            .filter = "debug",
-        }},
-    });
-    defer logging.destroy();
-
-    var context = ctx_mod.Ctx{
+fn testContext(allocator: std.mem.Allocator) ctx_mod.Ctx {
+    return .{
         .app = undefined,
         .io = std.testing.io,
-        .arena = std.testing.allocator,
+        .arena = allocator,
         .limits = .{},
         .request = &.{
             .method = .GET,
@@ -157,6 +167,24 @@ test "structured access log emits typed kron fields" {
         }.handle),
         .next_allowed = true,
     };
+}
+
+test "structured access log emits typed kron fields" {
+    const allocator = std.testing.allocator;
+    var output: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    const logging = try kron.Logging.create(allocator, std.testing.io, .{
+        .outputs = &.{.{
+            .name = "test",
+            .target = .{ .writer = &writer },
+            .mode = .sync,
+            .format = .json,
+            .filter = "debug",
+        }},
+    });
+    defer logging.destroy();
+
+    var context = testContext(allocator);
     defer context.response.deinit();
 
     var access = AccessLog{ .logging = logging };
@@ -169,4 +197,27 @@ test "structured access log emits typed kron fields" {
     try std.testing.expect(std.mem.indexOf(u8, line, "\"query\":\"q=books\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"status\":201") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"duration_ns\"") != null);
+}
+
+test "structured access log skips field capture when filtered" {
+    const allocator = std.testing.allocator;
+    var output: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    const logging = try kron.Logging.create(allocator, std.testing.io, .{
+        .outputs = &.{.{
+            .name = "test",
+            .target = .{ .writer = &writer },
+            .mode = .sync,
+            .format = .json,
+            .filter = "warn",
+        }},
+    });
+    defer logging.destroy();
+
+    var context = testContext(allocator);
+    defer context.response.deinit();
+
+    var access = AccessLog{ .logging = logging, .level = .debug };
+    try access.call(&context);
+    try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
 }
