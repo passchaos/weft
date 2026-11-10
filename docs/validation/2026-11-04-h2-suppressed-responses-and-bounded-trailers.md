@@ -1334,6 +1334,12 @@ spawn, no wake-arm spawn, no cancel/join). Same harness, one connection:
 - uploads keep the select path, since their handlers run on workers; the
   in-process upload phase stays at 11.9–15.5 µs.
 
+The per-request arena then gained a 256-byte inline first chunk: a typical
+response body plus its copied header fields fits, so the common H2/H3 request
+performs no heap allocation. Batched h2c moved 9.63 → 9.38 µs and sequential
+37.3 → 36.6 µs (−2.6% / −1.8%), with server CPU down about 2–3%; H3 is
+unchanged within noise. `ArenaAllocator.alloc` left the profile top.
+
 Fresh framework comparison in the same session (32 workers for axum):
 
 - HTTP/2 sequential p50: axum 45.4–46.3 µs, weft 38.5–39.1 µs; p90
@@ -1355,5 +1361,5 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build bench-accept -Doptimize=ReleaseFast
 ```
 
-Results: 223/223 tests in Debug, ReleaseSafe, and ReleaseFast (164 unit,
+Results: 229/229 tests in Debug, ReleaseSafe, and ReleaseFast (170 unit,
 59 package).

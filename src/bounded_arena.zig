@@ -263,4 +263,3 @@ test "bounded arena falls back to chunks beyond the inline buffer" {
     const small = try allocator.alloc(u8, 8);
     try std.testing.expect(arena.isInline(@intFromPtr(small.ptr)));
 }
-
