@@ -1357,14 +1357,14 @@ removes work per field; with only four response headers the hello benchmark
 shows it within noise (batched CPU median about 1% lower over seven
 interleaved rounds), while responses with larger header sets save more.
 
-Fresh framework comparison in the same session (32 workers for axum):
+Fresh framework comparison with the final binaries (32 workers for axum):
 
-- HTTP/2 sequential p50: axum 45.4–46.3 µs, weft 38.5–39.1 µs; p90
-  50.7–53.7 vs 42.0–43.8 µs; p99 104–110 vs 66–84 µs.
-- HTTP/2 batched: axum 11.36–11.57 µs, weft 9.66–9.91 µs (−15%).
-- HTTP/1, 32 keep-alive connections: axum 810–858k req/s, p90 50–53 µs,
-  p99 67–80 µs, p999 130–186 µs; weft 1.11–1.17M req/s, p90 34–35 µs,
-  p99 43–45 µs, p999 54–71 µs.
+- HTTP/2 sequential p50: axum 40.8–44.2 µs, weft 25.4–25.8 µs; p90
+  46.5–48.5 vs 39.4–40.4 µs; p99 71.9–91.0 vs 53.6–56.1 µs.
+- HTTP/2 batched: axum 10.70–10.91 µs, weft 8.38–9.26 µs (−22%).
+- HTTP/1, 32 keep-alive connections: axum 784–821k req/s, p90 52–55 µs,
+  p99 72–89 µs, p999 177–221 µs; weft 1.07–1.15M req/s, p90 35–38 µs,
+  p99 44–50 µs, p999 58–66 µs.
 - HTTP/3 in-process benchmark after the direct-receive change: sequential
   29.1 µs, batched 25.7 µs, upload 44.6 µs (medians of six alternating
   rounds).
