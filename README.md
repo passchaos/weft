@@ -530,6 +530,49 @@ var auth = weft.middleware.BasicAuth{
 try router.get("/admin", admin, .{ .middleware = &.{auth.handler()} });
 ```
 
+## Logging
+
+`weft.logging.AccessLog` emits one typed [kron](../kron) event per request. It
+is a normal middleware handler and should run after `requestId`:
+
+```zig
+const kron = @import("kron");
+
+const logging = try kron.Logging.create(allocator, io, .{
+    .outputs = &.{.{
+        .name = "stdout",
+        .target = .stdout,
+        .mode = .sync,
+        .format = .json,
+    }},
+});
+defer logging.destroy();
+
+var access = weft.logging.AccessLog{ .logging = logging };
+const common = [_]weft.Handler{
+    weft.handler(weft.middleware.requestId),
+    access.handler(),
+};
+
+var server = try weft.Server(App).init(
+    io,
+    allocator,
+    .{ .address = .{ .ip4 = .loopback(8080) }, .middleware = &common },
+    .{},
+);
+```
+
+Each event carries `request_id`, `method`, `path`, `query`, `status`,
+`duration_ns`, `protocol`, `remote`, and `err` (empty on success). The level
+defaults to `.info`; set `AccessLog.level` to change it.
+
+Calling `kron.setGlobalLogging(logging)` with the same owner also routes
+weft's internal server diagnostics, and netz's HTTP/1 serve-loop error
+observer, through kron. Without a global owner those diagnostics fall back to
+`std.log`. `weft.logging.logf`, `logWarn`, `logErr`, `logInfo`, and
+`logDebug` expose the same fallback-aware helper for application code.
+`zig build run-logging` starts the structured logging example.
+
 ## Router
 
 - Routes are indexed by a segment trie, so lookup cost scales with path depth
@@ -726,6 +769,7 @@ zig build test
 zig build run-hello
 zig build run-upload
 zig build run-agent
+zig build run-logging
 zig build bench -Doptimize=ReleaseFast
 zig build bench-server -Doptimize=ReleaseFast
 zig build bench-middleware -Doptimize=ReleaseFast

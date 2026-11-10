@@ -69,6 +69,7 @@ pub const Http3Options = @import("http3_server.zig").Options;
 pub const Http3Server = @import("http3_server.zig").Http3Server;
 
 pub const middleware = @import("middleware/mod.zig");
+pub const logging = @import("logging.zig");
 pub const openapi = @import("openapi.zig");
 pub const mcp = @import("mcp.zig");
 
@@ -97,6 +98,7 @@ comptime {
     _ = @import("http2_server.zig");
     _ = @import("http3_server.zig");
     _ = middleware;
+    _ = @import("logging.zig");
     _ = @import("openapi.zig");
     _ = @import("mcp.zig");
 }

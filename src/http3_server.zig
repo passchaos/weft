@@ -1,5 +1,6 @@
 const std = @import("std");
 const netz = @import("netz");
+const logging_mod = @import("logging.zig");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -226,9 +227,11 @@ pub fn Http3Server(comptime H: type) type {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.Timeout) continue;
                     if (self.shutdown.isSet()) return;
-                    std.log.scoped(.weft).warn(
+                    logging_mod.logWarn(
+                        "weft",
                         "http3 accept failed: {s}",
                         .{@errorName(err)},
+                        .{ .err = @errorName(err) },
                     );
                     std.Io.sleep(
                         self.io,
@@ -259,9 +262,11 @@ pub fn Http3Server(comptime H: type) type {
 
             self.serveSession(&owned_session) catch |err| {
                 if (err == error.Canceled) return error.Canceled;
-                std.log.scoped(.weft).warn(
+                logging_mod.logWarn(
+                    "weft",
                     "http3 connection error: {s}",
                     .{@errorName(err)},
+                    .{ .err = @errorName(err) },
                 );
             };
         }
@@ -306,9 +311,11 @@ pub fn Http3Server(comptime H: type) type {
                 // Idle connections close through `idle_timeout`; that is a
                 // normal lifecycle event, not a connection failure.
                 if (err == error.Timeout) return;
-                std.log.scoped(.weft).warn(
+                logging_mod.logWarn(
+                    "weft",
                     "http3 serve failed: {s}",
                     .{@errorName(err)},
+                    .{ .err = @errorName(err) },
                 );
                 return err;
             };
@@ -518,9 +525,11 @@ pub fn Http3Server(comptime H: type) type {
                 &prepared,
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;
-                std.log.scoped(.weft).warn(
+                logging_mod.logWarn(
+                    "weft",
                     "http3 dispatch failed: {s}",
                     .{@errorName(err)},
+                    .{ .err = @errorName(err) },
                 );
                 break :blk internalErrorResponse(
                     arena,
@@ -547,14 +556,18 @@ pub fn Http3Server(comptime H: type) type {
             ) catch |err| {
                 if (err == error.Canceled) return err;
                 if (errors_mod.isPeerDisconnect(err)) {
-                    std.log.scoped(.weft).debug(
+                    logging_mod.logDebug(
+                        "weft",
                         "http3 response failed: {s}",
                         .{@errorName(err)},
+                        .{ .err = @errorName(err) },
                     );
                 } else {
-                    std.log.scoped(.weft).warn(
+                    logging_mod.logWarn(
+                        "weft",
                         "http3 response failed: {s}",
                         .{@errorName(err)},
+                        .{ .err = @errorName(err) },
                     );
                 }
                 stream.reset(

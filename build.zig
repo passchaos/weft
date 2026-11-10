@@ -40,6 +40,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const vort_mod = vort_dep.module("vort");
+    const kron_dep = b.dependency("kron", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const kron_mod = kron_dep.module("kron");
 
     const weft_mod = b.addModule("weft", .{
         .root_source_file = b.path("src/root.zig"),
@@ -48,6 +53,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "netz", .module = netz_mod },
             .{ .name = "vort", .module = vort_mod },
+            .{ .name = "kron", .module = kron_mod },
         },
     });
 
@@ -98,6 +104,27 @@ pub fn build(b: *std.Build) void {
     const run_example = b.addRunArtifact(example);
     const run_hello_step = b.step("run-hello", "Run the hello example");
     run_hello_step.dependOn(&run_example.step);
+
+    const logging_example = b.addExecutable(.{
+        .name = "logging",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/logging.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "weft", .module = weft_mod },
+                .{ .name = "netz", .module = netz_mod },
+                .{ .name = "kron", .module = kron_mod },
+            },
+        }),
+    });
+    b.installArtifact(logging_example);
+    const run_logging_example = b.addRunArtifact(logging_example);
+    const run_logging_step = b.step(
+        "run-logging",
+        "Run the structured logging example",
+    );
+    run_logging_step.dependOn(&run_logging_example.step);
 
     const upload_example = b.addExecutable(.{
         .name = "upload",

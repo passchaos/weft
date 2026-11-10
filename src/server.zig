@@ -1,5 +1,6 @@
 const std = @import("std");
 const netz = @import("netz");
+const logging_mod = @import("logging.zig");
 const ctx_mod = @import("ctx.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -289,9 +290,11 @@ pub fn Server(comptime H: type) type {
                     if (err == error.Canceled) return error.Canceled;
                     if (err == error.Timeout) continue;
                     if (self.shutdown.isSet()) return;
-                    std.log.scoped(.weft).warn(
+                    logging_mod.logWarn(
+                        "weft",
                         "accept failed: {s}",
                         .{@errorName(err)},
+                        .{ .err = @errorName(err) },
                     );
                     std.Io.sleep(
                         self.io,
@@ -305,9 +308,11 @@ pub fn Server(comptime H: type) type {
 
                 const disposition = self.serveConnection(&connection) catch |err| {
                     if (err == error.Canceled) return error.Canceled;
-                    std.log.scoped(.weft).warn(
+                    logging_mod.logWarn(
+                        "weft",
                         "connection error: {s}",
                         .{@errorName(err)},
+                        .{ .err = @errorName(err) },
                     );
                     continue;
                 };
@@ -505,9 +510,11 @@ pub fn Server(comptime H: type) type {
                     &prepared,
                 ) catch |err| blk: {
                     if (err == error.Canceled) return error.Canceled;
-                    std.log.scoped(.weft).warn(
+                    logging_mod.logWarn(
+                        "weft",
                         "dispatch failed: {s}",
                         .{@errorName(err)},
+                        .{ .err = @errorName(err) },
                     );
                     break :blk internalErrorResponse(
                         arena,
@@ -716,9 +723,11 @@ pub fn Server(comptime H: type) type {
             var session = websocket_mod.Session{ .connection = ws };
             defer session.close();
             upgrade.run(&session) catch |err| {
-                std.log.scoped(.weft).warn(
+                logging_mod.logWarn(
+                    "weft",
                     "websocket session failed: {s}",
                     .{@errorName(err)},
+                    .{ .err = @errorName(err) },
                 );
             };
             return true;

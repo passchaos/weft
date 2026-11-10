@@ -1,5 +1,6 @@
 const std = @import("std");
 const netz = @import("netz");
+const logging_mod = @import("logging.zig");
 const ctx_mod = @import("ctx.zig");
 const errors_mod = @import("errors.zig");
 const router_mod = @import("router.zig");
@@ -346,14 +347,18 @@ fn applyHandlerError(context: *ctx_mod.Ctx, err: anyerror) void {
     // Client errors such as a per-route body budget are expected outcomes;
     // only server-side failures deserve a warning.
     if (status >= 500) {
-        std.log.scoped(.weft).warn(
+        logging_mod.logWarn(
+            "weft",
             "handler failed: {s}",
             .{@errorName(err)},
+            .{ .err = @errorName(err) },
         );
     } else {
-        std.log.scoped(.weft).debug(
+        logging_mod.logDebug(
+            "weft",
             "handler rejected: {s}",
             .{@errorName(err)},
+            .{ .err = @errorName(err) },
         );
     }
     context.response.reset();

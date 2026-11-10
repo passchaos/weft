@@ -6,6 +6,7 @@
     .dependencies = .{
         .netz = .{ .path = "../netz" },
         .vort = .{ .path = "../vort" },
+        .kron = .{ .path = "../kron" },
     },
     .paths = .{
         "build.zig",

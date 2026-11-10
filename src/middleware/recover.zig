@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging_mod = @import("../logging.zig");
 const ctx_mod = @import("../ctx.zig");
 const errors_mod = @import("../errors.zig");
 const response_mod = @import("../response.zig");
@@ -12,9 +13,11 @@ pub fn recover(ctx: *ctx_mod.Ctx) anyerror!void {
     ctx.next() catch |err| {
         if (err == error.Canceled) return error.Canceled;
 
-        std.log.scoped(.weft).warn(
+        logging_mod.logWarn(
+            "weft",
             "recovered handler failure: {s}",
             .{@errorName(err)},
+            .{ .err = @errorName(err) },
         );
         if (!ctx.response.committed) {
             const status = errors_mod.statusForHandlerError(err);
