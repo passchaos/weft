@@ -1147,6 +1147,25 @@ tail and a higher thread count. The benchmark keeps zio as the default and
 documents Threaded as a throughput-oriented alternative; this is a runtime
 choice, not a weft library change.
 
+## HTTP/3 server-only profile
+
+The in-process benchmark runs the client and server on one executor, so a
+whole-process profile mixes client packetization and task spawning into the
+server numbers. `bench/h3_server.zig` now accepts `WEFT_EXECUTORS` (default 1,
+which preserves the recorded numbers); with two executors the client and
+server tasks separate, and samples whose stack contains
+`http3_server.Http3Server` isolate server work.
+
+After the by-value connection fix, that filtered profile is dominated by the
+QUIC send path (`sendWithEcnAtImpl`/`sendWithEcnAtRaw`,
+`sendPreparedFramesEcnAtUnchecked`, `sendPayloadPacketWithPacketNumberLenAt`,
+`findSendStreamEntry`), header-frame encoding (`writeHeadersFrame`), and the
+zio loop/executor frames that root the server task. Header-block validation
+splits between the client decoding response headers and the server decoding
+request headers; the server half is small. There is no remaining single
+server-side userspace hotspot comparable to the 11 KiB connection copies, so
+further gains need zio wake/scheduling work or deeper QUIC recovery changes.
+
 ## Verification
 
 ```sh

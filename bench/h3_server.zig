@@ -68,7 +68,19 @@ pub fn main(init: std.process.Init) !void {
     const batch_iterations: usize = build_options.batch_iterations;
     const warmup_iterations: usize = build_options.warmup_iterations;
 
-    var backend = try netz.runtime.Backend.init(allocator);
+    // One executor keeps the in-process client and server on the same task
+    // loop, matching the recorded benchmark. Use WEFT_EXECUTORS to separate
+    // them for server-only profiling.
+    const executors: u8 = blk: {
+        const text = init.environ_map.get("WEFT_EXECUTORS") orelse
+            break :blk 1;
+        const parsed = std.fmt.parseInt(u8, text, 10) catch break :blk 1;
+        break :blk @max(parsed, 1);
+    };
+    var backend = try netz.runtime.Backend.initWithExecutors(
+        allocator,
+        executors,
+    );
     defer backend.deinit();
     const io = backend.io();
 
