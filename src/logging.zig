@@ -90,7 +90,7 @@ pub const AccessLog = struct {
                 "-";
             const status = resolveStatus(ctx.response.status, failure);
             const split = target_mod.split(ctx.target());
-            const duration_ns: u64 = @intCast(@max(
+            const duration_ns: i64 = @intCast(@max(
                 elapsed.nanoseconds,
                 0,
             ));
@@ -101,7 +101,7 @@ pub const AccessLog = struct {
                 .path = split.path,
                 .query = split.query,
                 .status = status,
-                .duration_ns = duration_ns,
+                .duration_ns = kron.durationNs(duration_ns),
                 .protocol = @tagName(ctx.protocol()),
                 .remote = remote,
                 .err = if (failure) |failure_err| @errorName(failure_err) else "",

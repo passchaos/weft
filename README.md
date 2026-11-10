@@ -571,7 +571,9 @@ weft's internal server diagnostics, and netz's HTTP/1 serve-loop error
 observer, through kron. Without a global owner those diagnostics fall back to
 `std.log`. `weft.logging.logf`, `logWarn`, `logErr`, `logInfo`, and
 `logDebug` expose the same fallback-aware helper for application code.
-`zig build run-logging` starts the structured logging example.
+`zig build run-logging` starts the structured logging example. See
+[docs/logging.md](docs/logging.md) for the measured producer cost and the
+kron design evaluation.
 
 ## Router
 

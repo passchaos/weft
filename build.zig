@@ -339,6 +339,25 @@ pub fn build(b: *std.Build) void {
     );
     bench_accept_step.dependOn(&run_accept_benchmark.step);
 
+    const logging_benchmark = b.addExecutable(.{
+        .name = "logging-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/logging.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "netz", .module = netz_mod },
+                .{ .name = "kron", .module = kron_mod },
+            },
+        }),
+    });
+    const run_logging_benchmark = b.addRunArtifact(logging_benchmark);
+    const bench_logging_step = b.step(
+        "bench-logging",
+        "Measure the structured access-log producer cost through kron",
+    );
+    bench_logging_step.dependOn(&run_logging_benchmark.step);
+
     const h3_batch = b.option(
         u32,
         "h3-batch",
