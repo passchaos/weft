@@ -409,8 +409,9 @@ pub fn Http2Server(comptime H: type) type {
             const target = if (head.path.len == 0) "/" else head.path;
 
             // Route matching uses the path, never the query string carried by
-            // the `:path` pseudo-header. The result is reused by dispatch.
-            var prepared: router_mod.Prepared = .{};
+            // the `:path` pseudo-header. The result is reused by dispatch;
+            // `prepareRoute` resets the counts before any read.
+            var prepared: router_mod.Prepared = undefined;
             dispatch_mod.prepareRoute(
                 H,
                 &self.app_router,

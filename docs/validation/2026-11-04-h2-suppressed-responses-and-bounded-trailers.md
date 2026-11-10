@@ -1080,9 +1080,9 @@ Verification: the netz HTTP/1 filter passes (544/544), the full netz library
 suite passes (6896/6896), and weft passes 223/223 in Debug, ReleaseSafe, and
 ReleaseFast with leak checking enabled.
 
-## HTTP/1 route-match zeroing
+## Route-match zeroing
 
-The same profile showed a 648-byte `memset` at the top of `serveConnection`,
+The HTTP/1 profile showed a 648-byte `memset` at the top of `serveConnection`,
 mapped by `addr2line` to `var prepared: Prepared = .{}`. The router's
 `prepare` contract only resets `route`, `allowed.len`, and `captures.count`;
 the capture and method arrays are written before they are read. The server now
@@ -1091,6 +1091,14 @@ ReleaseFast disassembly the 648-byte entry `memset` is gone; the remaining
 `memset` calls in the function are cold paths (WebSocket SHA-1, zio context
 zeroing, and stack zeroing). Captures, 405/OPTIONS, and HEAD fallback are
 covered by the package tests, which pass in all three optimization modes.
+
+The same 664-byte `memset` appeared twice in the H3 adapter's
+`handleConcurrentStream` (inline and worker paths), mapped to the same
+`Prepared = .{}` initialization. The H2 adapter had one more. All three now
+use `undefined` under the same router contract; the ReleaseFast H3
+disassembly no longer contains the 664-byte `memset`, and the H3 benchmark
+measured about 0.5–1% lower latency across sequential, batched, and upload
+phases.
 
 ## HTTP/3 by-value connection copies
 
