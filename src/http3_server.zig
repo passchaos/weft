@@ -190,6 +190,9 @@ pub fn Http3Server(comptime H: type) type {
                 effective_concurrency;
 
             var session = options.session;
+            // Advertise RFC 9220 extended CONNECT so WebSocket routes can be
+            // offered by clients. This is a SETTINGS bit, not a route opt-in.
+            session.local_settings.enable_connect_protocol = true;
             session.max_stream_buffer = http3_limits.max_stream_buffer;
             session.max_concurrent_request_streams =
                 effective_concurrency;
