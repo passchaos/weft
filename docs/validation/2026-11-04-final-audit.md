@@ -1,5 +1,11 @@
 # weft final audit — 2026-11-04
 
+> **Historical snapshot — 2026-11-04.** This audit describes the tree at that
+> date. Test counts, line references, and the file-size assessment are not
+> updated for later commits. See [../README.md](../README.md) for the current
+> documentation index and [../performance-journal.md](../performance-journal.md)
+> for later measurements.
+
 Scope: verify the current tree against the repository constraints in
 `AGENTS.md`, the feature list in `README.md`, and the measured performance
 claims. Everything below is backed by files or commands in this checkout;

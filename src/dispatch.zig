@@ -2,6 +2,8 @@ const std = @import("std");
 const netz = @import("netz");
 const logging_mod = @import("logging.zig");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
+const body_mod = @import("body.zig");
 const errors_mod = @import("errors.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
@@ -21,9 +23,15 @@ pub const RouteFailure = union(enum) {
 pub const Disposition = RouteFailure;
 
 pub const Fallbacks = struct {
-    not_found: ?ctx_mod.Handler = null,
-    bad_request: ?ctx_mod.Handler = null,
-    method_not_allowed: ?ctx_mod.Handler = null,
+    not_found: ?handler_mod.Handler = null,
+    bad_request: ?handler_mod.Handler = null,
+    method_not_allowed: ?handler_mod.Handler = null,
+};
+
+/// Adapter hook for interim 103 Early Hints responses.
+pub const EarlyHints = struct {
+    context: ?*anyopaque = null,
+    send_fn: ?*const fn (?*anyopaque, []const netz.http1.Header) anyerror!void = null,
 };
 
 const HandlerRace = union(enum) {
@@ -74,14 +82,15 @@ pub fn dispatch(
     router: *router_mod.Router(H),
     io: std.Io,
     limits: limits_mod.Limits,
-    app_middleware: []const ctx_mod.Handler,
+    app_middleware: []const handler_mod.Handler,
     fallbacks: Fallbacks,
     request: *const netz.http1.Request,
-    client_info: ctx_mod.ClientInfo,
+    client_info: handler_mod.ClientInfo,
     arena: std.mem.Allocator,
     request_allocator: std.mem.Allocator,
-    body_reader: ?ctx_mod.BodyReader,
+    body_reader: ?body_mod.BodyReader,
     prepared: *const router_mod.Prepared,
+    early_hints: EarlyHints,
 ) !response_mod.Response {
     const target = request.target;
     const split_target = target_mod.split(target);
@@ -102,12 +111,12 @@ pub fn dispatch(
         disposition = .not_found;
     }
     var query_params: []const query_mod.Pair = &.{};
-    var params: []const ctx_mod.Param = &.{};
-    var params_storage: [ctx_mod.max_params]ctx_mod.Param = undefined;
-    var route_middleware: []const ctx_mod.Handler = &.{};
+    var params: []const handler_mod.Param = &.{};
+    var params_storage: [handler_mod.max_params]handler_mod.Param = undefined;
+    var route_middleware: []const handler_mod.Handler = &.{};
     var route_max_body: ?usize = null;
     var route_timeout: ?std.Io.Duration = null;
-    var final_handler: ctx_mod.Handler = ctx_mod.handler(respondDisposition);
+    var final_handler: handler_mod.Handler = handler_mod.handler(respondDisposition);
 
     const parsed_query = query_mod.parse(
         arena,
@@ -149,11 +158,11 @@ pub fn dispatch(
             // A buffered body was already read under the server-wide limit;
             // reject it before any handler sees it.
             disposition = .bad_request;
-            final_handler = ctx_mod.handler(respondPayloadTooLarge);
+            final_handler = handler_mod.handler(respondPayloadTooLarge);
         }
     }
 
-    var limited_reader: ctx_mod.LimitedReader = undefined;
+    var limited_reader: body_mod.LimitedReader = undefined;
     var effective_reader = body_reader;
     if (effective_reader) |reader| {
         // HTTP/1's pull reader enforces the server-wide budget itself, but
@@ -206,6 +215,8 @@ pub fn dispatch(
         else
             &.{},
         .final_handler = final_handler,
+        .early_hints_context = early_hints.context,
+        .early_hints_fn = early_hints.send_fn,
     };
     context.response.staging_allocator = request_allocator;
 
@@ -268,15 +279,15 @@ pub fn dispatch(
 fn fallbackHandler(
     fallbacks: Fallbacks,
     failure: RouteFailure,
-) ctx_mod.Handler {
+) handler_mod.Handler {
     return switch (failure) {
         .not_found => fallbacks.not_found orelse
-            ctx_mod.handler(respondDisposition),
+            handler_mod.handler(respondDisposition),
         .bad_request => fallbacks.bad_request orelse
-            ctx_mod.handler(respondDisposition),
+            handler_mod.handler(respondDisposition),
         .method_not_allowed => fallbacks.method_not_allowed orelse
-            ctx_mod.handler(respondDisposition),
-        .options_star => ctx_mod.handler(respondDisposition),
+            handler_mod.handler(respondDisposition),
+        .options_star => handler_mod.handler(respondDisposition),
     };
 }
 
@@ -320,8 +331,8 @@ fn decodeParams(
     arena: std.mem.Allocator,
     route: *const router_mod.Route,
     capture_values: []const []const u8,
-    storage: *[ctx_mod.max_params]ctx_mod.Param,
-) ![]const ctx_mod.Param {
+    storage: *[handler_mod.max_params]handler_mod.Param,
+) ![]const handler_mod.Param {
     const count = route.capture_names.len;
     if (count == 0) return &.{};
     if (count > storage.len or capture_values.len < count) {
@@ -371,7 +382,7 @@ test "fallback handlers keep the streaming body bounded" {
     var router = router_mod.Router(void).init(std.testing.allocator);
     defer router.deinit();
 
-    var replay = ctx_mod.ReplayReader{ .body = "0123456789abcdef" };
+    var replay = body_mod.ReplayReader{ .body = "0123456789abcdef" };
     var request = netz.http1.Request{
         .method = .POST,
         .target = "/missing",
@@ -403,13 +414,14 @@ test "fallback handlers keep the streaming body bounded" {
             .max_response_bytes = 1024,
         },
         &.{},
-        .{ .not_found = ctx_mod.handler(drainBody) },
+        .{ .not_found = handler_mod.handler(drainBody) },
         &request,
         .{},
         arena.allocator(),
         std.testing.allocator,
         .{ .replay = &replay },
         &prepared,
+        .{},
     );
     try std.testing.expectEqual(@as(u16, 413), response.status);
 }

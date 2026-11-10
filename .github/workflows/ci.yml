@@ -1,0 +1,69 @@
+name: ci
+
+# The repository is developed with its sibling dependencies checked out next to
+# it. The workflow recreates that layout under ../netz, ../vort, and ../kron.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/netz
+          path: deps/netz
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/vort
+          path: deps/vort
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/kron
+          path: deps/kron
+      - name: Link sibling dependencies
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/deps/netz" ../netz
+          ln -sfn "$GITHUB_WORKSPACE/deps/vort" ../vort
+          ln -sfn "$GITHUB_WORKSPACE/deps/kron" ../kron
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Format and test
+        run: zig build check
+      - name: Build examples
+        run: zig build examples
+
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/netz
+          path: deps/netz
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/vort
+          path: deps/vort
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/kron
+          path: deps/kron
+      - name: Link sibling dependencies
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/deps/netz" ../netz
+          ln -sfn "$GITHUB_WORKSPACE/deps/vort" ../vort
+          ln -sfn "$GITHUB_WORKSPACE/deps/kron" ../kron
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install external clients
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl nghttp2-client
+      - name: External interoperability smoke test
+        run: ./test/interop/run.sh

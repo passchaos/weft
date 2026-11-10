@@ -1,8 +1,12 @@
-# HTTP/2 suppressed responses and bounded trailers
+# weft performance journal
 
-Date: 2026-11-04
+Append-only engineering journal. It started as the 2026-11-04 HTTP/2
+suppressed-response validation slice and now records later performance
+experiments, rejected changes, and the measurements behind
+[performance.md](performance.md). New entries are appended at the end; the
+dated validation snapshots under `docs/validation/` stay immutable.
 
-## Scope
+## Historical scope (2026-11-04)
 
 Three application-layer fixes found while re-auditing the adapter and middleware
 paths against `AGENTS.md`:

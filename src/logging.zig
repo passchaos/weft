@@ -7,6 +7,8 @@
 const std = @import("std");
 const kron = @import("kron");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
+const response_mod = @import("response.zig");
 const errors_mod = @import("errors.zig");
 const request_id = @import("middleware/request_id.zig");
 const target_mod = @import("target.zig");
@@ -73,8 +75,8 @@ pub const AccessLog = struct {
     level: Level = .info,
     message: []const u8 = "request completed",
 
-    pub fn handler(self: *AccessLog) ctx_mod.Handler {
-        return ctx_mod.withContext(AccessLog, self, call);
+    pub fn handler(self: *AccessLog) handler_mod.Handler {
+        return handler_mod.withContext(AccessLog, self, call);
     }
 
     const Fields = struct {
@@ -158,8 +160,8 @@ fn testContext(allocator: std.mem.Allocator) ctx_mod.Ctx {
             .body = "",
             .consumed = 0,
         },
-        .response = ctx_mod.Response.init(allocator, 1024),
-        .final_handler = ctx_mod.handler(struct {
+        .response = response_mod.Response.init(allocator, 1024),
+        .final_handler = handler_mod.handler(struct {
             fn handle(c: *ctx_mod.Ctx) anyerror!void {
                 c.response.setStatus(201);
                 try c.text("created");

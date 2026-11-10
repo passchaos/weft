@@ -1,5 +1,9 @@
 # Benchmark re-run — 2026-11-04
 
+> **Historical snapshot — 2026-11-04.** See
+> [../performance.md](../performance.md) for the curated current numbers and
+> [../README.md](../README.md) for the documentation index.
+
 Command:
 
 ```sh

@@ -1,6 +1,8 @@
 const std = @import("std");
 const netz = @import("netz");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
+const response_mod = @import("../response.zig");
 
 /// HTTP Basic authentication middleware with a user-owned credential context.
 ///
@@ -19,8 +21,8 @@ pub const BasicAuth = struct {
     password: []const u8,
     realm: []const u8 = "weft",
 
-    pub fn handler(self: *BasicAuth) ctx_mod.Handler {
-        return ctx_mod.withContext(BasicAuth, self, call);
+    pub fn handler(self: *BasicAuth) handler_mod.Handler {
+        return handler_mod.withContext(BasicAuth, self, call);
     }
 
     fn call(self: *BasicAuth, ctx: *ctx_mod.Ctx) anyerror!void {
@@ -138,9 +140,9 @@ test "basic auth accepts valid credentials and rejects missing ones" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &missing_request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{auth.handler()},
-        .final_handler = ctx_mod.handler(Final.handle),
+        .final_handler = handler_mod.handler(Final.handle),
     };
     try missing_context.run();
     try std.testing.expectEqual(@as(u16, 401), missing_context.response.status);
@@ -168,9 +170,9 @@ test "basic auth accepts valid credentials and rejects missing ones" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &valid_request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{auth.handler()},
-        .final_handler = ctx_mod.handler(Final.handle),
+        .final_handler = handler_mod.handler(Final.handle),
     };
     try valid_context.run();
     try std.testing.expectEqual(@as(u16, 200), valid_context.response.status);
@@ -212,9 +214,9 @@ test "basic auth rejects a wrong password" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{auth.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("secret");
             }
@@ -260,9 +262,9 @@ test "basic auth compares long credentials without concatenating" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{auth.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("secret");
             }

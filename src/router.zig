@@ -1,16 +1,17 @@
 const std = @import("std");
 const netz = @import("netz");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
 const openapi_mod = @import("openapi.zig");
+const trie = @import("router/trie.zig");
 
-pub const Ctx = ctx_mod.Ctx;
-pub const Handler = ctx_mod.Handler;
-pub const Param = ctx_mod.Param;
-pub const max_params = ctx_mod.max_params;
+const Ctx = ctx_mod.Ctx;
+const Handler = handler_mod.Handler;
+const Param = handler_mod.Param;
+const max_params = handler_mod.max_params;
 
-/// Maximum number of path segments accepted by the matcher. The bound keeps
-/// recursive traversal and node teardown stack-safe for hostile targets.
-pub const max_path_segments = 128;
+/// Maximum number of path segments accepted by the matcher.
+pub const max_path_segments = trie.max_path_segments;
 
 /// Maximum methods stored in one `Allow` field.
 pub const max_allowed_methods = 16;
@@ -131,44 +132,9 @@ pub const Resolution = union(enum) {
     not_found,
 };
 
-const Node = struct {
-    static_children: std.StringHashMapUnmanaged(*Node) = .empty,
-    /// Fast path for the common case of exactly one static child. When set,
-    /// `static_children` is empty and `single_key` owns the child's name.
-    single_key: ?[]const u8 = null,
-    single_child: ?*Node = null,
-    param: ?*Node = null,
-    routes: std.ArrayListUnmanaged(*Route) = .empty,
-    wildcard_routes: std.ArrayListUnmanaged(*Route) = .empty,
-};
-
-const Segment = struct {
-    text: []const u8,
-    start: usize,
-};
-
-const SegmentIterator = struct {
-    source: []const u8,
-    position: usize = 0,
-
-    fn next(self: *SegmentIterator) ?Segment {
-        if (self.position >= self.source.len) return null;
-        const start = self.position;
-        const end = std.mem.indexOfScalarPos(
-            u8,
-            self.source,
-            self.position,
-            '/',
-        ) orelse self.source.len;
-        self.position = if (end < self.source.len) end + 1 else end;
-        return .{ .text = self.source[start..end], .start = start };
-    }
-};
-
-const Captures = struct {
-    values: [max_params][]const u8 = undefined,
-    count: usize = 0,
-};
+const Node = trie.Node;
+const SegmentIterator = trie.SegmentIterator;
+const Captures = trie.Captures;
 
 /// A route lookup performed before the request body is read.
 ///
@@ -180,11 +146,6 @@ pub const Prepared = struct {
     route: ?*const Route = null,
     captures: Captures = .{},
     allowed: AllowedMethods = .{},
-};
-
-const PatternInfo = struct {
-    captures: usize,
-    segments: usize,
 };
 
 /// A method-and-path router with `:param` captures and a trailing `*` wildcard.
@@ -264,7 +225,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     .GET,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -278,7 +239,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     .POST,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -292,7 +253,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     .PUT,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -306,7 +267,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     .DELETE,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -320,7 +281,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     .PATCH,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -334,7 +295,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     .HEAD,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -348,7 +309,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     .OPTIONS,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -362,7 +323,7 @@ pub fn Router(comptime H: type) type {
                 return self.addRaw(
                     null,
                     pattern,
-                    ctx_mod.handlerFor(H, f),
+                    handler_mod.handlerFor(H, f),
                     route_options,
                 );
             }
@@ -569,7 +530,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(.GET, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(.GET, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         pub fn post(
@@ -578,7 +539,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(.POST, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(.POST, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         pub fn put(
@@ -587,7 +548,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(.PUT, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(.PUT, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         pub fn delete(
@@ -596,7 +557,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(.DELETE, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(.DELETE, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         pub fn patch(
@@ -605,7 +566,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(.PATCH, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(.PATCH, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         pub fn head(
@@ -614,7 +575,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(.HEAD, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(.HEAD, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         pub fn options(
@@ -623,7 +584,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(.OPTIONS, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(.OPTIONS, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         /// Register a route for every HTTP method.
@@ -633,7 +594,7 @@ pub fn Router(comptime H: type) type {
             comptime f: fn (*H, *Ctx) anyerror!void,
             route_options: RouteOptions,
         ) !void {
-            return self.addRaw(null, pattern, ctx_mod.handlerFor(H, f), route_options);
+            return self.addRaw(null, pattern, handler_mod.handlerFor(H, f), route_options);
         }
 
         /// Match a method and path, distinguishing a missing path from a
@@ -819,6 +780,12 @@ pub fn Router(comptime H: type) type {
                 if (route.inline_bodyless) return true;
             }
             return false;
+        }
+
+        /// Number of route entries reachable from the trie. Used by tests that
+        /// assert a failed registration leaves no route pointer behind.
+        pub fn debugRouteCount(self: *const @This()) usize {
+            return countTrieRoutes(&self.root);
         }
 
         /// Project the registered routes for `openapi.Document`. The returned
@@ -1131,441 +1098,7 @@ fn concatHandlers(
     return combined;
 }
 
-fn validatePattern(pattern: []const u8) !PatternInfo {
-    if (pattern.len == 0 or pattern[0] != '/') return error.InvalidPattern;
-
-    // Allow trailing slashes (`/users/` equals `/users`) but reject interior
-    // or repeated empty segments, which would otherwise create ambiguous
-    // matches.
-    const trimmed = std.mem.trimEnd(u8, pattern[1..], "/");
-    if (trimmed.len == 0) return .{ .captures = 0, .segments = 0 };
-
-    var captures: usize = 0;
-    var segments_count: usize = 0;
-    var segments = SegmentIterator{ .source = trimmed };
-    while (segments.next()) |segment| {
-        segments_count += 1;
-        if (segments_count > max_path_segments) return error.PatternTooDeep;
-        if (segment.text.len == 0) return error.InvalidPattern;
-        for (segment.text) |char| {
-            if (char == '?' or char == '#' or char < 0x20 or char == 0x7f) {
-                return error.InvalidPattern;
-            }
-        }
-        if (segment.text[0] == ':') {
-            if (segment.text.len == 1) return error.InvalidPattern;
-            captures += 1;
-        } else if (segment.text[0] == '*') {
-            if (!std.mem.eql(u8, segment.text, "*")) return error.InvalidPattern;
-            if (segments.next() != null) return error.InvalidPattern;
-            captures += 1;
-            break;
-        }
-        if (captures > max_params) return error.TooManyParams;
-    }
-    return .{ .captures = captures, .segments = segments_count };
-}
-
-fn computeSpecificity(pattern: []const u8) u32 {
-    var score: u32 = 0;
-    const trimmed = std.mem.trim(u8, pattern, "/");
-    var segments = SegmentIterator{ .source = trimmed };
-    while (segments.next()) |segment| {
-        if (segment.text.len > 0 and segment.text[0] == ':') {
-            score += 2;
-        } else if (std.mem.eql(u8, segment.text, "*")) {
-            score += 1;
-        } else {
-            score += 4;
-        }
-    }
-    return score;
-}
-
-fn routeMatches(
-    route_method: ?netz.http1.Method,
-    request_method: netz.http1.Method,
-) bool {
-    const method = route_method orelse return true;
-    return methodEqual(method, request_method);
-}
-
-fn methodEqual(a: netz.http1.Method, b: netz.http1.Method) bool {
-    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
-    return switch (a) {
-        .extension => |a_extension| switch (b) {
-            .extension => |b_extension| std.mem.eql(u8, a_extension, b_extension),
-            else => false,
-        },
-        else => true,
-    };
-}
-
-test "static routes match exact paths" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    try router.addRaw(.GET, "/", ctx_mod.handler(Dummy.handle), .{});
-    try router.addRaw(.GET, "/health", ctx_mod.handler(Dummy.handle), .{});
-
-    const root = (try router.match(.GET, "/", allocator)).?;
-    defer allocator.free(root.params);
-    try std.testing.expectEqualStrings("/", root.route.pattern);
-    try std.testing.expectEqual(@as(usize, 0), root.params.len);
-
-    const health = (try router.match(.GET, "/health", allocator)).?;
-    defer allocator.free(health.params);
-    try std.testing.expectEqualStrings("/health", health.route.pattern);
-
-    try std.testing.expect((try router.match(.POST, "/health", allocator)) == null);
-}
-
-test "parameter and wildcard captures" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    try router.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{});
-    try router.addRaw(.GET, "/assets/*", ctx_mod.handler(Dummy.handle), .{});
-
-    const user = (try router.match(.GET, "/users/42", allocator)).?;
-    defer allocator.free(user.params);
-    try std.testing.expectEqual(@as(usize, 1), user.params.len);
-    try std.testing.expectEqualStrings("id", user.params[0].name);
-    try std.testing.expectEqualStrings("42", user.params[0].value);
-
-    const asset = (try router.match(.GET, "/assets/js/app.js", allocator)).?;
-    defer allocator.free(asset.params);
-    try std.testing.expectEqual(@as(usize, 1), asset.params.len);
-    try std.testing.expectEqualStrings("*", asset.params[0].name);
-    try std.testing.expectEqualStrings("js/app.js", asset.params[0].value);
-}
-
-test "static routes win over parameter routes" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    try router.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{});
-    try router.addRaw(.GET, "/users/me", ctx_mod.handler(Dummy.handle), .{});
-
-    const matched = (try router.match(.GET, "/users/me", allocator)).?;
-    defer allocator.free(matched.params);
-    try std.testing.expectEqualStrings("/users/me", matched.route.pattern);
-    try std.testing.expectEqual(@as(usize, 0), matched.params.len);
-}
-
-test "leftmost static segment wins independent of registration order" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    try router.addRaw(.GET, "/a/:b/c", ctx_mod.handler(Dummy.handle), .{});
-    try router.addRaw(.GET, "/a/b/:c", ctx_mod.handler(Dummy.handle), .{});
-
-    const matched = (try router.match(.GET, "/a/b/c", allocator)).?;
-    defer allocator.free(matched.params);
-    try std.testing.expectEqualStrings("/a/b/:c", matched.route.pattern);
-    try std.testing.expectEqualStrings("c", matched.params[0].value);
-}
-
-test "method mismatch returns allowed methods and HEAD falls back to GET" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    try router.addRaw(.GET, "/resource", ctx_mod.handler(Dummy.handle), .{});
-    try router.addRaw(.POST, "/resource", ctx_mod.handler(Dummy.handle), .{});
-    try router.addRaw(.DELETE, "/other", ctx_mod.handler(Dummy.handle), .{});
-
-    const head = (try router.resolve(.HEAD, "/resource", allocator)).matched;
-    defer allocator.free(head.params);
-    try std.testing.expectEqual(netz.http1.Method.GET, head.route.method.?);
-
-    const denied = try router.resolve(.PUT, "/resource", allocator);
-    try std.testing.expect(denied == .method_not_allowed);
-    try std.testing.expect(denied.method_not_allowed.contains(.GET));
-    try std.testing.expect(denied.method_not_allowed.contains(.HEAD));
-    try std.testing.expect(denied.method_not_allowed.contains(.POST));
-    try std.testing.expect(denied.method_not_allowed.contains(.OPTIONS));
-
-    const missing = try router.resolve(.PUT, "/missing", allocator);
-    try std.testing.expect(missing == .not_found);
-}
-
-test "invalid and conflicting registrations are rejected" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    try router.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{});
-    try std.testing.expectError(
-        error.DuplicateRoute,
-        router.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{}),
-    );
-    try std.testing.expectError(
-        error.RouteConflict,
-        router.addRaw(null, "/users/:id", ctx_mod.handler(Dummy.handle), .{}),
-    );
-    try std.testing.expectError(
-        error.InvalidPattern,
-        router.addRaw(.GET, "/users/*/edit", ctx_mod.handler(Dummy.handle), .{}),
-    );
-    try std.testing.expectError(
-        error.InvalidPattern,
-        router.addRaw(.GET, "users", ctx_mod.handler(Dummy.handle), .{}),
-    );
-    try std.testing.expectError(
-        error.InvalidPattern,
-        router.addRaw(.GET, "//users", ctx_mod.handler(Dummy.handle), .{}),
-    );
-}
-
-test "route groups compose prefixes and middleware" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-
-        fn middleware(ctx: *Ctx) anyerror!void {
-            try ctx.next();
-        }
-    };
-
-    var api = try router.group("/api", .{
-        .middleware = &.{ctx_mod.handler(Dummy.middleware)},
-    });
-    try api.addRaw(.GET, "/users/:id", ctx_mod.handler(Dummy.handle), .{});
-
-    var v1 = try api.group("/v1", .{
-        .middleware = &.{ctx_mod.handler(Dummy.middleware)},
-    });
-    try v1.addRaw(.GET, "/health", ctx_mod.handler(Dummy.handle), .{});
-
-    const user = (try router.match(.GET, "/api/users/42", allocator)).?;
-    defer allocator.free(user.params);
-    try std.testing.expectEqualStrings("/api/users/:id", user.route.pattern);
-    try std.testing.expectEqual(@as(usize, 1), user.route.middleware.len);
-
-    const health = (try router.match(.GET, "/api/v1/health", allocator)).?;
-    defer allocator.free(health.params);
-    try std.testing.expectEqualStrings("/api/v1/health", health.route.pattern);
-    try std.testing.expectEqual(@as(usize, 2), health.route.middleware.len);
-
-    try std.testing.expectError(
-        error.InvalidPattern,
-        router.group("api", .{}),
-    );
-    try std.testing.expectError(
-        error.InvalidPattern,
-        router.group("/api/:version", .{}),
-    );
-    try std.testing.expectError(
-        error.InvalidPattern,
-        api.addRaw(.GET, "", ctx_mod.handler(Dummy.handle), .{}),
-    );
-}
-
-test "lookup cost stays flat across many routes" {
-    const allocator = std.testing.allocator;
-    var router = Router(void).init(allocator);
-    defer router.deinit();
-
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    var index: usize = 0;
-    while (index < 512) : (index += 1) {
-        const pattern = try std.fmt.allocPrint(
-            allocator,
-            "/api/v1/resource{d}",
-            .{index},
-        );
-        defer allocator.free(pattern);
-        try router.addRaw(.GET, pattern, ctx_mod.handler(Dummy.handle), .{});
-    }
-
-    const matched = (try router.match(
-        .GET,
-        "/api/v1/resource511",
-        allocator,
-    )).?;
-    defer allocator.free(matched.params);
-    try std.testing.expectEqualStrings(
-        "/api/v1/resource511",
-        matched.route.pattern,
-    );
-}
-
-test "failed registration leaves no route in the trie" {
-    const Dummy = struct {
-        fn handle(ctx: *Ctx) anyerror!void {
-            _ = ctx;
-        }
-    };
-
-    const testImpl = struct {
-        fn run(allocator: std.mem.Allocator) !void {
-            var router = Router(void).init(allocator);
-            defer router.deinit();
-
-            router.addRaw(
-                .GET,
-                "/users/:id",
-                ctx_mod.handler(Dummy.handle),
-                .{},
-            ) catch |err| {
-                try std.testing.expectEqual(error.OutOfMemory, err);
-                // The route is freed by the error path, so the trie and the
-                // ownership list must both be empty afterwards.
-                try std.testing.expectEqual(
-                    @as(usize, 0),
-                    countTrieRoutes(&router.root),
-                );
-                try std.testing.expectEqual(
-                    @as(usize, 0),
-                    router.all_routes.items.len,
-                );
-                return err;
-            };
-
-            try std.testing.expectEqual(
-                @as(usize, 1),
-                countTrieRoutes(&router.root),
-            );
-            try std.testing.expectEqual(
-                @as(usize, 1),
-                router.all_routes.items.len,
-            );
-        }
-    };
-
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        testImpl.run,
-        .{},
-    );
-}
-
-test "failed wildcard registration leaves no route in the trie" {
-    const testImpl = struct {
-        const Dummy = struct {
-            fn handle(ctx: *Ctx) anyerror!void {
-                _ = ctx;
-            }
-        };
-        const middleware = [_]Handler{ctx_mod.handler(Dummy.handle)};
-
-        fn run(allocator: std.mem.Allocator) !void {
-            var router = Router(void).init(allocator);
-            defer router.deinit();
-
-            router.addRaw(
-                null,
-                "/assets/*",
-                ctx_mod.handler(Dummy.handle),
-                .{ .middleware = &middleware },
-            ) catch |err| {
-                try std.testing.expectEqual(error.OutOfMemory, err);
-                try std.testing.expectEqual(
-                    @as(usize, 0),
-                    countTrieRoutes(&router.root),
-                );
-                try std.testing.expectEqual(
-                    @as(usize, 0),
-                    router.all_routes.items.len,
-                );
-                return err;
-            };
-
-            try std.testing.expectEqual(
-                @as(usize, 1),
-                countTrieRoutes(&router.root),
-            );
-        }
-    };
-
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        testImpl.run,
-        .{},
-    );
-}
-
-test "failed group registration releases ownership" {
-    const testImpl = struct {
-        const Dummy = struct {
-            fn handle(ctx: *Ctx) anyerror!void {
-                _ = ctx;
-            }
-        };
-        const middleware = [_]Handler{ctx_mod.handler(Dummy.handle)};
-
-        fn run(allocator: std.mem.Allocator) !void {
-            var router = Router(void).init(allocator);
-            defer router.deinit();
-
-            var api = try router.group("/api", .{ .middleware = &middleware });
-            try api.addRaw(
-                .GET,
-                "/users/:id",
-                ctx_mod.handler(Dummy.handle),
-                .{},
-            );
-            try std.testing.expectEqual(
-                @as(usize, 1),
-                router.all_routes.items.len,
-            );
-        }
-    };
-
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        testImpl.run,
-        .{},
-    );
-}
+const validatePattern = trie.validatePattern;
+const computeSpecificity = trie.computeSpecificity;
+const routeMatches = trie.routeMatches;
+const methodEqual = trie.methodEqual;

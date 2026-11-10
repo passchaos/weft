@@ -1,6 +1,8 @@
 const std = @import("std");
 const netz = @import("netz");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
+const response_mod = @import("../response.zig");
 const vary = @import("../vary.zig");
 
 /// Cross-Origin Resource Sharing policy.
@@ -21,8 +23,8 @@ pub const Cors = struct {
     expose_headers: []const []const u8 = &.{},
     max_age_seconds: ?u32 = null,
 
-    pub fn handler(self: *Cors) ctx_mod.Handler {
-        return ctx_mod.withContext(Cors, self, call);
+    pub fn handler(self: *Cors) handler_mod.Handler {
+        return handler_mod.withContext(Cors, self, call);
     }
 
     fn call(self: *Cors, ctx: *ctx_mod.Ctx) anyerror!void {
@@ -224,9 +226,9 @@ test "cors reflects allowed origins and answers preflight" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{cors.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("route");
             }
@@ -284,9 +286,9 @@ test "cors leaves disallowed origins without cors headers" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{cors.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -329,9 +331,9 @@ test "cors varies on origin even without an Origin header" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{cors.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -377,9 +379,9 @@ test "cors rejects requested headers outside the allow list" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{cors.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("route");
             }

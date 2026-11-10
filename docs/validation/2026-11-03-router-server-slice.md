@@ -1,5 +1,8 @@
 # Router and server hardening slice — 2026-11-03
 
+> **Historical snapshot — 2026-11-03.** See [../README.md](../README.md) for the
+> current documentation index.
+
 ## Scope
 
 Move the application layer from a linear route scan and per-route-only

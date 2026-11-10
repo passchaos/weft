@@ -1,5 +1,7 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
+const response_mod = @import("../response.zig");
 
 /// Maximum accepted or generated request-id length.
 pub const max_length = 128;
@@ -88,9 +90,9 @@ test "request id middleware stores the response copy" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
-        .middleware = &.{ctx_mod.handler(requestId)},
-        .final_handler = ctx_mod.handler(struct {
+        .response = response_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{handler_mod.handler(requestId)},
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }

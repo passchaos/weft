@@ -3,6 +3,8 @@ const netz = @import("netz");
 const logging_mod = @import("logging.zig");
 const bounded_arena_mod = @import("bounded_arena.zig");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
+const body_mod = @import("body.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
 const errors_mod = @import("errors.zig");
@@ -10,13 +12,53 @@ const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
 const drain_mod = @import("drain.zig");
+const adapter_body = @import("adapter/body.zig");
+const adapter_header = @import("adapter/header_view.zig");
+const adapter_response = @import("adapter/response.zig");
+const adapter_write = @import("adapter/write.zig");
+const websocket_mod = @import("websocket.zig");
 
-pub const Ctx = ctx_mod.Ctx;
-pub const Handler = ctx_mod.Handler;
-pub const Response = response_mod.Response;
-pub const Limits = limits_mod.Limits;
-pub const Router = router_mod.Router;
-pub const RouteOptions = router_mod.RouteOptions;
+const WsContext = struct {
+    stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
+};
+
+fn wsRead(raw: ?*anyopaque, buffer: []u8) anyerror!usize {
+    const context: *WsContext = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    return (try context.stream.nextBody(buffer, null)) orelse 0;
+}
+
+fn wsWrite(raw: ?*anyopaque, data: []const u8) anyerror!void {
+    const context: *WsContext = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    try context.stream.writeData(data, false);
+}
+
+fn wsClose(raw: ?*anyopaque) void {
+    const context: *WsContext = @ptrCast(@alignCast(raw orelse return));
+    context.stream.finish() catch {};
+}
+
+fn headerOffersSubprotocol(
+    request: *const netz.http1.Request,
+    selected: []const u8,
+) bool {
+    const header = request.header("sec-websocket-protocol") orelse return false;
+    var parts = std.mem.splitScalar(u8, header, ',');
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, std.mem.trim(u8, part, " \t"), selected)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const Ctx = ctx_mod.Ctx;
+const Handler = handler_mod.Handler;
+const Response = response_mod.Response;
+const Limits = limits_mod.Limits;
+const Router = router_mod.Router;
+const RouteOptions = router_mod.RouteOptions;
 
 pub const Options = struct {
     address: std.Io.net.IpAddress,
@@ -356,6 +398,11 @@ pub fn Http3Server(comptime H: type) type {
                 return;
             };
             const target = if (head.path.len == 0) "/" else head.path;
+            const websocket_upgrade = method == .CONNECT and blk: {
+                const protocol = findHeader(head.headers, ":protocol") orelse
+                    break :blk false;
+                break :blk std.mem.eql(u8, protocol, "websocket");
+            };
 
             // Route matching uses the path, never the query string carried by
             // the `:path` pseudo-header. Match once and reuse the result for
@@ -365,7 +412,7 @@ pub fn Http3Server(comptime H: type) type {
             dispatch_mod.prepareRoute(
                 H,
                 &self.app_router,
-                method,
+                if (websocket_upgrade) .GET else method,
                 target,
                 &prepared,
             );
@@ -377,6 +424,7 @@ pub fn Http3Server(comptime H: type) type {
                 const route = prepared.route orelse
                     return error.InlineDeclined;
                 if (method == .CONNECT or
+                    websocket_upgrade or
                     !route.inline_bodyless or
                     (route.streaming and !stream.inlineBodyComplete()) or
                     target.len > self.options.limits.max_request_target_bytes or
@@ -386,9 +434,8 @@ pub fn Http3Server(comptime H: type) type {
                 }
             }
 
-            // Weft has no CONNECT tunnel or extended-CONNECT API; reject the
-            // stream instead of routing the authority target as a request.
-            if (method == .CONNECT) {
+            // Non-WebSocket CONNECT tunnels are not exposed by weft.
+            if (method == .CONNECT and !websocket_upgrade) {
                 return self.rejectConcurrent(
                     stream,
                     head.method,
@@ -453,20 +500,22 @@ pub fn Http3Server(comptime H: type) type {
                 return;
             });
 
-            const streaming = if (prepared.route) |route|
+            const streaming = if (websocket_upgrade)
+                false
+            else if (prepared.route) |route|
                 route.streaming
             else
                 false;
             // Keep the 16 KiB reader buffer uninitialized. An optional holding
             // it would zero the whole payload on every request, including
             // non-streaming routes.
-            var h3_reader: ctx_mod.H3StreamReader = undefined;
-            var body_reader: ?ctx_mod.BodyReader = null;
+            var h3_reader: body_mod.H3StreamReader = undefined;
+            var body_reader: ?body_mod.BodyReader = null;
             var body: []const u8 = "";
             var trailers: []netz.http1.Header = &.{};
 
             if (streaming) {
-                h3_reader = ctx_mod.H3StreamReader.init(
+                h3_reader = body_mod.H3StreamReader.init(
                     stream,
                     self.options.limits.max_streaming_window_bytes,
                 );
@@ -506,7 +555,7 @@ pub fn Http3Server(comptime H: type) type {
             }
 
             var request = netz.http1.Request{
-                .method = method,
+                .method = if (websocket_upgrade) .GET else method,
                 .target = target,
                 .version = .http_1_1,
                 .headers = headers,
@@ -514,8 +563,8 @@ pub fn Http3Server(comptime H: type) type {
                 .trailers = trailers,
                 .consumed = 0,
             };
-            const client_info = ctx_mod.ClientInfo{
-                .address = ctx_mod.resolveClientAddress(
+            const client_info = handler_mod.ClientInfo{
+                .address = handler_mod.resolveClientAddress(
                     head.headers,
                     stream.from(),
                     self.options.limits.trust_forwarded_for,
@@ -530,6 +579,7 @@ pub fn Http3Server(comptime H: type) type {
                 arena,
                 body_reader,
                 &prepared,
+                .{},
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;
                 logging_mod.logWarn(
@@ -554,6 +604,17 @@ pub fn Http3Server(comptime H: type) type {
                 response.setStatus(500);
                 response.text("Internal Server Error") catch {};
             };
+
+            if (websocket_upgrade and response.upgrade != null) {
+                try self.runWebSocket(
+                    stream,
+                    head,
+                    &request,
+                    &response,
+                    arena,
+                );
+                return;
+            }
 
             self.respondConcurrent(
                 stream,
@@ -586,10 +647,11 @@ pub fn Http3Server(comptime H: type) type {
         fn dispatchRequest(
             self: *@This(),
             request: *const netz.http1.Request,
-            client_info: ctx_mod.ClientInfo,
+            client_info: handler_mod.ClientInfo,
             arena: std.mem.Allocator,
-            body_reader: ?ctx_mod.BodyReader,
+            body_reader: ?body_mod.BodyReader,
             prepared: *const router_mod.Prepared,
+            early_hints: dispatch_mod.EarlyHints,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -609,11 +671,81 @@ pub fn Http3Server(comptime H: type) type {
                 self.allocator,
                 body_reader,
                 prepared,
+                early_hints,
             );
         }
 
         /// Answer a request that exceeded an adapter budget without running
         /// the router.
+        fn runWebSocket(
+            self: *@This(),
+            stream: *ConcurrentStream,
+            head: anytype,
+            request: *const netz.http1.Request,
+            response: *Response,
+            arena: std.mem.Allocator,
+        ) !void {
+            const upgrade = response.upgrade.?;
+            const version = request.header("sec-websocket-version") orelse "";
+            if (!std.mem.eql(u8, version, "13")) {
+                return self.rejectConcurrent(
+                    stream,
+                    head.method,
+                    426,
+                    "Upgrade Required",
+                    arena,
+                );
+            }
+            if (upgrade.subprotocol) |sub| {
+                if (!netz.websocket.validSubprotocolToken(sub) or
+                    !headerOffersSubprotocol(request, sub))
+                {
+                    return self.rejectConcurrent(
+                        stream,
+                        head.method,
+                        400,
+                        "Bad Request",
+                        arena,
+                    );
+                }
+            }
+
+            var fields = std.ArrayListUnmanaged(netz.http3.Qpack.HeaderField).empty;
+            if (upgrade.subprotocol) |sub| {
+                try fields.append(arena, .{
+                    .name = "sec-websocket-protocol",
+                    .value = sub,
+                });
+            }
+            try stream.startResponse(.{
+                .status = 200,
+                .headers = fields.items,
+                .request_method = "CONNECT",
+                .extended_connect = true,
+            }, null);
+
+            var ws_context = WsContext{ .stream = stream };
+            const connection = netz.websocket.stream_connection.Connection.init(
+                self.allocator,
+                self.io,
+                .{
+                    .context = &ws_context,
+                    .read_fn = wsRead,
+                    .write_fn = wsWrite,
+                },
+                .{
+                    .role = .server,
+                    .max_message_bytes = self.options.limits.max_body_bytes,
+                    .max_frame_bytes = self.options.limits.max_response_bytes,
+                },
+            );
+            var session = websocket_mod.Session{
+                .inner = .{ .stream = connection },
+            };
+            defer session.close();
+            try upgrade.run(&session);
+        }
+
         fn rejectConcurrent(
             self: *@This(),
             stream: *ConcurrentStream,
@@ -812,57 +944,11 @@ fn writeConcurrentWithBudget(
 ) anyerror!void {
     const state: *H3ConcurrentWriterState = @ptrCast(@alignCast(raw orelse
         return error.InvalidWriterState));
-    if (data.len > state.remaining) return error.ResponseTooLarge;
-    state.remaining -= data.len;
+    try adapter_write.consume(&state.remaining, data);
     try state.stream.writeData(data, false);
 }
 
-fn readWholeBody(
-    arena: std.mem.Allocator,
-    staging: std.mem.Allocator,
-    stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
-    expected_length: ?usize,
-    max_body_bytes: usize,
-    max_arena_bytes: usize,
-) ![]const u8 {
-    if (expected_length) |expected| {
-        if (expected != 0) {
-            if (expected > max_body_bytes or expected > max_arena_bytes) {
-                return error.PayloadTooLarge;
-            }
-            const body = arena.alloc(u8, expected) catch
-                return error.PayloadTooLarge;
-            var offset: usize = 0;
-            var buffer: [16 * 1024]u8 = undefined;
-            while (true) {
-                const count = (try stream.nextBody(&buffer, null)) orelse break;
-                if (count == 0) continue;
-                if (count > expected - offset) return error.PayloadTooLarge;
-                @memcpy(body[offset..][0..count], buffer[0..count]);
-                offset += count;
-            }
-            return body[0..offset];
-        }
-    }
-
-    // Unknown length: stage outside the fixed arena so growth cannot leak
-    // intermediate blocks, then copy the final bytes once.
-    var output = std.ArrayListUnmanaged(u8).empty;
-    defer output.deinit(staging);
-    var buffer: [16 * 1024]u8 = undefined;
-    while (true) {
-        const count = (try stream.nextBody(&buffer, null)) orelse break;
-        if (count == 0) continue;
-        const total = std.math.add(usize, output.items.len, count) catch
-            return error.PayloadTooLarge;
-        if (total > max_body_bytes or total > max_arena_bytes) {
-            return error.PayloadTooLarge;
-        }
-        output.appendSlice(staging, buffer[0..count]) catch
-            return error.PayloadTooLarge;
-    }
-    return arena.dupe(u8, output.items) catch error.PayloadTooLarge;
-}
+const readWholeBody = adapter_body.readWholeBody;
 
 fn responseBodyForbidden(method: []const u8, status: u16) bool {
     return std.mem.eql(u8, method, "HEAD") or
@@ -871,148 +957,17 @@ fn responseBodyForbidden(method: []const u8, status: u16) bool {
         (status >= 100 and status < 200);
 }
 
-fn trailerFields(
-    response: *const Response,
-    arena: std.mem.Allocator,
-) ![]const netz.http3.Qpack.HeaderField {
-    var fields = std.ArrayListUnmanaged(netz.http3.Qpack.HeaderField).empty;
-    try fields.ensureTotalCapacity(arena, response.trailers.items.len);
-    for (response.trailers.items) |header| {
-        fields.appendAssumeCapacity(.{
-            .name = try lowerHeaderName(arena, header.name),
-            .value = header.value,
-        });
-    }
-    return fields.items;
-}
-
-fn headerFields(
-    response: *const Response,
-    arena: std.mem.Allocator,
-) ![]const netz.http3.Qpack.HeaderField {
-    var fields = std.ArrayListUnmanaged(netz.http3.Qpack.HeaderField).empty;
-    try fields.ensureTotalCapacity(arena, response.headers.items.len);
-    for (response.headers.items) |header| {
-        if (forbiddenResponseHeader(header.name)) continue;
-        fields.appendAssumeCapacity(.{
-            .name = try lowerHeaderName(arena, header.name),
-            .value = header.value,
-        });
-    }
-    return fields.items;
-}
-
-/// QPACK field names are lowercase. Response names already live in the
-/// request arena, so an already-lowercase name is borrowed instead of copied.
-fn lowerHeaderName(
-    arena: std.mem.Allocator,
-    name: []const u8,
-) ![]const u8 {
-    for (name) |char| {
-        if (char >= 'A' and char <= 'Z') {
-            const copy = try arena.alloc(u8, name.len);
-            for (name, copy) |source, *target| {
-                target.* = std.ascii.toLower(source);
-            }
-            return copy;
-        }
-    }
-    return name;
-}
-
-fn forbiddenResponseHeader(name: []const u8) bool {
-    if (name.len == 0 or name[0] == ':') return true;
-    inline for (.{
-        "connection",
-        "keep-alive",
-        "proxy-connection",
-        "transfer-encoding",
-        "upgrade",
-        "host",
-        "te",
-    }) |forbidden| {
-        if (std.ascii.eqlIgnoreCase(name, forbidden)) return true;
-    }
-    return false;
-}
-
-fn isPseudoHeader(name: []const u8) bool {
-    return name.len > 0 and name[0] == ':';
-}
-
-fn findHeader(
-    headers: []const netz.http3.Qpack.HeaderField,
-    name: []const u8,
-) ?[]const u8 {
-    for (headers) |header| {
-        if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
-    }
-    return null;
-}
-
-fn convertH3Trailers(
-    allocator: std.mem.Allocator,
-    fields: []const netz.http3.Qpack.HeaderField,
-) ![]netz.http1.Header {
-    const headers = try allocator.alloc(netz.http1.Header, fields.len);
-    for (fields, headers) |field, *header| {
-        header.* = .{ .name = field.name, .value = field.value };
-    }
-    return headers;
-}
-
-fn convertH3HeadHeadersInto(
-    destination: []netz.http1.Header,
-    fields: []const netz.http3.Qpack.HeaderField,
-    authority: ?[]const u8,
-) ?[]netz.http1.Header {
-    var count: usize = 0;
-    for (fields) |field| {
-        if (!isPseudoHeader(field.name)) count += 1;
-    }
-    const add_host = authority != null and findHeader(fields, "host") == null;
-    if (add_host) count += 1;
-    if (count > destination.len) return null;
-
-    var index: usize = 0;
-    for (fields) |field| {
-        if (isPseudoHeader(field.name)) continue;
-        destination[index] = .{ .name = field.name, .value = field.value };
-        index += 1;
-    }
-    if (add_host) {
-        destination[index] = .{
-            .name = "Host",
-            .value = authority.?,
-        };
-    }
-    return destination[0..count];
-}
-
-fn convertH3HeadHeaders(
-    allocator: std.mem.Allocator,
-    fields: []const netz.http3.Qpack.HeaderField,
-    authority: ?[]const u8,
-) ![]netz.http1.Header {
-    var count: usize = 0;
-    for (fields) |field| {
-        if (!isPseudoHeader(field.name)) count += 1;
-    }
-    const add_host = authority != null and findHeader(fields, "host") == null;
-    if (add_host) count += 1;
-    const headers = try allocator.alloc(netz.http1.Header, count);
-    return convertH3HeadHeadersInto(headers, fields, authority).?;
-}
-
-fn internalErrorResponse(
-    arena: std.mem.Allocator,
-    limits: Limits,
-) Response {
-    var response = Response.initWithLimits(arena, limits);
-    response.setStatus(500);
-    response.text("Internal Server Error") catch {};
-    return response;
-}
+const HeaderView = adapter_header.HeaderView(netz.http3.Qpack.HeaderField);
+const convertH3Trailers = HeaderView.convertTrailers;
+const convertH3HeadHeadersInto = HeaderView.convertHeadersInto;
+const convertH3HeadHeaders = HeaderView.convertHeaders;
+const trailerFields = HeaderView.trailerFields;
+const headerFields = HeaderView.headerFields;
+const lowerHeaderName = HeaderView.lowerHeaderName;
+const forbiddenResponseHeader = HeaderView.forbiddenResponseHeader;
+const isPseudoHeader = HeaderView.isPseudoHeader;
+const findHeader = HeaderView.findHeader;
+const internalErrorResponse = adapter_response.internalErrorResponse;
 
 test "h3 request trailers convert to the http1 header view" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

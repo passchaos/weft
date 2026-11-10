@@ -1,5 +1,8 @@
 # Unix sockets and HTTP/1 error-response drain
 
+> **Historical snapshot — 2026-11-04.** See [../README.md](../README.md) for the
+> current documentation index.
+
 Date: 2026-11-04
 
 ## Scope

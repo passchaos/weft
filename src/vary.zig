@@ -1,6 +1,8 @@
 const std = @import("std");
 const netz = @import("netz");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
+const response_mod = @import("response.zig");
 
 /// Append `value` to the response `Vary` field unless it is already present.
 /// A response already carrying `Vary: *` covers every request field, so no
@@ -49,8 +51,8 @@ test "vary appends unique tokens and respects the wildcard" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
-        .final_handler = ctx_mod.handler(struct {
+        .response = response_mod.Response.init(arena.allocator(), 1024),
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 _ = ctx;
             }

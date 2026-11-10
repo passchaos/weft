@@ -1,12 +1,24 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const helpers = @import("build/helpers.zig");
 
+// weft pins the exact Zig version because the std.Io and std.Build APIs it
+// depends on are still changing between patch releases. Update this constant
+// and build.zig.zon together when moving to a new toolchain.
 const required_zig_version = "0.16.0";
+
+const Import = helpers.Import;
+const Builder = helpers.Builder;
 
 pub fn build(b: *std.Build) void {
     comptime {
         if (!std.mem.eql(u8, builtin.zig_version_string, required_zig_version)) {
-            @compileError("weft requires Zig " ++ required_zig_version ++ "; found " ++ builtin.zig_version_string);
+            @compileError(
+                "weft pins Zig " ++ required_zig_version ++
+                    " exactly because std.Io and std.Build are still changing; " ++
+                    "update build.zig and build.zig.zon together (found " ++
+                    builtin.zig_version_string ++ ")",
+            );
         }
     }
 
@@ -17,7 +29,6 @@ pub fn build(b: *std.Build) void {
         "test-filter",
         "Run only tests whose name contains one of these substrings",
     ) orelse &.{};
-
     const scheduling = b.option(
         []const u8,
         "scheduling",
@@ -28,6 +39,7 @@ pub fn build(b: *std.Build) void {
         "zio-backend",
         "zio event loop backend: poll, linux, epoll, kqueue, io_uring, or iocp",
     );
+
     const netz_dep = b.dependency("netz", .{
         .target = target,
         .optimize = optimize,
@@ -57,6 +69,21 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const weft_imports = [_]Import{.{ .name = "weft", .module = weft_mod }};
+    const weft_netz_imports = [_]Import{
+        .{ .name = "weft", .module = weft_mod },
+        .{ .name = "netz", .module = netz_mod },
+    };
+    const weft_netz_kron_imports = [_]Import{
+        .{ .name = "weft", .module = weft_mod },
+        .{ .name = "netz", .module = netz_mod },
+        .{ .name = "kron", .module = kron_mod },
+    };
+    const netz_kron_imports = [_]Import{
+        .{ .name = "netz", .module = netz_mod },
+        .{ .name = "kron", .module = kron_mod },
+    };
+
     const lib = b.addLibrary(.{
         .name = "weft",
         .root_module = weft_mod,
@@ -76,7 +103,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/package_test.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "weft", .module = weft_mod }},
+            .imports = &weft_imports,
         }),
         .filters = test_filters,
     });
@@ -88,125 +115,63 @@ pub fn build(b: *std.Build) void {
     test_package_step.dependOn(&run_package_tests.step);
     test_step.dependOn(&run_package_tests.step);
 
-    const example = b.addExecutable(.{
-        .name = "hello",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/hello.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
-    });
-    b.installArtifact(example);
-    const run_example = b.addRunArtifact(example);
-    const run_hello_step = b.step("run-hello", "Run the hello example");
-    run_hello_step.dependOn(&run_example.step);
-
-    const logging_example = b.addExecutable(.{
-        .name = "logging",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/logging.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-                .{ .name = "kron", .module = kron_mod },
-            },
-        }),
-    });
-    b.installArtifact(logging_example);
-    const run_logging_example = b.addRunArtifact(logging_example);
-    const run_logging_step = b.step(
-        "run-logging",
-        "Run the structured logging example",
+    const check_step = b.step(
+        "check",
+        "Verify formatting and run the full test suite",
     );
-    run_logging_step.dependOn(&run_logging_example.step);
-
-    const upload_example = b.addExecutable(.{
-        .name = "upload",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/upload.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
+    const fmt = b.addFmt(.{
+        .paths = &.{ "src", "test", "bench", "examples", "build", "build.zig" },
+        .check = true,
     });
-    b.installArtifact(upload_example);
-    const run_upload_example = b.addRunArtifact(upload_example);
-    const run_upload_step = b.step(
-        "run-upload",
-        "Run the streaming upload example",
+    check_step.dependOn(&fmt.step);
+    check_step.dependOn(test_step);
+
+    const ctx = Builder{
+        .b = b,
+        .target = target,
+        .optimize = optimize,
+        .examples_step = b.step("examples", "Build all examples"),
+    };
+
+    const hello = ctx.example(
+        "hello",
+        "examples/hello.zig",
+        &weft_netz_imports,
     );
-    run_upload_step.dependOn(&run_upload_example.step);
-
-    const agent_example = b.addExecutable(.{
-        .name = "agent",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/agent.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
-    });
-    b.installArtifact(agent_example);
-    const run_agent_example = b.addRunArtifact(agent_example);
-    const run_agent_step = b.step(
-        "run-agent",
-        "Run the OpenAPI + MCP agent example",
+    ctx.run("run-hello", "Run the hello example", hello);
+    const logging_example = ctx.example(
+        "logging",
+        "examples/logging.zig",
+        &weft_netz_kron_imports,
     );
-    run_agent_step.dependOn(&run_agent_example.step);
+    ctx.run("run-logging", "Run the structured logging example", logging_example);
+    const upload = ctx.example(
+        "upload",
+        "examples/upload.zig",
+        &weft_netz_imports,
+    );
+    ctx.run("run-upload", "Run the streaming upload example", upload);
+    const agent = ctx.example(
+        "agent",
+        "examples/agent.zig",
+        &weft_netz_imports,
+    );
+    ctx.run("run-agent", "Run the OpenAPI + MCP agent example", agent);
 
-    const examples_step = b.step("examples", "Build all examples");
-    examples_step.dependOn(&b.addInstallArtifact(example, .{}).step);
-    examples_step.dependOn(&b.addInstallArtifact(upload_example, .{}).step);
-    examples_step.dependOn(&b.addInstallArtifact(agent_example, .{}).step);
-
-    const benchmark = b.addExecutable(.{
-        .name = "router-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/router.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-            },
-        }),
-    });
-    const run_benchmark = b.addRunArtifact(benchmark);
-    const bench_step = b.step(
+    ctx.bench(
         "bench",
+        "router-bench",
+        "bench/router.zig",
         "Run router microbenchmarks (use -Doptimize=ReleaseFast for real numbers)",
+        &weft_imports,
     );
-    bench_step.dependOn(&run_benchmark.step);
-
-    const server_benchmark = b.addExecutable(.{
-        .name = "server-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
-    });
-    const run_server_benchmark = b.addRunArtifact(server_benchmark);
-    const bench_server_step = b.step(
+    ctx.bench(
         "bench-server",
+        "server-bench",
+        "bench/server.zig",
         "Run the HTTP/1 server throughput benchmark",
+        &weft_netz_imports,
     );
-    bench_server_step.dependOn(&run_server_benchmark.step);
 
     const h2_batch = b.option(
         u32,
@@ -218,145 +183,64 @@ pub fn build(b: *std.Build) void {
         "h2-batch-iterations",
         "HTTP/2 benchmark batch iterations (default 4000)",
     ) orelse 4_000;
-    const h2_bench_options = b.addOptions();
-    h2_bench_options.addOption(u32, "batch_size", h2_batch);
-    h2_bench_options.addOption(u32, "batch_iterations", h2_batch_iterations);
-
-    const h2_benchmark = b.addExecutable(.{
-        .name = "h2-server-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/h2_server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-                .{ .name = "build_options", .module = h2_bench_options.createModule() },
-            },
-        }),
-    });
-    const run_h2_benchmark = b.addRunArtifact(h2_benchmark);
-    const bench_h2_step = b.step(
+    const h2_options = b.addOptions();
+    h2_options.addOption(u32, "batch_size", h2_batch);
+    h2_options.addOption(u32, "batch_iterations", h2_batch_iterations);
+    const h2_imports = [_]Import{
+        .{ .name = "weft", .module = weft_mod },
+        .{ .name = "netz", .module = netz_mod },
+        .{ .name = "build_options", .module = h2_options.createModule() },
+    };
+    ctx.bench(
         "bench-h2",
+        "h2-server-bench",
+        "bench/h2_server.zig",
         "Run the HTTP/2 sequential and batched throughput benchmark",
+        &h2_imports,
     );
-    bench_h2_step.dependOn(&run_h2_benchmark.step);
 
-    const static_benchmark = b.addExecutable(.{
-        .name = "static-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/static.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
-    });
-    const run_static_benchmark = b.addRunArtifact(static_benchmark);
-    const bench_static_step = b.step(
+    ctx.bench(
         "bench-static",
+        "static-bench",
+        "bench/static.zig",
         "Run the static-file handler benchmark",
+        &weft_netz_imports,
     );
-    bench_static_step.dependOn(&run_static_benchmark.step);
-
-    const middleware_benchmark = b.addExecutable(.{
-        .name = "middleware-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/middleware.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
-    });
-    const run_middleware_benchmark = b.addRunArtifact(middleware_benchmark);
-    const bench_middleware_step = b.step(
+    ctx.bench(
         "bench-middleware",
+        "middleware-bench",
+        "bench/middleware.zig",
         "Run the middleware-chain overhead benchmark",
+        &weft_netz_imports,
     );
-    bench_middleware_step.dependOn(&run_middleware_benchmark.step);
-
-    const hello_server = b.addExecutable(.{
-        .name = "hello-server",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/hello_server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
-    });
-    const install_hello_server = b.addInstallArtifact(hello_server, .{});
-    const build_hello_server_step = b.step(
+    ctx.buildBench(
         "build-hello-server",
+        "hello-server",
+        "bench/hello_server.zig",
         "Build the minimal hello-world server used for framework comparisons",
+        &weft_netz_imports,
     );
-    build_hello_server_step.dependOn(&install_hello_server.step);
-
-    const h2_hello_server = b.addExecutable(.{
-        .name = "h2-hello-server",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/h2_hello_server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-            },
-        }),
-    });
-    const install_h2_hello_server = b.addInstallArtifact(
-        h2_hello_server,
-        .{},
-    );
-    const build_h2_hello_server_step = b.step(
+    ctx.buildBench(
         "build-h2-hello-server",
+        "h2-hello-server",
+        "bench/h2_hello_server.zig",
         "Build the minimal h2c hello-world server used for framework comparisons",
+        &weft_netz_imports,
     );
-    build_h2_hello_server_step.dependOn(&install_h2_hello_server.step);
-
-    const accept_benchmark = b.addExecutable(.{
-        .name = "accept-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/accept.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-            },
-        }),
-    });
-    const run_accept_benchmark = b.addRunArtifact(accept_benchmark);
-    const bench_accept_step = b.step(
+    ctx.bench(
         "bench-accept",
+        "accept-bench",
+        "bench/accept.zig",
         "Run the Accept negotiation benchmark",
+        &weft_imports,
     );
-    bench_accept_step.dependOn(&run_accept_benchmark.step);
-
-    const logging_benchmark = b.addExecutable(.{
-        .name = "logging-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/logging.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "netz", .module = netz_mod },
-                .{ .name = "kron", .module = kron_mod },
-            },
-        }),
-    });
-    const run_logging_benchmark = b.addRunArtifact(logging_benchmark);
-    const bench_logging_step = b.step(
+    ctx.bench(
         "bench-logging",
+        "logging-bench",
+        "bench/logging.zig",
         "Measure the structured access-log producer cost through kron",
+        &netz_kron_imports,
     );
-    bench_logging_step.dependOn(&run_logging_benchmark.step);
 
     const h3_batch = b.option(
         u32,
@@ -378,36 +262,28 @@ pub fn build(b: *std.Build) void {
         "h3-warmup",
         "HTTP/3 benchmark batch warmup iterations (default 100)",
     ) orelse 100;
-    const h3_bench_options = b.addOptions();
-    h3_bench_options.addOption(u32, "batch_size", h3_batch);
-    h3_bench_options.addOption(u32, "batch_iterations", h3_batch_iterations);
-    h3_bench_options.addOption(u32, "poll_us", h3_poll_us);
-    h3_bench_options.addOption(u32, "warmup_iterations", h3_warmup);
-
-    const h3_benchmark = b.addExecutable(.{
-        .name = "h3-server-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/h3_server.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "weft", .module = weft_mod },
-                .{ .name = "netz", .module = netz_mod },
-                .{ .name = "build_options", .module = h3_bench_options.createModule() },
-            },
-        }),
-    });
-    const run_h3_benchmark = b.addRunArtifact(h3_benchmark);
-    const bench_h3_step = b.step(
+    const h3_options = b.addOptions();
+    h3_options.addOption(u32, "batch_size", h3_batch);
+    h3_options.addOption(u32, "batch_iterations", h3_batch_iterations);
+    h3_options.addOption(u32, "poll_us", h3_poll_us);
+    h3_options.addOption(u32, "warmup_iterations", h3_warmup);
+    const h3_imports = [_]Import{
+        .{ .name = "weft", .module = weft_mod },
+        .{ .name = "netz", .module = netz_mod },
+        .{ .name = "build_options", .module = h3_options.createModule() },
+    };
+    ctx.bench(
         "bench-h3",
+        "h3-server-bench",
+        "bench/h3_server.zig",
         "Run the HTTP/3 sequential and batched throughput benchmark",
+        &h3_imports,
     );
-    bench_h3_step.dependOn(&run_h3_benchmark.step);
-
-    const install_h3_benchmark = b.addInstallArtifact(h3_benchmark, .{});
-    const build_h3_bench_step = b.step(
+    ctx.buildBench(
         "build-h3-bench",
+        "h3-server-bench",
+        "bench/h3_server.zig",
         "Build the HTTP/3 benchmark binary without running it",
+        &h3_imports,
     );
-    build_h3_bench_step.dependOn(&install_h3_benchmark.step);
 }

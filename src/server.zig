@@ -2,6 +2,8 @@ const std = @import("std");
 const netz = @import("netz");
 const logging_mod = @import("logging.zig");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
+const body_mod = @import("body.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
 const limits_mod = @import("limits.zig");
@@ -9,13 +11,15 @@ const stream_mod = @import("stream.zig");
 const dispatch_mod = @import("dispatch.zig");
 const drain_mod = @import("drain.zig");
 const websocket_mod = @import("websocket.zig");
+const adapter_response = @import("adapter/response.zig");
+const adapter_write = @import("adapter/write.zig");
 
-pub const Ctx = ctx_mod.Ctx;
-pub const Handler = ctx_mod.Handler;
-pub const Response = response_mod.Response;
-pub const Limits = limits_mod.Limits;
-pub const Router = router_mod.Router;
-pub const RouteOptions = router_mod.RouteOptions;
+const Ctx = ctx_mod.Ctx;
+const Handler = handler_mod.Handler;
+const Response = response_mod.Response;
+const Limits = limits_mod.Limits;
+const Router = router_mod.Router;
+const RouteOptions = router_mod.RouteOptions;
 
 /// Upper bound on how long an error response may spend draining unread
 /// request bytes before the connection closes. Netz caps the discarded bytes
@@ -101,11 +105,29 @@ const StreamState = struct {
     remaining: usize,
 };
 
+const EarlyHintsContext = struct {
+    connection: *netz.http1.runtime.Connection,
+    method: netz.http1.Method,
+};
+
+fn sendEarlyHints(
+    raw: ?*anyopaque,
+    headers: []const netz.http1.Header,
+) anyerror!void {
+    const context: *EarlyHintsContext = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    try context.connection.writeResponse(.{
+        .status = 103,
+        .reason = "Early Hints",
+        .headers = headers,
+        .request_method = context.method,
+    });
+}
+
 fn writeWithBudget(raw: ?*anyopaque, data: []const u8) anyerror!void {
     const state: *StreamState = @ptrCast(@alignCast(raw orelse
         return error.InvalidWriterState));
-    if (data.len > state.remaining) return error.ResponseTooLarge;
-    state.remaining -= data.len;
+    try adapter_write.consume(&state.remaining, data);
     try state.writer.write(data);
 }
 
@@ -404,8 +426,8 @@ pub fn Server(comptime H: type) type {
                     return .drained;
                 };
 
-                const client_info = ctx_mod.ClientInfo{
-                    .address = ctx_mod.resolveClientAddress(
+                const client_info = handler_mod.ClientInfo{
+                    .address = handler_mod.resolveClientAddress(
                         head.headers,
                         // std reports a synthetic loopback address for Unix
                         // sockets, so do not expose it as a real peer.
@@ -450,7 +472,7 @@ pub fn Server(comptime H: type) type {
 
                 var body: std.ArrayListUnmanaged(u8) = .empty;
                 defer body.deinit(self.allocator);
-                var body_reader: ?ctx_mod.BodyReader = null;
+                var body_reader: ?body_mod.BodyReader = null;
                 var drain_failed = false;
 
                 if (streaming) {
@@ -516,12 +538,20 @@ pub fn Server(comptime H: type) type {
                     .must_close = head.must_close,
                 };
 
+                var early_hints_context = EarlyHintsContext{
+                    .connection = connection,
+                    .method = method,
+                };
                 var response = self.dispatch(
                     &handler_request,
                     client_info,
                     arena,
                     body_reader,
                     &prepared,
+                    .{
+                        .context = &early_hints_context,
+                        .send_fn = sendEarlyHints,
+                    },
                 ) catch |err| blk: {
                     if (err == error.Canceled) return error.Canceled;
                     logging_mod.logWarn(
@@ -639,7 +669,10 @@ pub fn Server(comptime H: type) type {
             arena: std.mem.Allocator,
         ) !bool {
             _ = arena;
-            if (!validWebSocketUpgrade(request, upgrade.subprotocol)) {
+            if (!websocket_mod.validWebSocketUpgrade(
+                request,
+                upgrade.subprotocol,
+            )) {
                 response.reset();
                 response.setStatus(400);
                 response.text("Bad Request") catch {};
@@ -734,7 +767,7 @@ pub fn Server(comptime H: type) type {
             // transport.
             connection.releaseBuffers();
 
-            var session = websocket_mod.Session{ .connection = ws };
+            var session = websocket_mod.Session{ .inner = .{ .http1 = ws } };
             defer session.close();
             upgrade.run(&session) catch |err| {
                 logging_mod.logWarn(
@@ -807,10 +840,11 @@ pub fn Server(comptime H: type) type {
         fn dispatch(
             self: *@This(),
             request: *const netz.http1.Request,
-            client_info: ctx_mod.ClientInfo,
+            client_info: handler_mod.ClientInfo,
             arena: std.mem.Allocator,
-            body_reader: ?ctx_mod.BodyReader,
+            body_reader: ?body_mod.BodyReader,
             prepared: *const router_mod.Prepared,
+            early_hints: dispatch_mod.EarlyHints,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -830,62 +864,13 @@ pub fn Server(comptime H: type) type {
                 self.allocator,
                 body_reader,
                 prepared,
+                early_hints,
             );
         }
     };
 }
 
-fn validWebSocketUpgrade(
-    request: *const netz.http1.Request,
-    subprotocol: ?[]const u8,
-) bool {
-    if (request.method != .GET or
-        request.version != .http_1_1 or
-        request.body.len != 0 or
-        request.trailers.len != 0)
-    {
-        return false;
-    }
-
-    const protocol = request.upgradeProtocol() orelse return false;
-    if (!std.ascii.eqlIgnoreCase(protocol, "websocket")) return false;
-
-    const client_key = request.header("sec-websocket-key") orelse return false;
-    netz.websocket.validateClientKey(client_key) catch return false;
-
-    const version = request.header("sec-websocket-version") orelse return false;
-    if (!std.mem.eql(u8, version, "13")) return false;
-
-    if (subprotocol) |selected| {
-        if (!netz.websocket.validSubprotocolToken(selected)) return false;
-        if (!offeredSubprotocol(request, selected)) return false;
-    }
-    return true;
-}
-
-fn offeredSubprotocol(
-    request: *const netz.http1.Request,
-    selected: []const u8,
-) bool {
-    const header = request.header("sec-websocket-protocol") orelse return false;
-    var parts = std.mem.splitScalar(u8, header, ',');
-    while (parts.next()) |part| {
-        if (std.mem.eql(u8, std.mem.trim(u8, part, " \t"), selected)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn internalErrorResponse(
-    arena: std.mem.Allocator,
-    limits: Limits,
-) Response {
-    var response = Response.initWithLimits(arena, limits);
-    response.setStatus(500);
-    response.text("Internal Server Error") catch {};
-    return response;
-}
+const internalErrorResponse = adapter_response.internalErrorResponse;
 
 pub fn statusForReadError(err: anyerror) ?u16 {
     if (err == error.HeadersTooLarge or err == error.TooManyHeaders) {

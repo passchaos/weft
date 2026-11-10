@@ -1,5 +1,7 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
+const response_mod = @import("../response.zig");
 
 /// Baseline browser security headers. Every field is optional so an
 /// application can opt out or override a value before this middleware runs.
@@ -14,8 +16,8 @@ pub const SecurityHeaders = struct {
     /// from the cleartext HTTP/1 adapter.
     strict_transport_security: ?[]const u8 = null,
 
-    pub fn handler(self: *SecurityHeaders) ctx_mod.Handler {
-        return ctx_mod.withContext(SecurityHeaders, self, call);
+    pub fn handler(self: *SecurityHeaders) handler_mod.Handler {
+        return handler_mod.withContext(SecurityHeaders, self, call);
     }
 
     fn call(self: *SecurityHeaders, ctx: *ctx_mod.Ctx) anyerror!void {
@@ -71,9 +73,9 @@ test "security headers are applied and can be overridden" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
-        .middleware = &.{ctx_mod.handler(securityHeaders)},
-        .final_handler = ctx_mod.handler(struct {
+        .response = response_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{handler_mod.handler(securityHeaders)},
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.setHeader("X-Frame-Options", "SAMEORIGIN");
                 try ctx.text("ok");

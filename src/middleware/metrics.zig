@@ -1,5 +1,7 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
+const response_mod = @import("../response.zig");
 const errors_mod = @import("../errors.zig");
 
 /// Lock-free request counters and latency totals.
@@ -84,8 +86,8 @@ pub const Metrics = struct {
         }
     };
 
-    pub fn handler(self: *Metrics) ctx_mod.Handler {
-        return ctx_mod.withContext(Metrics, self, call);
+    pub fn handler(self: *Metrics) handler_mod.Handler {
+        return handler_mod.withContext(Metrics, self, call);
     }
 
     pub fn snapshot(self: *const Metrics) Snapshot {
@@ -167,9 +169,9 @@ test "metrics counts active, total, and status classes" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{counters.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -183,9 +185,9 @@ test "metrics counts active, total, and status classes" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{counters.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 ctx.setStatus(404);
                 try ctx.text("missing");
@@ -223,9 +225,9 @@ test "metrics classify handler errors like dispatch" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{counters.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(_: *ctx_mod.Ctx) anyerror!void {
                 return error.InvalidJson;
             }
@@ -239,9 +241,9 @@ test "metrics classify handler errors like dispatch" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{counters.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(_: *ctx_mod.Ctx) anyerror!void {
                 return error.Canceled;
             }

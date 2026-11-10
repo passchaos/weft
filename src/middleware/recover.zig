@@ -1,6 +1,7 @@
 const std = @import("std");
 const logging_mod = @import("../logging.zig");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
 const errors_mod = @import("../errors.zig");
 const response_mod = @import("../response.zig");
 
@@ -49,9 +50,9 @@ test "recover turns an uncommitted failure into 500" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
-        .middleware = &.{ctx_mod.handler(recover)},
-        .final_handler = ctx_mod.handler(struct {
+        .response = response_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{handler_mod.handler(recover)},
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 _ = ctx;
                 return error.Boom;
@@ -86,9 +87,9 @@ test "recover preserves dispatch statuses for client errors" {
         .arena = arena.allocator(),
         .limits = .{},
         .request = &request,
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
-        .middleware = &.{ctx_mod.handler(recover)},
-        .final_handler = ctx_mod.handler(struct {
+        .response = response_mod.Response.init(arena.allocator(), 1024),
+        .middleware = &.{handler_mod.handler(recover)},
+        .final_handler = handler_mod.handler(struct {
             fn handle(_: *ctx_mod.Ctx) anyerror!void {
                 return error.InvalidJson;
             }

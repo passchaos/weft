@@ -1,9 +1,9 @@
 //! weft is the application weaving layer on top of netz.
 //!
 //! It provides a concrete handler contract, middleware chain, method/path
-//! router, typed request locals, decoded query and path captures, and a
-//! bounded HTTP/1 server adapter. Protocol I/O stays in netz; the runtime seam
-//! stays `std.Io`.
+//! router, typed request locals, decoded query and path captures, and bounded
+//! HTTP/1, HTTP/2, and HTTP/3 server adapters. Protocol I/O stays in netz; the
+//! runtime seam stays `std.Io`.
 
 pub const netz = @import("netz");
 
@@ -15,7 +15,7 @@ pub const validateHeaderName = @import("response.zig").validateHeaderName;
 pub const validateHeaderValue = @import("response.zig").validateHeaderValue;
 
 pub const Ctx = @import("ctx.zig").Ctx;
-pub const BodyReader = @import("ctx.zig").BodyReader;
+pub const BodyReader = @import("body.zig").BodyReader;
 pub const StreamBody = @import("stream.zig").Body;
 pub const StreamWriter = @import("stream.zig").Writer;
 pub const stream = @import("stream.zig");
@@ -24,16 +24,16 @@ pub const SseEvent = @import("sse.zig").Event;
 pub const websocket = @import("websocket.zig");
 pub const WebSocketSession = @import("websocket.zig").Session;
 pub const WebSocketUpgrade = @import("websocket.zig").Upgrade;
-pub const Handler = @import("ctx.zig").Handler;
-pub const Locals = @import("ctx.zig").Locals;
-pub const Param = @import("ctx.zig").Param;
-pub const Protocol = @import("ctx.zig").Protocol;
-pub const ClientInfo = @import("ctx.zig").ClientInfo;
-pub const QueryPair = @import("ctx.zig").QueryPair;
-pub const max_params = @import("ctx.zig").max_params;
-pub const handler = @import("ctx.zig").handler;
-pub const handlerFor = @import("ctx.zig").handlerFor;
-pub const withContext = @import("ctx.zig").withContext;
+pub const Handler = @import("handler.zig").Handler;
+pub const Locals = @import("handler.zig").Locals;
+pub const Param = @import("handler.zig").Param;
+pub const Protocol = @import("handler.zig").Protocol;
+pub const ClientInfo = @import("handler.zig").ClientInfo;
+pub const QueryPair = @import("query.zig").Pair;
+pub const max_params = @import("handler.zig").max_params;
+pub const handler = @import("handler.zig").handler;
+pub const handlerFor = @import("handler.zig").handlerFor;
+pub const withContext = @import("handler.zig").withContext;
 
 pub const RouteFailure = @import("dispatch.zig").RouteFailure;
 pub const query = @import("query.zig");
@@ -77,6 +77,9 @@ comptime {
     _ = @import("limits.zig");
     _ = @import("response.zig");
     _ = @import("ctx.zig");
+    _ = @import("ctx_test.zig");
+    _ = @import("body.zig");
+    _ = @import("handler.zig");
     _ = @import("stream.zig");
     _ = @import("sse.zig");
     _ = @import("websocket.zig");
@@ -86,11 +89,18 @@ comptime {
     _ = @import("quality.zig");
     _ = @import("multipart.zig");
     _ = @import("multipart_stream.zig");
+    _ = @import("multipart/reader.zig");
+    _ = @import("multipart/delimiter.zig");
     _ = @import("precondition.zig");
     _ = @import("static_files.zig");
+    _ = @import("static/path.zig");
+    _ = @import("static/variants.zig");
+    _ = @import("static/range.zig");
     _ = @import("vary.zig");
     _ = @import("target.zig");
     _ = @import("router.zig");
+    _ = @import("router_test.zig");
+    _ = @import("router/trie.zig");
     _ = @import("server.zig");
     _ = @import("drain.zig");
     _ = @import("dispatch.zig");
@@ -98,8 +108,27 @@ comptime {
     _ = @import("http2_server.zig");
     _ = @import("http3_server.zig");
     _ = middleware;
+    _ = @import("middleware/compress_test.zig");
+    _ = @import("middleware/compress/negotiate.zig");
+    _ = @import("middleware/compress/gzip.zig");
+    _ = @import("middleware/compress/deflate.zig");
+    _ = @import("middleware/compress/brotli.zig");
+    _ = @import("middleware/compress/zstd.zig");
+    _ = @import("middleware/compress/continuous.zig");
     _ = @import("logging.zig");
     _ = @import("bounded_arena.zig");
     _ = @import("openapi.zig");
+    _ = @import("openapi/types.zig");
+    _ = @import("openapi/render.zig");
+    _ = @import("openapi/ui.zig");
+    _ = @import("openapi/document.zig");
+    _ = @import("openapi_test.zig");
     _ = @import("mcp.zig");
+    _ = @import("mcp/types.zig");
+    _ = @import("mcp/server.zig");
+    _ = @import("mcp_test.zig");
+    _ = @import("adapter/body.zig");
+    _ = @import("adapter/header_view.zig");
+    _ = @import("adapter/response.zig");
+    _ = @import("adapter/write.zig");
 }

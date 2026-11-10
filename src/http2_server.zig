@@ -3,6 +3,8 @@ const netz = @import("netz");
 const logging_mod = @import("logging.zig");
 const bounded_arena_mod = @import("bounded_arena.zig");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
+const body_mod = @import("body.zig");
 const router_mod = @import("router.zig");
 const response_mod = @import("response.zig");
 const errors_mod = @import("errors.zig");
@@ -10,13 +12,18 @@ const limits_mod = @import("limits.zig");
 const dispatch_mod = @import("dispatch.zig");
 const stream_mod = @import("stream.zig");
 const drain_mod = @import("drain.zig");
+const adapter_body = @import("adapter/body.zig");
+const adapter_header = @import("adapter/header_view.zig");
+const adapter_response = @import("adapter/response.zig");
+const adapter_write = @import("adapter/write.zig");
+const websocket_mod = @import("websocket.zig");
 
-pub const Ctx = ctx_mod.Ctx;
-pub const Handler = ctx_mod.Handler;
-pub const Response = response_mod.Response;
-pub const Limits = limits_mod.Limits;
-pub const Router = router_mod.Router;
-pub const RouteOptions = router_mod.RouteOptions;
+const Ctx = ctx_mod.Ctx;
+const Handler = handler_mod.Handler;
+const Response = response_mod.Response;
+const Limits = limits_mod.Limits;
+const Router = router_mod.Router;
+const RouteOptions = router_mod.RouteOptions;
 
 pub const Options = struct {
     /// TCP listen address. Exactly one of `address` and `unix_path` must be
@@ -52,6 +59,16 @@ pub const Options = struct {
     /// Optional TLS configuration. Netz's HTTP/2 TLS listener requires ALPN
     /// `h2`; weft overrides nested limits and `tcp_nodelay`.
     tls: ?netz.http2.runtime.TlsListenOptions = null,
+    /// Accept HTTP/1.1 `Upgrade: h2c` on the cleartext listener. This mode is
+    /// mutually exclusive with prior-knowledge h2c: every accepted connection
+    /// must start with an HTTP/1.1 upgrade request. TLS and Unix sockets are
+    /// rejected when this is enabled.
+    h2c_upgrade: bool = false,
+    /// On a TLS listener, also negotiate `http/1.1` via ALPN and serve
+    /// buffered HTTP/1.1 requests with the same router and middleware. This
+    /// mode uses the generic ALPN listener and supports streaming responses
+    /// but not WebSocket upgrades or incremental request bodies.
+    alpn_http1: bool = false,
     /// TCP accept plus TLS/HTTP/2 bootstrap budget for TLS workers.
     tls_accept_timeout: std.Io.Duration = .fromMilliseconds(500),
     /// Optional budget for workers to drain after `stop`.
@@ -62,12 +79,14 @@ const Listener = union(enum) {
     plain: netz.http2.runtime.Server,
     tls: netz.http2.runtime.TlsServer,
     unix: netz.http2.runtime.UnixServer,
+    alpn: netz.tls.alpn_server.Server,
 
     fn deinit(self: *Listener) void {
         switch (self.*) {
             .plain => |*server| server.deinit(),
             .tls => |*server| server.deinit(),
             .unix => |*server| server.deinit(),
+            .alpn => |*server| server.deinit(),
         }
     }
 
@@ -76,6 +95,7 @@ const Listener = union(enum) {
             .plain => |server| server.address(),
             .tls => |server| server.address(),
             .unix => null,
+            .alpn => |server| server.address(),
         };
     }
 
@@ -87,6 +107,27 @@ const Listener = union(enum) {
             .plain => |*server| server.acceptWithTimeout(timeout),
             .tls => |*server| server.acceptWithTimeout(timeout),
             .unix => |*server| server.acceptWithTimeout(timeout),
+            .alpn => error.InvalidOptions,
+        };
+    }
+
+    fn acceptAlpnWithTimeout(
+        self: *Listener,
+        timeout: std.Io.Duration,
+    ) !netz.tls.alpn_server.Accepted {
+        return switch (self.*) {
+            .alpn => |*server| server.acceptWithTimeout(timeout),
+            else => error.InvalidOptions,
+        };
+    }
+
+    fn acceptUpgradeWithTimeout(
+        self: *Listener,
+        timeout: std.Io.Duration,
+    ) !netz.http2.runtime.H2cUpgradeRequest {
+        return switch (self.*) {
+            .plain => |*server| server.acceptUpgradeWithTimeout(timeout),
+            else => error.InvalidOptions,
         };
     }
 };
@@ -99,9 +140,105 @@ const Http2StreamState = struct {
 fn writeWithBudget(raw: ?*anyopaque, data: []const u8) anyerror!void {
     const state: *Http2StreamState = @ptrCast(@alignCast(raw orelse
         return error.InvalidWriterState));
-    if (data.len > state.remaining) return error.ResponseTooLarge;
-    state.remaining -= data.len;
+    try adapter_write.consume(&state.remaining, data);
     try state.writer.write(data);
+}
+
+const WsContext = struct {
+    stream: *netz.http2.runtime.Connection.ConcurrentStream,
+};
+
+fn wsRead(raw: ?*anyopaque, buffer: []u8) anyerror!usize {
+    const context: *WsContext = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    return (try context.stream.nextBody(buffer, null)) orelse 0;
+}
+
+fn wsWrite(raw: ?*anyopaque, data: []const u8) anyerror!void {
+    const context: *WsContext = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    try context.stream.writeData(data, false);
+}
+
+fn wsClose(raw: ?*anyopaque) void {
+    const context: *WsContext = @ptrCast(@alignCast(raw orelse return));
+    context.stream.finish() catch {};
+}
+
+fn headerOffersSubprotocol(
+    request: *const netz.http1.Request,
+    selected: []const u8,
+) bool {
+    const header = request.header("sec-websocket-protocol") orelse return false;
+    var parts = std.mem.splitScalar(u8, header, ',');
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, std.mem.trim(u8, part, " \t"), selected)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const Http1StreamState = struct {
+    writer: *netz.http1.runtime.ResponseWriter,
+    remaining: usize,
+};
+
+fn writeHttp1StreamData(raw: ?*anyopaque, data: []const u8) anyerror!void {
+    const state: *Http1StreamState = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    try adapter_write.consume(&state.remaining, data);
+    try state.writer.write(data);
+}
+
+const Http1EarlyHintsContext = struct {
+    connection: *netz.http1.runtime.Connection,
+    method: netz.http1.Method,
+};
+
+fn sendHttp1EarlyHints(
+    raw: ?*anyopaque,
+    headers: []const netz.http1.Header,
+) anyerror!void {
+    const context: *Http1EarlyHintsContext = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    try context.connection.writeResponse(.{
+        .status = 103,
+        .reason = "Early Hints",
+        .headers = headers,
+        .request_method = context.method,
+    });
+}
+
+fn requestAcceptsTrailers(request: *const netz.http1.Request) bool {
+    const te = request.header("te") orelse return false;
+    var parts = std.mem.splitScalar(u8, te, ',');
+    while (parts.next()) |part| {
+        if (std.ascii.eqlIgnoreCase(
+            std.mem.trim(u8, part, " \t"),
+            "trailers",
+        )) return true;
+    }
+    return false;
+}
+
+fn alpnTlsOptions(
+    tls: netz.http2.runtime.TlsListenOptions,
+) netz.tls.stream.ServerOptions {
+    return .{
+        .identity = tls.identity,
+        .cipher_suites = tls.cipher_suites,
+        .tls12_cipher_suites = tls.tls12_cipher_suites,
+        .protocol_policy = tls.protocol_policy,
+        .max_client_hello_size = tls.max_client_hello_size,
+        .max_client_handshake_size = tls.max_client_handshake_size,
+        .handshake_timeout = tls.tls_handshake_timeout,
+        .client_auth = tls.client_auth,
+        .tls13_session_tickets = tls.tls13_session_tickets,
+        .tls12_session_tickets = tls.tls12_session_tickets,
+        .alpn_protocols = &.{ "h2", "http/1.1" },
+        .require_alpn = true,
+    };
 }
 
 /// A bounded HTTP/2 cleartext server adapter.
@@ -173,6 +310,17 @@ pub fn Http2Server(comptime H: type) type {
             const has_unix = options.unix_path != null;
             if (has_tcp == has_unix) return error.InvalidOptions;
             if (has_unix and options.tls != null) return error.InvalidOptions;
+            if (options.h2c_upgrade and
+                (options.tls != null or options.unix_path != null))
+            {
+                return error.InvalidOptions;
+            }
+            if (options.alpn_http1 and
+                (options.tls == null or options.unix_path != null or
+                    options.h2c_upgrade))
+            {
+                return error.InvalidOptions;
+            }
             const unix_address = if (options.unix_path) |path|
                 try std.Io.net.UnixAddress.init(path)
             else
@@ -189,7 +337,17 @@ pub fn Http2Server(comptime H: type) type {
                 io,
                 unix,
                 netz_limits,
-            ) } else if (options.tls) |tls_options| blk: {
+            ) } else if (options.alpn_http1) blk: {
+                break :blk .{ .alpn = try netz.tls.alpn_server.Server.listen(
+                    allocator,
+                    io,
+                    .{
+                        .address = options.address.?,
+                        .tls = alpnTlsOptions(options.tls.?),
+                        .tcp_nodelay = options.limits.tcp_nodelay,
+                    },
+                ) };
+            } else if (options.tls) |tls_options| blk: {
                 var tls = tls_options;
                 tls.limits = netz_limits;
                 tls.tcp_nodelay = options.limits.tcp_nodelay;
@@ -286,6 +444,71 @@ pub fn Http2Server(comptime H: type) type {
                     self.options.tls_accept_timeout
                 else
                     self.options.accept_timeout;
+                if (self.options.alpn_http1) {
+                    const accepted = self.netz_server.acceptAlpnWithTimeout(
+                        accept_timeout,
+                    ) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        if (err == error.Timeout) continue;
+                        if (self.shutdown.isSet()) return;
+                        logging_mod.logWarn(
+                            "weft",
+                            "http2 ALPN accept failed: {s}",
+                            .{@errorName(err)},
+                            .{ .err = @errorName(err) },
+                        );
+                        std.Io.sleep(
+                            self.io,
+                            self.options.accept_error_backoff,
+                            .awake,
+                        ) catch return error.Canceled;
+                        continue;
+                    };
+                    self.serveAlpnConnection(accepted) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        logging_mod.logWarn(
+                            "weft",
+                            "http2 ALPN connection error: {s}",
+                            .{@errorName(err)},
+                            .{ .err = @errorName(err) },
+                        );
+                    };
+                    continue;
+                }
+
+                if (self.options.h2c_upgrade) {
+                    var upgrade = self.netz_server.acceptUpgradeWithTimeout(
+                        accept_timeout,
+                    ) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        if (err == error.Timeout) continue;
+                        if (self.shutdown.isSet()) return;
+                        logging_mod.logWarn(
+                            "weft",
+                            "http2 h2c upgrade failed: {s}",
+                            .{@errorName(err)},
+                            .{ .err = @errorName(err) },
+                        );
+                        std.Io.sleep(
+                            self.io,
+                            self.options.accept_error_backoff,
+                            .awake,
+                        ) catch return error.Canceled;
+                        continue;
+                    };
+                    defer upgrade.deinit(self.allocator);
+                    self.serveUpgrade(&upgrade) catch |err| {
+                        if (err == error.Canceled) return error.Canceled;
+                        logging_mod.logWarn(
+                            "weft",
+                            "http2 h2c upgrade error: {s}",
+                            .{@errorName(err)},
+                            .{ .err = @errorName(err) },
+                        );
+                    };
+                    continue;
+                }
+
                 var connection = self.netz_server.acceptWithTimeout(
                     accept_timeout,
                 ) catch |err| {
@@ -380,6 +603,275 @@ pub fn Http2Server(comptime H: type) type {
             };
         }
 
+        fn serveAlpnConnection(
+            self: *@This(),
+            accepted: netz.tls.alpn_server.Accepted,
+        ) !void {
+            var tls_owned = true;
+            var stream_owned = true;
+            errdefer if (tls_owned) accepted.tls.deinit();
+            errdefer if (stream_owned) accepted.stream.close(self.io);
+
+            const alpn = accepted.tls.selected_alpn orelse
+                return error.InvalidAlpn;
+            if (std.mem.eql(u8, alpn, "h2")) {
+                var connection = try netz.http2.runtime.adoptNegotiatedTlsServer(
+                    self.allocator,
+                    self.io,
+                    accepted.stream,
+                    accepted.tls,
+                    self.options.limits.toHttp2Netz(),
+                );
+                tls_owned = false;
+                stream_owned = false;
+                defer connection.close();
+                try self.serveConnection(&connection);
+                return;
+            }
+            if (std.mem.eql(u8, alpn, "http/1.1")) {
+                var connection = netz.http1.runtime.Connection{
+                    .io = self.io,
+                    .allocator = self.allocator,
+                    .stream = accepted.stream,
+                    .limits = self.options.limits.toNetz(),
+                    .tls_server_conn = accepted.tls,
+                };
+                tls_owned = false;
+                stream_owned = false;
+                defer connection.close();
+                try self.serveHttp1Connection(&connection);
+                return;
+            }
+            return error.InvalidAlpn;
+        }
+
+        fn serveHttp1Connection(
+            self: *@This(),
+            connection: *netz.http1.runtime.Connection,
+        ) !void {
+            var request_count: usize = 0;
+            while (request_count < self.options.max_requests_per_connection) : (request_count += 1) {
+                var owned = connection.readRequest(.{}) catch |err| {
+                    if (err == error.Canceled) return error.Canceled;
+                    return;
+                };
+                defer owned.deinit(self.allocator);
+                const request = &owned.request;
+
+                var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena_state.deinit();
+                const arena = arena_state.allocator();
+
+                const client_info = handler_mod.ClientInfo{
+                    .address = handler_mod.resolveClientAddress(
+                        request.headers,
+                        connection.stream.socket.address,
+                        self.options.limits.trust_forwarded_for,
+                    ),
+                    .peer_certificates = connection.peerCertificates() orelse &.{},
+                    .protocol = .http_1_1,
+                    .tls = connection.tls_server_conn != null,
+                };
+                var prepared: router_mod.Prepared = undefined;
+                dispatch_mod.prepareRoute(
+                    H,
+                    &self.app_router,
+                    request.method,
+                    request.target,
+                    &prepared,
+                );
+                var early_hints_context = Http1EarlyHintsContext{
+                    .connection = connection,
+                    .method = request.method,
+                };
+                var response = self.dispatchRequest(
+                    request,
+                    client_info,
+                    arena,
+                    null,
+                    &prepared,
+                    .{
+                        .context = &early_hints_context,
+                        .send_fn = sendHttp1EarlyHints,
+                    },
+                ) catch |err| blk: {
+                    if (err == error.Canceled) return err;
+                    logging_mod.logWarn(
+                        "weft",
+                        "http2 ALPN http/1.1 dispatch failed: {s}",
+                        .{@errorName(err)},
+                        .{ .err = @errorName(err) },
+                    );
+                    break :blk internalErrorResponse(
+                        arena,
+                        self.options.limits,
+                    );
+                };
+
+                if (response.body.len > self.options.limits.max_response_bytes) {
+                    response.reset();
+                    response.setStatus(500);
+                    response.text("Response Too Large") catch {};
+                }
+                response.validateHead() catch {
+                    response.reset();
+                    response.setStatus(500);
+                    response.text("Internal Server Error") catch {};
+                };
+
+                if (response.stream) |body| {
+                    try self.writeHttp1Stream(
+                        connection,
+                        request,
+                        &response,
+                        body,
+                        arena,
+                    );
+                    response.stream = null;
+                } else {
+                    try connection.writeResponse(.{
+                        .status = response.status,
+                        .reason = response.reason,
+                        .headers = response.headers.items,
+                        .body = response.body,
+                        .trailers = response.trailers.items,
+                        .request_accepts_trailers = requestAcceptsTrailers(request),
+                        .request_method = request.method,
+                    });
+                }
+
+                if (request.must_close or !request.keepAlive()) return;
+            }
+        }
+
+        fn writeHttp1Stream(
+            self: *@This(),
+            connection: *netz.http1.runtime.Connection,
+            request: *const netz.http1.Request,
+            response: *Response,
+            body: stream_mod.Body,
+            arena: std.mem.Allocator,
+        ) !void {
+            var trailer_names = std.ArrayListUnmanaged([]const u8).empty;
+            for (response.trailers.items) |header| {
+                try trailer_names.append(arena, header.name);
+            }
+            const accepts_trailers = requestAcceptsTrailers(request);
+            var writer = connection.startResponse(.{
+                .status = response.status,
+                .reason = response.reason,
+                .headers = response.headers.items,
+                .body_length = body.length,
+                .trailer_names = trailer_names.items,
+                .request_accepts_trailers = accepts_trailers,
+                .request_method = request.method,
+            }) catch |err| {
+                body.cancel();
+                return err;
+            };
+            defer writer.deinit();
+
+            var state = Http1StreamState{
+                .writer = &writer,
+                .remaining = body.length orelse
+                    self.options.limits.max_response_bytes,
+            };
+            var stream_writer = stream_mod.Writer{
+                .context = &state,
+                .write_fn = writeHttp1StreamData,
+            };
+            try body.run(&stream_writer);
+            if (response.trailers.items.len != 0 and accepts_trailers) {
+                try writer.finishTrailers(response.trailers.items);
+            } else {
+                try writer.finish();
+            }
+        }
+
+        fn serveUpgrade(
+            self: *@This(),
+            upgrade: *netz.http2.runtime.H2cUpgradeRequest,
+        ) !void {
+            const request = &upgrade.request.request;
+            var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena_state.deinit();
+            const arena = arena_state.allocator();
+
+            const client_info = handler_mod.ClientInfo{
+                .address = handler_mod.resolveClientAddress(
+                    request.headers,
+                    upgrade.connection.stream.socket.address,
+                    self.options.limits.trust_forwarded_for,
+                ),
+                .peer_certificates = &.{},
+                .protocol = .http_2,
+                .tls = false,
+            };
+            var prepared: router_mod.Prepared = undefined;
+            dispatch_mod.prepareRoute(
+                H,
+                &self.app_router,
+                request.method,
+                request.target,
+                &prepared,
+            );
+            var response = self.dispatchRequest(
+                request,
+                client_info,
+                arena,
+                null,
+                &prepared,
+                .{},
+            ) catch |err| blk: {
+                if (err == error.Canceled) return err;
+                logging_mod.logWarn(
+                    "weft",
+                    "http2 h2c upgrade dispatch failed: {s}",
+                    .{@errorName(err)},
+                    .{ .err = @errorName(err) },
+                );
+                break :blk internalErrorResponse(
+                    arena,
+                    self.options.limits,
+                );
+            };
+
+            if (response.stream) |body| {
+                body.cancel();
+                response.stream = null;
+                response.reset();
+                response.setStatus(500);
+                response.text(
+                    "Streaming responses are not supported for the h2c upgrade request",
+                ) catch {};
+            }
+            if (response.body.len > self.options.limits.max_response_bytes) {
+                response.reset();
+                response.setStatus(500);
+                response.text("Response Too Large") catch {};
+            }
+            response.validateHead() catch {
+                response.reset();
+                response.setStatus(500);
+                response.text("Internal Server Error") catch {};
+            };
+
+            const headers = try headerFields(&response, arena);
+            const trailers = try trailerFields(&response, arena);
+            try upgrade.connection.writeResponse(
+                upgrade.stream_id,
+                .{
+                    .status = response.status,
+                    .headers = headers,
+                    .body = response.body,
+                    .trailers = trailers,
+                    .request_method = request.method.string(),
+                },
+            );
+
+            try self.serveConnection(&upgrade.connection);
+        }
+
         fn handleConcurrentStream(
             context: *H2ConcurrentContext(H),
             stream: *ConcurrentStream,
@@ -414,6 +906,9 @@ pub fn Http2Server(comptime H: type) type {
                 return;
             };
             const target = if (head.path.len == 0) "/" else head.path;
+            const websocket_upgrade = method == .CONNECT and
+                head.protocol != null and
+                std.mem.eql(u8, head.protocol.?, "websocket");
 
             // Route matching uses the path, never the query string carried by
             // the `:path` pseudo-header. The result is reused by dispatch;
@@ -422,7 +917,7 @@ pub fn Http2Server(comptime H: type) type {
             dispatch_mod.prepareRoute(
                 H,
                 &self.app_router,
-                method,
+                if (websocket_upgrade) .GET else method,
                 target,
                 &prepared,
             );
@@ -434,6 +929,7 @@ pub fn Http2Server(comptime H: type) type {
                 const route = prepared.route orelse
                     return error.InlineDeclined;
                 if (method == .CONNECT or
+                    websocket_upgrade or
                     !route.inline_bodyless or
                     route.streaming or
                     target.len > self.options.limits.max_request_target_bytes)
@@ -442,9 +938,8 @@ pub fn Http2Server(comptime H: type) type {
                 }
             }
 
-            // Weft has no CONNECT tunnel or extended-CONNECT API; reject the
-            // stream instead of routing the authority target as a request.
-            if (method == .CONNECT) {
+            // Non-WebSocket CONNECT tunnels are not exposed by weft.
+            if (method == .CONNECT and !websocket_upgrade) {
                 return self.rejectConcurrent(
                     stream,
                     head.method,
@@ -491,13 +986,16 @@ pub fn Http2Server(comptime H: type) type {
             const declared_length = head.content_length;
             const has_declared_body = declared_length != null and
                 declared_length.? != 0;
-            const streaming = route_streaming or declared_length == null;
+            const streaming = if (websocket_upgrade)
+                false
+            else
+                route_streaming or declared_length == null;
             var body: []const u8 = "";
             var trailers: []netz.http1.Header = &.{};
-            var h2_reader: ctx_mod.H2StreamReader = undefined;
-            var reader: ?ctx_mod.BodyReader = null;
+            var h2_reader: body_mod.H2StreamReader = undefined;
+            var reader: ?body_mod.BodyReader = null;
             if (streaming) {
-                h2_reader = ctx_mod.H2StreamReader.init(
+                h2_reader = body_mod.H2StreamReader.init(
                     stream,
                     self.options.limits.max_streaming_window_bytes,
                 );
@@ -540,7 +1038,7 @@ pub fn Http2Server(comptime H: type) type {
             }
 
             var request = netz.http1.Request{
-                .method = method,
+                .method = if (websocket_upgrade) .GET else method,
                 .target = target,
                 .version = .http_1_1,
                 .headers = headers,
@@ -549,8 +1047,8 @@ pub fn Http2Server(comptime H: type) type {
                 .consumed = 0,
                 .must_close = false,
             };
-            const client_info = ctx_mod.ClientInfo{
-                .address = ctx_mod.resolveClientAddress(
+            const client_info = handler_mod.ClientInfo{
+                .address = handler_mod.resolveClientAddress(
                     head.headers,
                     peer_address,
                     self.options.limits.trust_forwarded_for,
@@ -559,12 +1057,21 @@ pub fn Http2Server(comptime H: type) type {
                 .protocol = .http_2,
                 .tls = self.options.tls != null,
             };
+            var early_hints_context = EarlyHintsContext{
+                .connection = stream.engine.connection,
+                .stream_id = stream.streamId(),
+                .arena = arena,
+            };
             var response = self.dispatchRequest(
                 &request,
                 client_info,
                 arena,
                 reader,
                 &prepared,
+                .{
+                    .context = &early_hints_context,
+                    .send_fn = sendEarlyHints,
+                },
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;
                 logging_mod.logWarn(
@@ -589,6 +1096,17 @@ pub fn Http2Server(comptime H: type) type {
                 response.setStatus(500);
                 response.text("Internal Server Error") catch {};
             };
+
+            if (websocket_upgrade and response.upgrade != null) {
+                try self.runWebSocket(
+                    stream,
+                    head,
+                    &request,
+                    &response,
+                    arena,
+                );
+                return;
+            }
 
             self.respondConcurrent(
                 stream,
@@ -618,6 +1136,75 @@ pub fn Http2Server(comptime H: type) type {
 
         /// Answer a request that exceeded an adapter budget without running
         /// the router.
+        fn runWebSocket(
+            self: *@This(),
+            stream: *ConcurrentStream,
+            head: anytype,
+            request: *const netz.http1.Request,
+            response: *Response,
+            arena: std.mem.Allocator,
+        ) !void {
+            const upgrade = response.upgrade.?;
+            const version = request.header("sec-websocket-version") orelse "";
+            if (!std.mem.eql(u8, version, "13")) {
+                return self.rejectConcurrent(
+                    stream,
+                    head.method,
+                    426,
+                    "Upgrade Required",
+                    arena,
+                );
+            }
+            if (upgrade.subprotocol) |sub| {
+                if (!netz.websocket.validSubprotocolToken(sub) or
+                    !headerOffersSubprotocol(request, sub))
+                {
+                    return self.rejectConcurrent(
+                        stream,
+                        head.method,
+                        400,
+                        "Bad Request",
+                        arena,
+                    );
+                }
+            }
+
+            var fields = std.ArrayListUnmanaged(netz.http2.Hpack.HeaderField).empty;
+            if (upgrade.subprotocol) |sub| {
+                try fields.append(arena, .{
+                    .name = "sec-websocket-protocol",
+                    .value = sub,
+                });
+            }
+            try stream.startResponse(.{
+                .status = 200,
+                .headers = fields.items,
+                .request_method = "CONNECT",
+                .extended_connect = true,
+            });
+
+            var ws_context = WsContext{ .stream = stream };
+            const connection = netz.websocket.stream_connection.Connection.init(
+                self.allocator,
+                self.io,
+                .{
+                    .context = &ws_context,
+                    .read_fn = wsRead,
+                    .write_fn = wsWrite,
+                },
+                .{
+                    .role = .server,
+                    .max_message_bytes = self.options.limits.max_body_bytes,
+                    .max_frame_bytes = self.options.limits.max_response_bytes,
+                },
+            );
+            var session = websocket_mod.Session{
+                .inner = .{ .stream = connection },
+            };
+            defer session.close();
+            try upgrade.run(&session);
+        }
+
         fn rejectConcurrent(
             self: *@This(),
             stream: *ConcurrentStream,
@@ -767,10 +1354,11 @@ pub fn Http2Server(comptime H: type) type {
         fn dispatchRequest(
             self: *@This(),
             request: *const netz.http1.Request,
-            client_info: ctx_mod.ClientInfo,
+            client_info: handler_mod.ClientInfo,
             arena: std.mem.Allocator,
-            body_reader: ?ctx_mod.BodyReader,
+            body_reader: ?body_mod.BodyReader,
             prepared: *const router_mod.Prepared,
+            early_hints: dispatch_mod.EarlyHints,
         ) !Response {
             return dispatch_mod.dispatch(
                 H,
@@ -790,6 +1378,7 @@ pub fn Http2Server(comptime H: type) type {
                 self.allocator,
                 body_reader,
                 prepared,
+                early_hints,
             );
         }
     };
@@ -828,200 +1417,45 @@ fn writeConcurrentWithBudget(
 ) anyerror!void {
     const state: *H2ConcurrentWriterState = @ptrCast(@alignCast(raw orelse
         return error.InvalidWriterState));
-    if (data.len > state.remaining) return error.ResponseTooLarge;
-    state.remaining -= data.len;
+    try adapter_write.consume(&state.remaining, data);
     try state.stream.writeData(data, false);
 }
 
-fn readWholeBody(
+const HeaderView = adapter_header.HeaderView(netz.http2.Hpack.HeaderField);
+
+const EarlyHintsContext = struct {
+    connection: *netz.http2.runtime.Connection,
+    stream_id: u31,
     arena: std.mem.Allocator,
-    staging: std.mem.Allocator,
-    stream: *netz.http2.runtime.Connection.ConcurrentStream,
-    expected_length: ?usize,
-    max_body_bytes: usize,
-    max_arena_bytes: usize,
-) ![]const u8 {
-    if (expected_length) |expected| {
-        if (expected != 0) {
-            if (expected > max_body_bytes or expected > max_arena_bytes) {
-                return error.PayloadTooLarge;
-            }
-            const body = arena.alloc(u8, expected) catch
-                return error.PayloadTooLarge;
-            var offset: usize = 0;
-            var buffer: [16 * 1024]u8 = undefined;
-            while (true) {
-                const count = (try stream.nextBody(&buffer, null)) orelse break;
-                if (count == 0) continue;
-                if (count > expected - offset) return error.PayloadTooLarge;
-                @memcpy(body[offset..][0..count], buffer[0..count]);
-                offset += count;
-            }
-            return body[0..offset];
-        }
-    }
+};
 
-    // Unknown length: stage outside the fixed arena so growth cannot leak
-    // intermediate blocks, then copy the final bytes once.
-    var output = std.ArrayListUnmanaged(u8).empty;
-    defer output.deinit(staging);
-    var buffer: [16 * 1024]u8 = undefined;
-    while (true) {
-        const count = (try stream.nextBody(&buffer, null)) orelse break;
-        if (count == 0) continue;
-        const total = std.math.add(usize, output.items.len, count) catch
-            return error.PayloadTooLarge;
-        if (total > max_body_bytes or total > max_arena_bytes) {
-            return error.PayloadTooLarge;
-        }
-        output.appendSlice(staging, buffer[0..count]) catch
-            return error.PayloadTooLarge;
-    }
-    return arena.dupe(u8, output.items) catch error.PayloadTooLarge;
+fn sendEarlyHints(
+    raw: ?*anyopaque,
+    headers: []const netz.http1.Header,
+) anyerror!void {
+    const context: *EarlyHintsContext = @ptrCast(@alignCast(raw orelse
+        return error.InvalidWriterState));
+    const fields = try HeaderView.informationalFields(
+        context.arena,
+        headers,
+    );
+    try context.connection.writeInformationalResponse(
+        context.stream_id,
+        103,
+        fields,
+    );
 }
-
-fn convertH2Trailers(
-    allocator: std.mem.Allocator,
-    fields: []const netz.http2.Hpack.HeaderField,
-) ![]netz.http1.Header {
-    const headers = try allocator.alloc(netz.http1.Header, fields.len);
-    for (fields, headers) |field, *header| {
-        header.* = .{ .name = field.name, .value = field.value };
-    }
-    return headers;
-}
-
-fn convertH2HeadersInto(
-    destination: []netz.http1.Header,
-    fields: []const netz.http2.Hpack.HeaderField,
-    authority: ?[]const u8,
-) ?[]netz.http1.Header {
-    var count: usize = 0;
-    for (fields) |field| {
-        if (!isPseudoHeader(field.name)) count += 1;
-    }
-    const add_host = authority != null and findHeader(fields, "host") == null;
-    if (add_host) count += 1;
-    if (count > destination.len) return null;
-
-    var index: usize = 0;
-    for (fields) |field| {
-        if (isPseudoHeader(field.name)) continue;
-        destination[index] = .{ .name = field.name, .value = field.value };
-        index += 1;
-    }
-    if (add_host) {
-        destination[index] = .{
-            .name = "Host",
-            .value = authority.?,
-        };
-    }
-    return destination[0..count];
-}
-
-fn convertH2Headers(
-    allocator: std.mem.Allocator,
-    fields: []const netz.http2.Hpack.HeaderField,
-    authority: ?[]const u8,
-) ![]netz.http1.Header {
-    var count: usize = 0;
-    for (fields) |field| {
-        if (!isPseudoHeader(field.name)) count += 1;
-    }
-    const add_host = authority != null and findHeader(fields, "host") == null;
-    if (add_host) count += 1;
-    const headers = try allocator.alloc(netz.http1.Header, count);
-    return convertH2HeadersInto(headers, fields, authority).?;
-}
-
-fn trailerFields(
-    response: *const Response,
-    arena: std.mem.Allocator,
-) ![]const netz.http2.Hpack.HeaderField {
-    var fields = std.ArrayListUnmanaged(netz.http2.Hpack.HeaderField).empty;
-    try fields.ensureTotalCapacity(arena, response.trailers.items.len);
-    for (response.trailers.items) |header| {
-        fields.appendAssumeCapacity(.{
-            .name = try lowerHeaderName(arena, header.name),
-            .value = header.value,
-        });
-    }
-    return fields.items;
-}
-
-fn headerFields(
-    response: *const Response,
-    arena: std.mem.Allocator,
-) ![]const netz.http2.Hpack.HeaderField {
-    var fields = std.ArrayListUnmanaged(netz.http2.Hpack.HeaderField).empty;
-    try fields.ensureTotalCapacity(arena, response.headers.items.len);
-    for (response.headers.items) |header| {
-        if (forbiddenResponseHeader(header.name)) continue;
-        fields.appendAssumeCapacity(.{
-            .name = try lowerHeaderName(arena, header.name),
-            .value = header.value,
-        });
-    }
-    return fields.items;
-}
-
-/// HPACK field names are lowercase. Response names already live in the
-/// request arena, so an already-lowercase name is borrowed instead of copied.
-fn lowerHeaderName(
-    arena: std.mem.Allocator,
-    name: []const u8,
-) ![]const u8 {
-    for (name) |char| {
-        if (char >= 'A' and char <= 'Z') {
-            const copy = try arena.alloc(u8, name.len);
-            for (name, copy) |source, *target| {
-                target.* = std.ascii.toLower(source);
-            }
-            return copy;
-        }
-    }
-    return name;
-}
-
-fn forbiddenResponseHeader(name: []const u8) bool {
-    if (name.len == 0 or name[0] == ':') return true;
-    inline for (.{
-        "connection",
-        "keep-alive",
-        "proxy-connection",
-        "transfer-encoding",
-        "upgrade",
-        "host",
-        "te",
-    }) |forbidden| {
-        if (std.ascii.eqlIgnoreCase(name, forbidden)) return true;
-    }
-    return false;
-}
-
-fn isPseudoHeader(name: []const u8) bool {
-    return name.len > 0 and name[0] == ':';
-}
-
-fn findHeader(
-    headers: []const netz.http2.Hpack.HeaderField,
-    name: []const u8,
-) ?[]const u8 {
-    for (headers) |header| {
-        if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
-    }
-    return null;
-}
-
-fn internalErrorResponse(
-    arena: std.mem.Allocator,
-    limits: Limits,
-) Response {
-    var response = Response.initWithLimits(arena, limits);
-    response.setStatus(500);
-    response.text("Internal Server Error") catch {};
-    return response;
-}
+const readWholeBody = adapter_body.readWholeBody;
+const convertH2Trailers = HeaderView.convertTrailers;
+const convertH2HeadersInto = HeaderView.convertHeadersInto;
+const convertH2Headers = HeaderView.convertHeaders;
+const trailerFields = HeaderView.trailerFields;
+const headerFields = HeaderView.headerFields;
+const lowerHeaderName = HeaderView.lowerHeaderName;
+const forbiddenResponseHeader = HeaderView.forbiddenResponseHeader;
+const isPseudoHeader = HeaderView.isPseudoHeader;
+const findHeader = HeaderView.findHeader;
+const internalErrorResponse = adapter_response.internalErrorResponse;
 
 test "h2 request trailers convert to the http1 header view" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

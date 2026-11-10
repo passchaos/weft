@@ -1,9 +1,14 @@
 const std = @import("std");
 const ctx_mod = @import("ctx.zig");
+const handler_mod = @import("handler.zig");
+const response_mod = @import("response.zig");
 const precondition = @import("precondition.zig");
 const quality_mod = @import("quality.zig");
 const stream_mod = @import("stream.zig");
 const vary = @import("vary.zig");
+const path_mod = @import("static/path.zig");
+const variants_mod = @import("static/variants.zig");
+const range_mod = @import("static/range.zig");
 
 pub const MimeType = struct {
     extension: []const u8,
@@ -107,8 +112,8 @@ pub const StaticFiles = struct {
     download: bool = false,
     mime_types: []const MimeType = &default_mime_types,
 
-    pub fn handler(self: *StaticFiles) ctx_mod.Handler {
-        return ctx_mod.withContext(StaticFiles, self, serve);
+    pub fn handler(self: *StaticFiles) handler_mod.Handler {
+        return handler_mod.withContext(StaticFiles, self, serve);
     }
 
     fn serve(self: *StaticFiles, ctx: *ctx_mod.Ctx) anyerror!void {
@@ -563,76 +568,10 @@ fn notFound(ctx: *ctx_mod.Ctx) anyerror!void {
     return ctx.text("Not Found");
 }
 
-/// Encodings are listed in descending preference so equal `q` values resolve
-/// to `br` first, then `zstd`, then `gzip`.
-const Variant = struct {
-    extension: []const u8,
-    encoding: []const u8,
-};
-
-const variants = [_]Variant{
-    .{ .extension = ".br", .encoding = "br" },
-    .{ .extension = ".zst", .encoding = "zstd" },
-    .{ .extension = ".gz", .encoding = "gzip" },
-};
-
-/// Select the best acceptable precompressed variant, honouring `q` weights and
-/// the `*` wildcard. Returns null when the client accepts no known encoding.
-fn chooseVariant(header: ?[]const u8) ?Variant {
-    const value = header orelse return null;
-
-    var star_quality: ?u16 = null;
-    var qualities = [_]?u16{null} ** variants.len;
-
-    var tokens = std.mem.splitScalar(u8, value, ',');
-    while (tokens.next()) |raw_token| {
-        const token = std.mem.trim(u8, raw_token, " \t");
-        if (token.len == 0) continue;
-
-        var parameters = std.mem.splitScalar(u8, token, ';');
-        const coding = std.mem.trim(u8, parameters.next() orelse continue, " \t");
-        if (coding.len == 0) continue;
-
-        var quality: u16 = 1000;
-        while (parameters.next()) |raw_parameter| {
-            const parameter = std.mem.trim(u8, raw_parameter, " \t");
-            if (std.ascii.startsWithIgnoreCase(parameter, "q=")) {
-                quality = parseQuality(parameter["q=".len..]) orelse 0;
-            }
-        }
-
-        if (std.mem.eql(u8, coding, "*")) {
-            star_quality = quality;
-            continue;
-        }
-        for (variants, 0..) |variant, index| {
-            if (std.ascii.eqlIgnoreCase(coding, variant.encoding)) {
-                qualities[index] = quality;
-            }
-        }
-    }
-
-    var best: ?Variant = null;
-    var best_quality: u16 = 0;
-    for (variants, 0..) |variant, index| {
-        const quality = qualities[index] orelse star_quality orelse continue;
-        if (quality <= best_quality) continue;
-        best = variant;
-        best_quality = quality;
-    }
-    return best;
-}
-
-/// Parse an HTTP `q` value into thousandths, e.g. `0.5` becomes `500`.
-fn parseQuality(text: []const u8) ?u16 {
-    return quality_mod.parse(std.mem.trim(u8, text, " \t"));
-}
-
-fn fileName(path: []const u8) []const u8 {
-    const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse
-        return path;
-    return path[slash + 1 ..];
-}
+const Variant = variants_mod.Variant;
+const chooseVariant = variants_mod.chooseVariant;
+const parseQuality = variants_mod.parseQuality;
+const fileName = path_mod.fileName;
 
 fn attachmentValue(
     allocator: std.mem.Allocator,
@@ -688,19 +627,12 @@ fn attrChar(char: u8) bool {
     };
 }
 
-fn sidecarIsFresh(
-    source: std.Io.Timestamp,
-    sidecar: std.Io.Timestamp,
-    check: bool,
-) bool {
-    if (!check) return true;
-    return sidecar.nanoseconds >= source.nanoseconds;
-}
+const sidecarIsFresh = variants_mod.sidecarIsFresh;
 
 /// Collect the conditional request fields in one pass. Names that do not start
 /// with `if-` or `range` are skipped after a cheap prefix check. The first
 /// occurrence of each field wins, matching `Ctx.header`.
-fn conditionalFields(headers: []const ctx_mod.Header) precondition.Fields {
+fn conditionalFields(headers: []const response_mod.Header) precondition.Fields {
     var fields = precondition.Fields{};
     for (headers) |header| {
         const name = header.name;
@@ -732,167 +664,15 @@ fn conditionalFields(headers: []const ctx_mod.Header) precondition.Fields {
     return fields;
 }
 
-fn targetEndsWithSlash(target: []const u8) bool {
-    const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
-    return path_end > 0 and target[path_end - 1] == '/';
-}
+const targetEndsWithSlash = path_mod.targetEndsWithSlash;
+const directoryLocation = path_mod.directoryLocation;
+const normalizePath = path_mod.normalizePath;
 
-fn directoryLocation(
-    allocator: std.mem.Allocator,
-    target: []const u8,
-) ![]const u8 {
-    const query_start = std.mem.indexOfScalar(u8, target, '?');
-    const path = if (query_start) |index| target[0..index] else target;
-    const query = if (query_start) |index| target[index..] else "";
-    if (path.len == 0) return std.fmt.allocPrint(allocator, "/{s}", .{query});
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ path, query });
-}
-
-fn normalizePath(
-    allocator: std.mem.Allocator,
-    raw: []const u8,
-    allow_dotfiles: bool,
-) ![]const u8 {
-    if (raw.len == 0) return "";
-    // A plain relative path is already normalized and stays borrowed from the
-    // request arena.
-    if (isPlainRelativePath(raw, allow_dotfiles)) return raw;
-
-    var segments = std.ArrayListUnmanaged([]const u8).empty;
-    defer segments.deinit(allocator);
-
-    var iterator = std.mem.splitScalar(u8, raw, '/');
-    while (iterator.next()) |segment| {
-        if (segment.len == 0 or std.mem.eql(u8, segment, ".")) continue;
-        if (std.mem.eql(u8, segment, "..")) return error.InvalidPath;
-        if (!allow_dotfiles and segment[0] == '.') return error.HiddenPath;
-        for (segment) |char| {
-            if (char == '\\' or char == 0 or char < 0x20 or char == 0x7f) {
-                return error.InvalidPath;
-            }
-        }
-        if (segments.items.len >= max_segments) return error.InvalidPath;
-        try segments.append(allocator, segment);
-    }
-
-    if (segments.items.len == 0) return "";
-    return std.mem.join(allocator, "/", segments.items);
-}
-
-/// True when `raw` has no empty, dot, dot-dot, hidden, or invalid segments,
-/// so normalization would return the input unchanged.
-fn isPlainRelativePath(raw: []const u8, allow_dotfiles: bool) bool {
-    var segment_start: usize = 0;
-    var segment_count: usize = 0;
-    var index: usize = 0;
-    while (index <= raw.len) : (index += 1) {
-        if (index < raw.len and raw[index] != '/') {
-            const char = raw[index];
-            if (char == '\\' or char == 0 or char < 0x20 or char == 0x7f) {
-                return false;
-            }
-            continue;
-        }
-        const segment = raw[segment_start..index];
-        if (segment.len == 0) return false;
-        if (std.mem.eql(u8, segment, ".") or
-            std.mem.eql(u8, segment, ".."))
-        {
-            return false;
-        }
-        if (!allow_dotfiles and segment[0] == '.') return false;
-        segment_count += 1;
-        if (segment_count > max_segments) return false;
-        segment_start = index + 1;
-    }
-    return true;
-}
-
-const max_ranges = 16;
-
-const RangePart = struct {
-    start: usize,
-    length: usize,
-};
-
-const RangeSet = struct {
-    parts: [max_ranges]RangePart = undefined,
-    count: usize = 0,
-};
-
-const Range = union(enum) {
-    ignore,
-    unsatisfiable,
-    ranges: RangeSet,
-};
-
-const ParsedRange = union(enum) {
-    ignore,
-    unsatisfiable,
-    range: RangePart,
-};
-
-fn parseRange(header: []const u8, size: usize) Range {
-    const value = std.mem.trim(u8, header, " \t");
-    if (!std.ascii.startsWithIgnoreCase(value, "bytes=")) return .ignore;
-    const spec = std.mem.trim(u8, value["bytes=".len..], " \t");
-    if (spec.len == 0) return .ignore;
-
-    var set = RangeSet{};
-    var iterator = std.mem.splitScalar(u8, spec, ',');
-    while (iterator.next()) |raw_part| {
-        const part = std.mem.trim(u8, raw_part, " \t");
-        if (part.len == 0) return .ignore;
-        switch (parseOneRange(part, size)) {
-            .ignore => return .ignore,
-            .unsatisfiable => continue,
-            .range => |range| {
-                if (set.count >= max_ranges) return .ignore;
-                set.parts[set.count] = range;
-                set.count += 1;
-            },
-        }
-    }
-
-    if (set.count == 0) return .unsatisfiable;
-    return .{ .ranges = set };
-}
-
-fn parseOneRange(spec: []const u8, size: usize) ParsedRange {
-    const dash = std.mem.indexOfScalar(u8, spec, '-') orelse return .ignore;
-    const first = std.mem.trim(u8, spec[0..dash], " \t");
-    const last = std.mem.trim(u8, spec[dash + 1 ..], " \t");
-
-    if (size == 0) return .unsatisfiable;
-
-    if (first.len == 0) {
-        const suffix = parseUsize(last) orelse return .ignore;
-        if (suffix == 0) return .unsatisfiable;
-        const length = @min(suffix, size);
-        return .{ .range = .{
-            .start = size - length,
-            .length = length,
-        } };
-    }
-
-    const start = parseUsize(first) orelse return .ignore;
-    if (start >= size) return .unsatisfiable;
-    const end = if (last.len == 0)
-        size - 1
-    else
-        parseUsize(last) orelse return .ignore;
-    if (end < start) return .unsatisfiable;
-    const clamped_end = @min(end, size - 1);
-    return .{ .range = .{
-        .start = start,
-        .length = clamped_end - start + 1,
-    } };
-}
-
-fn parseUsize(text: []const u8) ?usize {
-    if (text.len == 0) return null;
-    return std.fmt.parseInt(usize, text, 10) catch null;
-}
+const max_ranges = range_mod.max_ranges;
+const RangePart = range_mod.RangePart;
+const RangeSet = range_mod.RangeSet;
+const Range = range_mod.Range;
+const parseRange = range_mod.parseRange;
 
 test "static path normalization rejects traversal and dotfiles" {
     const allocator = std.testing.allocator;
@@ -928,7 +708,7 @@ test "static path normalization rejects traversal and dotfiles" {
 }
 
 test "static conditional fields are collected in one pass" {
-    const headers = [_]ctx_mod.Header{
+    const headers = [_]response_mod.Header{
         .{ .name = "Host", .value = "example.com" },
         .{ .name = "if-none-match", .value = "\"a\"" },
         .{ .name = "If-None-Match", .value = "\"b\"" },

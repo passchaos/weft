@@ -1,5 +1,6 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
 const errors_mod = @import("../errors.zig");
 const request_id = @import("request_id.zig");
 
@@ -14,8 +15,8 @@ pub const Format = enum { text, json };
 pub const Log = struct {
     format: Format = .text,
 
-    pub fn handler(self: *Log) ctx_mod.Handler {
-        return ctx_mod.withContext(Log, self, call);
+    pub fn handler(self: *Log) handler_mod.Handler {
+        return handler_mod.withContext(Log, self, call);
     }
 
     fn call(self: *Log, ctx: *ctx_mod.Ctx) anyerror!void {

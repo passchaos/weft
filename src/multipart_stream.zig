@@ -7,8 +7,11 @@
 
 const std = @import("std");
 const multipart = @import("multipart.zig");
+const reader_mod = @import("multipart/reader.zig");
+const delimiter_mod = @import("multipart/delimiter.zig");
 
 pub const Header = multipart.Header;
+pub const DataReader = reader_mod.DataReader;
 
 /// Pull source for raw body bytes. `next` returns null at end of body.
 pub const Source = struct {
@@ -104,6 +107,26 @@ pub const Stream = struct {
             .next_delimiter = next_delimiter,
             .buffer = buffer,
         };
+    }
+
+    /// Buffered parse window.
+    pub fn bufferedWindow(self: *const Stream) []const u8 {
+        return self.buffer[self.start..self.end];
+    }
+
+    /// Consume `count` buffered bytes.
+    pub fn advance(self: *Stream, count: usize) void {
+        self.start += count;
+    }
+
+    /// Current part delimiter (`\r\n--boundary`).
+    pub fn nextDelimiter(self: *const Stream) []const u8 {
+        return self.next_delimiter;
+    }
+
+    /// Fill more bytes from the source. Returns false at EOF with no progress.
+    pub fn fill(self: *Stream) !bool {
+        return self.fillMore();
     }
 
     pub fn deinit(self: *Stream) void {
@@ -217,7 +240,7 @@ pub const Stream = struct {
                     }
                 }
             }
-            switch (findDelimiter(window, self.next_delimiter)) {
+            switch (delimiter_mod.findDelimiter(window, self.next_delimiter)) {
                 .none => {},
                 .incomplete => |found| {
                     // Keep the candidate and fill more so its trailing bytes
@@ -392,104 +415,6 @@ pub const Stream = struct {
         }
     }
 };
-
-/// Pulls one part's payload. Slices are valid until the next `next` call.
-pub const DataReader = struct {
-    stream: *Stream,
-    finished: bool = false,
-
-    /// Drain this part into an owned buffer, bounded by `max_bytes`.
-    pub fn readAll(
-        self: *DataReader,
-        allocator: std.mem.Allocator,
-        max_bytes: usize,
-    ) ![]u8 {
-        var output = std.ArrayListUnmanaged(u8).empty;
-        errdefer output.deinit(allocator);
-        var total: usize = 0;
-        while (try self.next()) |chunk| {
-            const next_total = std.math.add(usize, total, chunk.len) catch
-                return error.PayloadTooLarge;
-            if (next_total > max_bytes) return error.PayloadTooLarge;
-            try output.appendSlice(allocator, chunk);
-            total = next_total;
-        }
-        return output.toOwnedSlice(allocator);
-    }
-
-    pub fn next(self: *DataReader) !?[]const u8 {
-        if (self.finished) return null;
-        const stream = self.stream;
-        while (true) {
-            const window = stream.buffer[stream.start..stream.end];
-            switch (findDelimiter(window, stream.next_delimiter)) {
-                .found => |found| {
-                    stream.start += found + stream.next_delimiter.len;
-                    self.finished = true;
-                    if (found == 0) return null;
-                    return window[0..found];
-                },
-                .incomplete => |found| {
-                    // The candidate ends at the window boundary, so the bytes
-                    // that decide whether this is a delimiter line are not
-                    // buffered yet. Return the safe prefix and keep the
-                    // candidate in place for the next fill.
-                    if (found != 0) {
-                        stream.start += found;
-                        return window[0..found];
-                    }
-                    if (!try stream.fillMore()) {
-                        return error.InvalidMultipart;
-                    }
-                    continue;
-                },
-                .none => {},
-            }
-            const keep = stream.next_delimiter.len - 1;
-            if (window.len > keep) {
-                const safe = window.len - keep;
-                stream.start += safe;
-                return window[0..safe];
-            }
-            if (!try stream.fillMore()) {
-                return error.InvalidMultipart;
-            }
-        }
-    }
-};
-
-const DelimiterMatch = union(enum) {
-    none,
-    /// The needle is present at this index, but the bytes that decide whether
-    /// it starts a delimiter line are not buffered yet.
-    incomplete: usize,
-    /// A complete delimiter line starts at this index.
-    found: usize,
-};
-
-/// Find a `\r\n--boundary` occurrence that starts a delimiter line. The
-/// boundary must be followed by the closing `--` or by a complete CRLF; a bare
-/// CR or a single `-` is payload text, not a delimiter.
-fn findDelimiter(window: []const u8, needle: []const u8) DelimiterMatch {
-    var index: usize = 0;
-    while (std.mem.indexOfPos(u8, window, index, needle)) |found| {
-        const after = found + needle.len;
-        if (after >= window.len) return .{ .incomplete = found };
-        if (window[after] == '-') {
-            if (after + 1 >= window.len) return .{ .incomplete = found };
-            if (window[after + 1] == '-') return .{ .found = found };
-        } else if (window[after] == '\r') {
-            if (after + 1 >= window.len) return .{ .incomplete = found };
-            if (window[after + 1] == '\n') return .{ .found = found };
-        }
-        index = found + 1;
-    }
-    return .none;
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const TestSource = struct {
     body: []const u8,

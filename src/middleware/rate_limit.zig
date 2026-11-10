@@ -1,5 +1,7 @@
 const std = @import("std");
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
+const response_mod = @import("../response.zig");
 
 /// Bounded per-client token bucket rate limiter.
 ///
@@ -101,8 +103,8 @@ pub const RateLimit = struct {
         self.* = undefined;
     }
 
-    pub fn handler(self: *RateLimit) ctx_mod.Handler {
-        return ctx_mod.withContext(RateLimit, self, call);
+    pub fn handler(self: *RateLimit) handler_mod.Handler {
+        return handler_mod.withContext(RateLimit, self, call);
     }
 
     fn call(self: *RateLimit, ctx: *ctx_mod.Ctx) anyerror!void {
@@ -326,9 +328,9 @@ test "rate limit allows then rejects the same client" {
         .client_info = .{
             .address = .{ .ip4 = .loopback(1234) },
         },
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{limiter.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -346,9 +348,9 @@ test "rate limit allows then rejects the same client" {
         .client_info = .{
             .address = .{ .ip4 = .loopback(1234) },
         },
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{limiter.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -370,9 +372,9 @@ test "rate limit allows then rejects the same client" {
                 .port = 5678,
             } },
         },
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{limiter.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -391,9 +393,9 @@ test "rate limit allows then rejects the same client" {
         .client_info = .{
             .address = .{ .ip4 = .loopback(4321) },
         },
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{limiter.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -444,9 +446,9 @@ test "rate limit can key on an application header" {
                 .client_info = .{
                     .address = .{ .ip4 = .loopback(1234) },
                 },
-                .response = ctx_mod.Response.init(arena_, 1024),
+                .response = response_mod.Response.init(arena_, 1024),
                 .middleware = &.{limiter_.handler()},
-                .final_handler = ctx_mod.handler(struct {
+                .final_handler = handler_mod.handler(struct {
                     fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                         try ctx.text("ok");
                     }
@@ -511,9 +513,9 @@ test "rate limit index tracks evicted buckets" {
                 .limits = .{},
                 .request = &request,
                 .client_info = .{ .address = address },
-                .response = ctx_mod.Response.init(arena.allocator(), 1024),
+                .response = response_mod.Response.init(arena.allocator(), 1024),
                 .middleware = &.{limiter_.handler()},
-                .final_handler = ctx_mod.handler(struct {
+                .final_handler = handler_mod.handler(struct {
                     fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                         try ctx.text("ok");
                     }
@@ -571,9 +573,9 @@ test "rate limit eviction follows most-recent use" {
                 .limits = .{},
                 .request = &request,
                 .client_info = .{ .address = address },
-                .response = ctx_mod.Response.init(arena.allocator(), 1024),
+                .response = response_mod.Response.init(arena.allocator(), 1024),
                 .middleware = &.{limiter_.handler()},
-                .final_handler = ctx_mod.handler(struct {
+                .final_handler = handler_mod.handler(struct {
                     fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                         try ctx.text("ok");
                     }

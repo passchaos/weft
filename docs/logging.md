@@ -1,6 +1,6 @@
 # Structured logging with kron
 
-`weft` uses [kron](../kron) for structured request logging. This note records
+`weft` uses [kron](../../kron) for structured request logging. This note records
 the integration shape, the measured producer cost, and the evaluation of
 kron's current design.
 
@@ -25,7 +25,12 @@ kron's current design.
 
 `bench/logging.zig` emits a fixed 9-field access event through a JSON output
 whose sink is `std.Io.Writer.Discarding`, so the numbers exclude sink I/O.
-On the reference host (load roughly 5–8) with ReleaseFast:
+
+- Date: 2026-11-09 – 2026-11-10
+- Snapshot: `fd517d4`
+- Host: reference Linux host, load roughly 5–8
+- Build: `ReleaseFast`
+- Command: `zig build bench-logging -Doptimize=ReleaseFast`
 
 | Path | ns/event | events/s |
 | --- | ---: | ---: |

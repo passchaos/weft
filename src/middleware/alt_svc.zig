@@ -1,4 +1,6 @@
 const ctx_mod = @import("../ctx.zig");
+const handler_mod = @import("../handler.zig");
+const response_mod = @import("../response.zig");
 
 /// Default advertisement for a server listening for HTTP/3 on port 443.
 pub const default_h3 = "h3=\":443\"; ma=86400";
@@ -10,8 +12,8 @@ pub const AltSvc = struct {
     value: []const u8 = default_h3,
     skip_http3: bool = true,
 
-    pub fn handler(self: *AltSvc) ctx_mod.Handler {
-        return ctx_mod.withContext(AltSvc, self, call);
+    pub fn handler(self: *AltSvc) handler_mod.Handler {
+        return handler_mod.withContext(AltSvc, self, call);
     }
 
     fn call(self: *AltSvc, ctx: *ctx_mod.Ctx) anyerror!void {
@@ -45,9 +47,9 @@ test "alt-svc advertises h3 on http/1.1 but not on http/3" {
         .limits = .{},
         .request = &request,
         .client_info = .{ .protocol = .http_1_1 },
-        .response = ctx_mod.Response.init(arena.allocator(), 1024),
+        .response = response_mod.Response.init(arena.allocator(), 1024),
         .middleware = &.{alt.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
@@ -69,9 +71,9 @@ test "alt-svc advertises h3 on http/1.1 but not on http/3" {
         .limits = .{},
         .request = &h3_request,
         .client_info = .{ .protocol = .http_3 },
-        .response = ctx_mod.Response.init(h3_arena.allocator(), 1024),
+        .response = response_mod.Response.init(h3_arena.allocator(), 1024),
         .middleware = &.{alt.handler()},
-        .final_handler = ctx_mod.handler(struct {
+        .final_handler = handler_mod.handler(struct {
             fn handle(ctx: *ctx_mod.Ctx) anyerror!void {
                 try ctx.text("ok");
             }
