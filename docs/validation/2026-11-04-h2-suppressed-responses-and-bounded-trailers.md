@@ -1252,7 +1252,8 @@ HTTP/2, one h2c connection, 20k sequential requests and 64k requests in
 The sequential lead is about 1.3–1.4×; the default `work_stealing` batch
 remains about 5–8% behind, matching the documented idle-executor gap.
 `single_executor` remains the faster batch configuration for a single
-connection.
+connection. (The executor-local stack cache and connection spawn-locality hint
+below later close this gap under the default configuration.)
 
 ## HTTP/2/HTTP/3 inline slot retirement
 
@@ -1287,6 +1288,50 @@ a POST with a known length performs one allocation instead of a growth chain.
 Unknown lengths and over-limit declarations keep the normal bounded growth,
 and the read loop still enforces `max_body_bytes` and answers 413. The full
 weft suite passes (227/227).
+
+## zio executor-local stack cache and connection spawn locality
+
+Two zio changes closed the remaining h2c batch gap:
+
+- Each executor now keeps one completed coroutine stack for its next local
+  task instead of returning every stack to the shared `StackPool` mutex. Only
+  the owner thread may take or fill the slot: task creation can target a
+  different executor than the caller's, and an early version that let foreign
+  threads take the slot raced its unsynchronized storage. Startup stability
+  testing caught that (4/25 servers died with "Stack overflow during coroutine
+  setup"); the owner-thread guard brought it to 0/40. `stackMetrics` subtracts
+  the retained stacks from `active_stacks`.
+- A new task-scoped `SpawnLocality` hint makes `.auto` spawns home on the
+  calling executor (still stealable) instead of round-robining. The HTTP/2
+  concurrent engine sets `.local` while serving a connection, so the frame
+  read, command wake, and shutdown watcher stay on the owner executor's caches
+  instead of dragging the owner across executors on every wake.
+
+Applying the hint to all `std.Io` concurrency (a blanket default) was rejected:
+it improved H2 batch but regressed H3 badly (sequential 29.7 → 37–45 µs,
+batched 28.2 → 32–45 µs) because QUIC's receive/timer select arms need to run
+in parallel. The hint is therefore scoped to the HTTP/2 connection.
+
+External h2c harness, one connection, 100k sequential and 200k requests in
+32-stream batches, clean zio versus the final build:
+
+- sequential: 30.7 → 32.9 µs wall (noise; the p90/p99 tails are unchanged)
+  while server CPU drops 28.4 → 20.1 µs per request.
+- batched: 11.77 → 10.41 µs wall (−11.5%) and 22.1 → 12.2 µs CPU (−45%).
+
+Under `-Dzio-backend=epoll` the sequential difference disappears (42.2 vs
+43.3 µs), so the remaining sequential shift is an io_uring wake-placement
+effect, not scheduler overhead.
+
+Fresh framework comparison in the same session (32 workers for axum):
+
+- HTTP/2 sequential p50: axum 43.1 µs, weft 27.1 µs; p90 46.9 vs 42.0 µs.
+- HTTP/2 batched: axum 10.88 µs, weft 9.65 µs.
+- HTTP/1, 32 keep-alive connections: axum 810–858k req/s, p90 50–53 µs,
+  p99 67–80 µs, p999 130–186 µs; weft 1.11–1.17M req/s, p90 34–35 µs,
+  p99 43–45 µs, p999 54–71 µs.
+- HTTP/3 in-process benchmark is unchanged (sequential 28.2–29.5 µs,
+  batched 26.9 µs, upload 47.5–50.3 µs).
 
 ## Verification
 
