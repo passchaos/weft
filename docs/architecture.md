@@ -168,7 +168,7 @@ owner; all other requests use bounded handler tasks.
 | Streaming responses | fixed or chunked | DATA frames | DATA frames |
 | Trailers | only with `TE: trailers` | always after body | always after body |
 | Inline bodyless | n/a | `inline_bodyless` | `inline_bodyless` |
-| WebSocket | yes | `400` | `400` |
+| WebSocket | yes | yes (RFC 8441) | yes (RFC 9220) |
 | Request concurrency | one request per connection worker | bounded handler tasks per connection | bounded handler tasks per session |
 
 All adapters share `Router`, `Ctx`, middleware, decoded inputs, `Limits`, and

@@ -15,6 +15,7 @@ const serveHttp3Server = support.serveHttp3Server;
 const streamingTrailerRoute = support.streamingTrailerRoute;
 const trailerRoute = support.trailerRoute;
 const upload = support.upload;
+const websocketRoute = support.websocketRoute;
 
 test "package: HTTP/3 adapter serves routes, POST, and streams" {
     const allocator = std.testing.allocator;
@@ -801,6 +802,99 @@ test "package: HTTP/3 sends 103 Early Hints before the final response" {
     );
     try std.testing.expectEqual(@as(u16, 200), response.response.status);
     try std.testing.expectEqualStrings("ok", response.response.body);
+
+    server.stop();
+    try group.await(io);
+}
+
+test "package: HTTP/3 WebSocket extended CONNECT echoes a message" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server_cid = [_]u8{ 0xec, 0xed, 0xee, 0xef };
+    const original_dcid = [_]u8{ 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7 };
+    const client_cid = [_]u8{ 0xe8, 0xe9, 0xea, 0xeb };
+
+    var server = try weft.Http3Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .max_concurrent_streams = 4,
+            .max_concurrent_handlers = 4,
+            .accept_timeout = .fromMilliseconds(500),
+            .idle_timeout = .fromMilliseconds(100),
+            .quic_limits = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+            .handshake = .{
+                .local_connection_id = &server_cid,
+                .random = [_]u8{0xe2} ** 32,
+                .x25519_secret_key = [_]u8{0xe4} ** 32,
+            },
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    var router = server.router();
+    try router.get("/ws", websocketRoute, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveHttp3Server, .{&server});
+
+    var client = try netz.http3.runtime.HandshakeClient.connect(
+        allocator,
+        io,
+        .{ .ip4 = .loopback(0) },
+        server.address(),
+        .{
+            .quic = .{
+                .max_datagram_size = 4096,
+                .max_frames_per_datagram = 8,
+            },
+        },
+        .{
+            .handshake = .{
+                .original_destination_connection_id = &original_dcid,
+                .local_connection_id = &client_cid,
+                .server_name = "localhost",
+                .random = [_]u8{0xe1} ** 32,
+                .x25519_secret_key = [_]u8{0xe3} ** 32,
+            },
+        },
+    );
+
+    var ws = netz.websocket.runtime.h3.Client.connectSessionWithTimeout(
+        allocator,
+        &client,
+        .{
+            .authority = "localhost",
+            .path = "/ws",
+        },
+        .fromSeconds(3),
+    ) catch |err| {
+        client.deinit();
+        return err;
+    };
+    defer ws.deinit();
+
+    try ws.sendText("hello over h3");
+    var message = try ws.receiveMessageWithTimeout(.fromSeconds(3));
+    defer message.deinit(allocator);
+    try std.testing.expectEqualStrings("hello over h3", message.payload);
 
     server.stop();
     try group.await(io);

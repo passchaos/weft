@@ -811,7 +811,7 @@ initial structure backlog.
 | WEFT-P0-01 | P0 | Unified TCP TLS ALPN listener (`h2` + `http/1.1`) | done |
 | WEFT-P0-02 | P0 | HTTP/1.1 `Upgrade: h2c` | done |
 | WEFT-P0-03 | P0 | External interoperability matrix and CI | done |
-| WEFT-P1-01 | P1 | WebSocket over HTTP/2 and HTTP/3 (RFC 8441) | in progress (HTTP/2 done; HTTP/3 needs netz accept path) |
+| WEFT-P1-01 | P1 | WebSocket over HTTP/2 and HTTP/3 (RFC 8441/9220) | done |
 | WEFT-P1-02 | P1 | `103 Early Hints` API | done (HTTP/1.1, HTTP/2, buffered HTTP/3) |
 | WEFT-P1-03 | P1 | Streaming response ETag | done (opt-in bounded) |
 | WEFT-P1-04 | P1 | MCP sessions and server-initiated SSE | done |
@@ -846,13 +846,16 @@ initial structure backlog.
   per-session queues, `GET` SSE streams, `DELETE` termination, and
   `Server.notify`. Package tests cover initialize, session validation,
   notifications, SSE delivery, and deletion.
-- **WEFT-P1-01**: HTTP/2 WebSocket now works end to end. `Limits`
-  `http2_enable_connect_protocol` advertises RFC 8441, the HTTP/2 adapter
-  detects `:protocol = websocket`, sends the 200 response, and runs the
-  `netz.websocket.stream_connection` transport over the concurrent stream. A
-  package test echoes a message with `netz.websocket.runtime.H2Client`.
-- HTTP/3 extended CONNECT streams are detached by netz before the concurrent
-  request engine sees them, so the HTTP/3 adapter's WebSocket path is not
-  reachable yet. It needs a dedicated `HandshakeServerSession` extended-CONNECT
-  accept path before the H3 test can be enabled. The H3 adapter keeps the
-  handshake/session code ready for that path.
+- **WEFT-P1-01**: WebSocket works over HTTP/1.1, HTTP/2, and HTTP/3.
+  HTTP/2 uses RFC 8441: `Limits.http2_enable_connect_protocol` advertises the
+  setting, the adapter detects `:protocol = websocket`, sends the 200 response,
+  and runs the `netz.websocket.stream_connection` transport over the
+  concurrent stream. HTTP/3 uses RFC 9220: `Http3Server` advertises
+  `enable_connect_protocol`, the concurrent engine surfaces extended CONNECT
+  heads, and the same stream transport runs over the QUIC request stream.
+  `HandshakeServer.acceptBefore` now publishes the server SETTINGS before the
+  request loop so event-driven clients do not deadlock waiting for peer
+  capabilities. Extended CONNECT requests skip request-body aggregation
+  because their stream stays open for WebSocket frames. Package tests echo a
+  message with `netz.websocket.runtime.H2Client` and
+  `netz.websocket.runtime.h3.Client`.

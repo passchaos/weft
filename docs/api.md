@@ -19,7 +19,7 @@ Everything in this document is exported by `src/root.zig` and available as
 | `BodyReader` | Buffered, limited, decoded, replay, H2, or H3 request-body reader |
 | `StreamBody` / `StreamWriter` | Streaming response producer contract |
 | `SseEvent` | Server-sent event value |
-| `WebSocketSession` / `WebSocketUpgrade` | RFC 6455 session and upgrade contract (HTTP/1.1 and HTTP/2 extended CONNECT) |
+| `WebSocketSession` / `WebSocketUpgrade` | RFC 6455 session and upgrade contract (HTTP/1.1 and HTTP/2/3 extended CONNECT) |
 
 ## Constructors and helpers
 

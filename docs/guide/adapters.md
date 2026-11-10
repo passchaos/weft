@@ -160,11 +160,11 @@ place; request bodies and streaming routes keep the worker path.
 ## WebSockets
 
 `ctx.upgradeWebSocket(...)` selects an RFC 6455 session on HTTP/1.1 and on
-HTTP/2 extended CONNECT (RFC 8441). Weft validates the opening handshake,
-writes `101 Switching Protocols` on HTTP/1.1 or `200` on HTTP/2, and runs the
-session synchronously on the connection worker. Set
-`Limits.http2_enable_connect_protocol = true` for HTTP/2. HTTP/3 extended
-CONNECT currently returns `400` until netz exposes a dedicated accept path:
+HTTP/2 and HTTP/3 extended CONNECT (RFC 8441 and RFC 9220). Weft validates the
+opening handshake, writes `101 Switching Protocols` on HTTP/1.1 or `200` on
+HTTP/2 and HTTP/3, and runs the session synchronously on the connection
+worker. Set `Limits.http2_enable_connect_protocol = true` for HTTP/2; the
+HTTP/3 server advertises RFC 9220 automatically.
 
 ```zig
 fn wsEcho(_: ?*anyopaque, session: *weft.WebSocketSession) anyerror!void {
@@ -186,6 +186,6 @@ and then releases the transport. An optional `subprotocol` must be offered by
 the client. Set `.compression = true` to negotiate RFC 7692
 `permessage-deflate`; the accepted parameters are echoed in
 `Sec-WebSocket-Extensions` and messages at or above
-`compression_threshold` bytes (default 32) are compressed. HTTP/3 rejects WebSocket upgrades with `400`; HTTP/2 uses RFC 8441 extended
-CONNECT and does not negotiate `permessage-deflate` in this slice.
+`compression_threshold` bytes (default 32) are compressed. HTTP/2 and HTTP/3
+use extended CONNECT and do not negotiate `permessage-deflate` in this slice.
 

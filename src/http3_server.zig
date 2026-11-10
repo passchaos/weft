@@ -536,7 +536,13 @@ pub fn Http3Server(comptime H: type) type {
             var body: []const u8 = "";
             var trailers: []netz.http1.Header = &.{};
 
-            if (streaming) {
+            if (websocket_upgrade) {
+                // RFC 9220 extended CONNECT carries no request body; the
+                // stream becomes the WebSocket data channel only after the
+                // 200 response. Reading until END_STREAM here would block
+                // until the peer closes the connection.
+                body = "";
+            } else if (streaming) {
                 h3_reader = body_mod.H3StreamReader.init(
                     stream,
                     self.options.limits.max_streaming_window_bytes,
