@@ -1350,6 +1350,13 @@ upload 48.6 → 44.6 µs (−8.2%). Uploads with live workers keep the select pa
 netz HTTP/3+QUIC 2064/2064, WebTransport 819/819, package 26/26, and weft
 229/229 tests pass.
 
+The HPACK encoder then stopped hashing every response field name twice: one
+static-table probe now returns both the exact and the name-only index, and the
+dynamic-table name lookup is lazy when a static name exists. This strictly
+removes work per field; with only four response headers the hello benchmark
+shows it within noise (batched CPU median about 1% lower over seven
+interleaved rounds), while responses with larger header sets save more.
+
 Fresh framework comparison in the same session (32 workers for axum):
 
 - HTTP/2 sequential p50: axum 45.4–46.3 µs, weft 38.5–39.1 µs; p90
