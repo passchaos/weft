@@ -71,7 +71,19 @@ fn serveServer(server: *weft.Server(App)) std.Io.Cancelable!void {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
-    var backend = try netz.runtime.Backend.init(allocator);
+    // Zio executors are most efficient when each one owns several
+    // connections; keep the count below the expected concurrency. Override
+    // with WEFT_EXECUTORS when the deployment needs a different shape.
+    const executors: u8 = blk: {
+        const text = init.environ_map.get("WEFT_EXECUTORS") orelse
+            break :blk @intCast(@min(std.Thread.getCpuCount() catch 1, 8));
+        break :blk std.fmt.parseInt(u8, text, 10) catch
+            @intCast(@min(std.Thread.getCpuCount() catch 1, 8));
+    };
+    var backend = try netz.runtime.Backend.initWithExecutors(
+        allocator,
+        executors,
+    );
     defer backend.deinit();
     const io = backend.io();
 

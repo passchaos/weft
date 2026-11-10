@@ -42,7 +42,14 @@ fn health(app: *App, ctx: *weft.Ctx) anyerror!void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var backend = try netz.runtime.Backend.init(init.gpa);
+    const executors: u8 = @intCast(@min(
+        std.Thread.getCpuCount() catch 1,
+        8,
+    ));
+    var backend = try netz.runtime.Backend.initWithExecutors(
+        init.gpa,
+        executors,
+    );
     defer backend.deinit();
     const io = backend.io();
 
