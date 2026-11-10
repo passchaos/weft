@@ -1128,6 +1128,25 @@ Verification: the netz QUIC filter passes (1180/1180), the HTTP/3 filter
 passes (953/953), the full netz library suite passes (6896/6896), and weft
 passes 223/223 in Debug, ReleaseSafe, and ReleaseFast.
 
+## std.Io.Threaded comparison
+
+The runtime seam is `std.Io`, so the same HTTP/1 adapter can run on the zio
+backend or on `std.Io.Threaded`. The hello benchmark now selects the runtime
+with `WEFT_IO=threaded` (and `WEFT_IO_ASYNC` for the async thread limit).
+Interleaved 32-connection rounds measured:
+
+- zio, eight executors: 1.00M–1.03M requests/s, p90 35–36 µs, p99 45–46 µs,
+  p999 57–66 µs.
+- `std.Io.Threaded`, async limit 8: 1.38M–1.40M requests/s, p90 35 µs, p99
+  105–117 µs, p999 304–378 µs.
+
+The async-limit sweep (8, 16, 31, unlimited) stayed in the 1.21M–1.40M range
+with p999 311–519 µs; no limit recovered the zio tail. Threaded wins about 37%
+throughput by parking blocked reads on pool threads, but pays a much larger
+tail and a higher thread count. The benchmark keeps zio as the default and
+documents Threaded as a throughput-oriented alternative; this is a runtime
+choice, not a weft library change.
+
 ## Verification
 
 ```sh

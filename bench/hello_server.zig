@@ -41,12 +41,32 @@ pub fn main(init: std.process.Init) !void {
         break :blk std.fmt.parseInt(u8, text, 10) catch
             @intCast(@min(cpu_count, 8));
     };
-    var backend = try netz.runtime.Backend.initWithExecutors(
-        allocator,
-        executors,
-    );
-    defer backend.deinit();
-    const io = backend.io();
+    var backend: netz.runtime.Backend = undefined;
+    var threaded: std.Io.Threaded = undefined;
+    var use_threaded = false;
+    const io: std.Io = blk: {
+        const kind = init.environ_map.get("WEFT_IO") orelse "zio";
+        if (std.mem.eql(u8, kind, "threaded")) {
+            use_threaded = true;
+            const async_limit: std.Io.Limit = limit_blk: {
+                const text = init.environ_map.get("WEFT_IO_ASYNC") orelse
+                    break :limit_blk .unlimited;
+                if (std.mem.eql(u8, text, "unlimited"))
+                    break :limit_blk .unlimited;
+                const count = std.fmt.parseInt(usize, text, 10) catch
+                    break :limit_blk .unlimited;
+                break :limit_blk .limited(count);
+            };
+            threaded = .init(allocator, .{ .async_limit = async_limit });
+            break :blk threaded.io();
+        }
+        backend = try netz.runtime.Backend.initWithExecutors(
+            allocator,
+            executors,
+        );
+        break :blk backend.io();
+    };
+    defer if (use_threaded) threaded.deinit() else backend.deinit();
 
     const port: u16 = blk: {
         const text = init.environ_map.get("WEFT_PORT") orelse

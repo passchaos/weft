@@ -800,7 +800,11 @@ with eight workers is slower still (728k–775k requests/s, p90 56–59 µs, p99
 still wins throughput (about 830k–955k requests/s) but leaves every executor
 mostly parked, and the extra wake-up latency shows in the tail (p99 77–99 µs,
 p999 173–241 µs). Requests without a body are parsed and completed without the
-per-request producer task.
+per-request producer task. `WEFT_IO=threaded` runs the same server on
+`std.Io.Threaded` instead of the zio backend; interleaved rounds measured
+1.38M–1.40M requests/s (p90 35 µs, p99 105–117 µs, p999 304–378 µs) versus
+zio's 1.00M–1.03M and p999 57–66 µs. Threaded trades tail latency and thread
+count for throughput, so zio remains the default.
 
 `zig build` forwards `-Dscheduling` to netz and zio (`single_executor`,
 `pinned`, or `work_stealing`; the default stays `work_stealing`) and
