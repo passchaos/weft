@@ -14,8 +14,8 @@ project follows semantic versioning for public application APIs.
   `docs/performance-journal.md` for append-only measurements.
 - `docs/optimization-backlog.md` for tracked structure and documentation work.
 - `zig build check` for formatting and test verification.
-- `Ctx.sendEarlyHints(headers)` for interim `103 Early Hints` on HTTP/1.1 and
-  HTTP/2.
+- `Ctx.sendEarlyHints(headers)` for interim `103 Early Hints` on HTTP/1.1,
+  HTTP/2, and buffered HTTP/3 responses.
 - `Etag.max_stream_bytes` for bounded, content-derived ETags on streamed
   responses with a declared length.
 - MCP Streamable HTTP sessions (`Options.sessions`), server-initiated SSE via

@@ -31,7 +31,7 @@ Everything in this document is exported by `src/root.zig` and available as
 | `reasonFor(status)` | Default reason phrase for a status code |
 | `validateHeaderName(name)` / `validateHeaderValue(value)` | Header validation |
 | `max_params` | Maximum path captures per route |
-| `Ctx.sendEarlyHints(headers)` | Interim `103 Early Hints` on HTTP/1.1 and HTTP/2 |
+| `Ctx.sendEarlyHints(headers)` | Interim `103 Early Hints` on HTTP/1.1, HTTP/2, and buffered HTTP/3 responses |
 
 ## Router
 

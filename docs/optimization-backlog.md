@@ -812,7 +812,7 @@ initial structure backlog.
 | WEFT-P0-02 | P0 | HTTP/1.1 `Upgrade: h2c` | done |
 | WEFT-P0-03 | P0 | External interoperability matrix and CI | done |
 | WEFT-P1-01 | P1 | WebSocket over HTTP/2 and HTTP/3 (RFC 8441) | in progress (HTTP/2 done; HTTP/3 needs netz accept path) |
-| WEFT-P1-02 | P1 | `103 Early Hints` API | done (HTTP/1.1 + HTTP/2; HTTP/3 pending) |
+| WEFT-P1-02 | P1 | `103 Early Hints` API | done (HTTP/1.1, HTTP/2, buffered HTTP/3) |
 | WEFT-P1-03 | P1 | Streaming response ETag | done (opt-in bounded) |
 | WEFT-P1-04 | P1 | MCP sessions and server-initiated SSE | done |
 
@@ -833,8 +833,11 @@ initial structure backlog.
   --http2-prior-knowledge`, and `nghttp` h2c. `h2spec` and HTTP/3 clients are
   reported as `SKIP` when not installed. `.github/workflows/ci.yml` runs
   `zig build check`, `zig build examples`, and the interop script.
-- **WEFT-P1-02**: `Ctx.sendEarlyHints` writes interim heads on HTTP/1.1 and
-  HTTP/2; HTTP/3 needs a netz informational-response API.
+- **WEFT-P1-02**: `Ctx.sendEarlyHints` writes interim heads on HTTP/1.1,
+  HTTP/2, and buffered HTTP/3 responses. The HTTP/3 concurrent engine now
+  forwards informational responses through the handshake session's
+  `sendResponseWithInformational` path. Streamed HTTP/3 responses fail closed
+  because the stream head has already been committed.
 - **WEFT-P1-03**: `Etag.max_stream_bytes` buffers a streamed response up to the
   configured bound when the producer declares a known length, computes the
   content-derived tag, and then serves the buffered body. Unknown-length

@@ -18,6 +18,25 @@ const adapter_response = @import("adapter/response.zig");
 const adapter_write = @import("adapter/write.zig");
 const websocket_mod = @import("websocket.zig");
 
+const EarlyHintsCollector = struct {
+    list: *std.ArrayListUnmanaged(netz.http1.Header),
+    arena: std.mem.Allocator,
+
+    fn send(
+        raw: ?*anyopaque,
+        headers: []const netz.http1.Header,
+    ) anyerror!void {
+        const self: *EarlyHintsCollector = @ptrCast(@alignCast(raw orelse
+            return error.InvalidWriterState));
+        for (headers) |header| {
+            try self.list.append(self.arena, .{
+                .name = try self.arena.dupe(u8, header.name),
+                .value = try self.arena.dupe(u8, header.value),
+            });
+        }
+    }
+};
+
 const WsContext = struct {
     stream: *netz.http3.runtime.HandshakeServerSession.ConcurrentStream,
 };
@@ -573,13 +592,21 @@ pub fn Http3Server(comptime H: type) type {
                 .protocol = .http_3,
                 .tls = true,
             };
+            var early_hints = std.ArrayListUnmanaged(netz.http1.Header).empty;
+            var early_hints_collector = EarlyHintsCollector{
+                .list = &early_hints,
+                .arena = arena,
+            };
             var response = self.dispatchRequest(
                 &request,
                 client_info,
                 arena,
                 body_reader,
                 &prepared,
-                .{},
+                .{
+                    .context = &early_hints_collector,
+                    .send_fn = EarlyHintsCollector.send,
+                },
             ) catch |err| blk: {
                 if (err == error.Canceled) return err;
                 logging_mod.logWarn(
@@ -614,6 +641,42 @@ pub fn Http3Server(comptime H: type) type {
                     arena,
                 );
                 return;
+            }
+
+            if (early_hints.items.len != 0) {
+                if (response.stream != null or
+                    response.trailers.items.len != 0 or
+                    response.status < 200 or response.status >= 300)
+                {
+                    response.reset();
+                    response.setStatus(500);
+                    response.text(
+                        "Early Hints are only supported for buffered HTTP/3 responses",
+                    ) catch {};
+                } else {
+                    const response_headers = try headerFields(&response, arena);
+                    const response_trailers = try trailerFields(&response, arena);
+                    var informational = [_]netz.http3.InformationalResponse{.{
+                        .status = 103,
+                        .headers = try HeaderView.informationalFields(
+                            arena,
+                            early_hints.items,
+                        ),
+                    }};
+                    try stream.startResponseWithBodyAndInformational(
+                        .{
+                            .status = response.status,
+                            .headers = response_headers,
+                            .trailers = response_trailers,
+                            .request_method = head.method,
+                        },
+                        response.body.len,
+                        response.body,
+                        true,
+                        &informational,
+                    );
+                    return;
+                }
             }
 
             self.respondConcurrent(

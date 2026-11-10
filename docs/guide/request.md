@@ -74,8 +74,9 @@ escaped queries decode into a single buffer.
 - `ctx.set(T, value)` / `ctx.get(T)` provide typed request locals. Keys are
   type-based, and values live in the request arena.
 - `ctx.sendEarlyHints(headers)` writes an interim `103 Early Hints` response
-  before the final response on HTTP/1.1 and HTTP/2. HTTP/3 currently returns
-  `error.EarlyHintsUnsupported`.
+  before the final response on HTTP/1.1, HTTP/2, and buffered HTTP/3
+  responses. A streamed HTTP/3 response cannot combine early hints with an
+  already-started stream and returns `500`.
 
 Malformed percent escapes and decoded control bytes are rejected with `400`
 before a handler runs.
