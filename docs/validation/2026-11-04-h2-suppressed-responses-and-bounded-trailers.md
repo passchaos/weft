@@ -1193,6 +1193,19 @@ Frees remain arena no-ops, so a freed allocation cannot be reused to exceed
 the budget. The unit test covers the bound and the no-reuse rule; the full
 suite passes in Debug, ReleaseSafe, and ReleaseFast.
 
+## HTTP/2 and HTTP/3 declared-body reservation
+
+The H2 and H3 engines appended request DATA into a per-stream
+`ArrayList(u8)` and let it grow geometrically. Both now reserve
+`min(content_length, 64 KiB)` once when the head declares a body, so a 2 KiB
+upload performs one allocation instead of a growth chain. Larger declarations
+grow normally and the reservation is capped, so a slow peer cannot front-load
+unbounded per-stream memory. The netz HTTP/2 and HTTP/3 filters pass
+(1009/1009 and 953/953) and the full suite passes (6896/6896). The H2 upload
+benchmark measured 12.3–12.6 µs versus 12.8 µs on a comparable run; host load
+makes the wall-clock delta small, so the allocation-count reduction is the
+primary evidence.
+
 ## Verification
 
 ```sh
