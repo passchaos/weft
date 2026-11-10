@@ -1323,10 +1323,22 @@ Under `-Dzio-backend=epoll` the sequential difference disappears (42.2 vs
 43.3 µs), so the remaining sequential shift is an io_uring wake-placement
 effect, not scheduler overhead.
 
+A follow-up netz change removed the per-request select itself: the command
+wake event is only ever set by handler worker threads, so a connection with
+no workers alive reads the frame directly on the owner task (no frame-arm
+spawn, no wake-arm spawn, no cancel/join). Same harness, one connection:
+
+- batched: 10.16 → 9.14 µs wall (−10%) and 11.9 → 6.5 µs server CPU per
+  request (−43%).
+- sequential: 36.3 → 34.8 µs wall and 22.8 → 14.1 µs CPU.
+- uploads keep the select path, since their handlers run on workers; the
+  in-process upload phase stays at 11.9–15.5 µs.
+
 Fresh framework comparison in the same session (32 workers for axum):
 
-- HTTP/2 sequential p50: axum 43.1 µs, weft 27.1 µs; p90 46.9 vs 42.0 µs.
-- HTTP/2 batched: axum 10.88 µs, weft 9.65 µs.
+- HTTP/2 sequential p50: axum 45.4–46.3 µs, weft 38.5–39.1 µs; p90
+  50.7–53.7 vs 42.0–43.8 µs; p99 104–110 vs 66–84 µs.
+- HTTP/2 batched: axum 11.36–11.57 µs, weft 9.66–9.91 µs (−15%).
 - HTTP/1, 32 keep-alive connections: axum 810–858k req/s, p90 50–53 µs,
   p99 67–80 µs, p999 130–186 µs; weft 1.11–1.17M req/s, p90 34–35 µs,
   p99 43–45 µs, p999 54–71 µs.
