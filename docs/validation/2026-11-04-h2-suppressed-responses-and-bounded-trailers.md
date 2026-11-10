@@ -1362,6 +1362,9 @@ Fresh framework comparison with the final binaries (32 workers for axum):
 - HTTP/2 sequential p50: axum 40.8–44.2 µs, weft 25.4–25.8 µs; p90
   46.5–48.5 vs 39.4–40.4 µs; p99 71.9–91.0 vs 53.6–56.1 µs.
 - HTTP/2 batched: axum 10.70–10.91 µs, weft 8.38–9.26 µs (−22%).
+- HTTP/2 four concurrent connections × 32 streams (four client processes
+  against one server): axum 11.76–11.91 µs per request, weft 10.04–10.19 µs
+  (−15%). Connection-affinity does not cost cross-connection scaling.
 - HTTP/1, 32 keep-alive connections: axum 784–821k req/s, p90 52–55 µs,
   p99 72–89 µs, p999 177–221 µs; weft 1.07–1.15M req/s, p90 35–38 µs,
   p99 44–50 µs, p999 58–66 µs.
@@ -1378,6 +1381,15 @@ non-Linux targets. Eight alternating H3 rounds moved batched GET 25.76 →
 25.12 µs (−2.5%), sequential 26.84 → 26.01 µs (−3.1%), and upload 43.58 →
 42.85 µs (−1.7%); netz QUIC/HTTP3 2064/2064, HTTP/2 1027/1027, and package
 26/26 tests pass.
+
+## HTTP/2 send-window cache (rejected)
+
+A 64-entry direct-mapped cache in front of `send_stream_window_index` removed
+the per-response hash probe, but added 256 bytes to every `Connection`; the
+connection-size test pins the struct at 2,000/2,080 bytes for footprint
+reasons, and the measured benefit is about 1% of a 6.5 µs request. The cache
+was reverted. Any future attempt should carry the resolved window index in the
+existing per-stream slot instead of growing the connection.
 
 ## Verification
 
