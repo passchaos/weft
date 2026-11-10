@@ -1366,6 +1366,15 @@ server CPU per request 6.38 → 6.28 µs (−1.6%). Skipping validation entirely
 measured about −3.8%, so this keeps every check while capturing roughly 40% of
 the structural cost.
 
+The HTTP/2 and HTTP/3 pumps then switched their poll/output deadlines to the
+zio loop's cached awake clock (`netz.runtime.cachedAwakeTimestamp`), removing a
+fresh clock read per pump iteration while falling back to the ordinary clock
+on foreign `std.Io` implementations. Eight order-balanced external rounds were
+wall-neutral (9.18 vs 9.19 µs) with server CPU per request 6.60 → 6.48 µs.
+Note for future A/B work: running one binary always second in a round biases
+the result by several percent on this host; alternate the order and discard
+one-sided comparisons.
+
 Fresh framework comparison with the final binaries (32 workers for axum):
 
 - HTTP/2 sequential p50: axum 40.8–44.2 µs, weft 25.4–25.8 µs; p90
