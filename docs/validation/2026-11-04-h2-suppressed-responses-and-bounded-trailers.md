@@ -1067,11 +1067,14 @@ The arena is bounded by `max_head_bytes` plus the header array
 (`max_request_headers` entries) and is retained per connection, so it cannot
 grow with request count. The post-change profile removes `malloc`/`cfree`
 from the top symbols and shows `ArenaAllocator.alloc` at 0.61%, replacing
-about 1.46% of allocator work with 0.61% of bump allocation. Wall-clock A/B
-rounds were inconclusive because host load rose during the run (overlapping
-ranges around 1.0M–1.11M requests/s), so the profile delta is the primary
-evidence; the change is kept because it strictly removes heap traffic from
-the hot path without changing the allocation bound.
+about 1.46% of allocator work with 0.61% of bump allocation. The first
+wall-clock A/B was inconclusive because host load rose during the run; a later
+interleaved run at lower load measured 1.03M–1.12M requests/s with the change
+(mean about 1.075M) and 1.05M–1.08M without it (mean about 1.071M), which is
+neutral at 32 connections because throughput there is limited by the client
+and zio wake-ups rather than server CPU. The change is kept because it
+strictly removes heap traffic from the hot path without changing the
+allocation bound; the profile delta is the primary evidence.
 
 Verification: the netz HTTP/1 filter passes (544/544), the full netz library
 suite passes (6896/6896), and weft passes 223/223 in Debug, ReleaseSafe, and
