@@ -1340,6 +1340,16 @@ performs no heap allocation. Batched h2c moved 9.63 → 9.38 µs and sequential
 37.3 → 36.6 µs (−2.6% / −1.8%), with server CPU down about 2–3%; H3 is
 unchanged within noise. `ArenaAllocator.alloc` left the profile top.
 
+The HTTP/3 concurrent engine then received the same treatment as the HTTP/2
+pump: its `receiveOrWake` raced every QUIC receive against a command wake arm
+even when no handler worker existed to signal it. With zero workers the owner
+now calls `Adapter.receive` directly, removing two task spawns and one
+cancel/join per pump iteration. Six alternating in-process rounds moved batched
+GET 27.5 → 25.7 µs (−6.5%), sequential 30.4 → 29.1 µs (−4.3%), and batched
+upload 48.6 → 44.6 µs (−8.2%). Uploads with live workers keep the select path.
+netz HTTP/3+QUIC 2064/2064, WebTransport 819/819, package 26/26, and weft
+229/229 tests pass.
+
 Fresh framework comparison in the same session (32 workers for axum):
 
 - HTTP/2 sequential p50: axum 45.4–46.3 µs, weft 38.5–39.1 µs; p90
@@ -1348,8 +1358,9 @@ Fresh framework comparison in the same session (32 workers for axum):
 - HTTP/1, 32 keep-alive connections: axum 810–858k req/s, p90 50–53 µs,
   p99 67–80 µs, p999 130–186 µs; weft 1.11–1.17M req/s, p90 34–35 µs,
   p99 43–45 µs, p999 54–71 µs.
-- HTTP/3 in-process benchmark is unchanged (sequential 28.2–29.5 µs,
-  batched 26.9 µs, upload 47.5–50.3 µs).
+- HTTP/3 in-process benchmark after the direct-receive change: sequential
+  29.1 µs, batched 25.7 µs, upload 44.6 µs (medians of six alternating
+  rounds).
 
 ## Verification
 
