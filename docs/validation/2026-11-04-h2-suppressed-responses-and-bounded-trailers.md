@@ -1214,6 +1214,20 @@ benchmark measured 12.3–12.6 µs versus 12.8 µs on a comparable run; host loa
 makes the wall-clock delta small, so the allocation-count reduction is the
 primary evidence.
 
+## HTTP/2 small-body inline (rejected)
+
+A pump-driven inline body path was implemented for HTTP/2: a declared small
+body starts the handler on the connection owner, and `nextBody` pumps one
+connection event while it waits for DATA instead of parking on the body event.
+This avoids the worker handoff without waiting for the complete body (the
+earlier deferred-buffer attempt did wait and regressed uploads to 14.9 µs).
+
+Measured uploads stayed within noise (11.8–13.8 µs versus 12.1–12.9 µs for
+the worker path), while the owner is dedicated to one handler and can delay
+frame processing for sibling streams. The experiment was reverted; HTTP/2
+uploads keep the worker path. HTTP/3 keeps its deferred small-body inline path
+because the QUIC owner/worker handoff is more expensive there.
+
 ## Verification
 
 ```sh
