@@ -926,12 +926,14 @@ so the status is not lost to a TCP RST.
 
 ## Limitations
 
-- HTTP/2 batch throughput is level with axum in external single-connection
-  comparisons: the 32-stream batch measured about 10.5–11.3 µs for weft versus
-  10.6–10.8 µs for axum, while sequential requests are 1.2–1.5× faster
-  (24.7–29.0 µs vs 32.4–38.3 µs). Routes that opt into `inline_bodyless` run
-  bodyless handlers on the connection owner and are faster than axum on
-  sequential requests; `single_executor` still leads the batched path.
+- HTTP/2 batch throughput is close to axum in external single-connection
+  comparisons: a fresh interleaved run measured about 12.0–12.9 µs for weft
+  versus 11.2–11.9 µs for axum (earlier quiet-host rounds were level at
+  10.5–11.3 µs vs 10.6–10.8 µs). Sequential requests are 1.3–1.4× faster
+  (33.4–36.8 µs vs 46.1–49.3 µs in the fresh run; 24.7–29.0 µs vs
+  32.4–38.3 µs earlier). Routes that opt into `inline_bodyless` run bodyless
+  handlers on the connection owner; `single_executor` still leads the batched
+  path at 8.5–8.9 µs for a single connection.
 - HTTP/1 p99/p999 tail latency depends on the zio executor count. Eight
   executors for 32 keep-alive connections beat axum on every percentile;
   sizing executors close to the connection count leaves each executor mostly
