@@ -1278,6 +1278,16 @@ in-process benchmark. The owner-serialized inline path is faster than the
 worker handoff for this workload; the remaining external h2c batch gap (about
 5–8% versus axum) is the zio idle-executor cost, not a missing parallel path.
 
+## HTTP/1 declared-body reservation
+
+The buffered HTTP/1 request-body path appended reader chunks to an
+`ArrayList(u8)` without using the declared length. It now reserves
+`min(content_length, max_body_bytes)` once when the head declares a body, so
+a POST with a known length performs one allocation instead of a growth chain.
+Unknown lengths and over-limit declarations keep the normal bounded growth,
+and the read loop still enforces `max_body_bytes` and answers 413. The full
+weft suite passes (227/227).
+
 ## Verification
 
 ```sh

@@ -456,6 +456,20 @@ pub fn Server(comptime H: type) type {
                 if (streaming) {
                     body_reader = .{ .pull = reader };
                 } else {
+                    // Reserve the declared body once instead of growing the
+                    // buffer through several append steps. Unknown lengths and
+                    // over-limit declarations keep the normal bounded growth
+                    // (the read loop still enforces max_body_bytes).
+                    if (head.content_length) |length| {
+                        if (length != 0 and
+                            length <= self.options.limits.max_body_bytes)
+                        {
+                            body.ensureTotalCapacity(
+                                self.allocator,
+                                length,
+                            ) catch {};
+                        }
+                    }
                     while (true) {
                         const chunk = reader.next() catch |err| {
                             if (err == error.Canceled) return error.Canceled;
