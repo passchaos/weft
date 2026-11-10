@@ -1357,6 +1357,15 @@ removes work per field; with only four response headers the hello benchmark
 shows it within noise (batched CPU median about 1% lower over seven
 interleaved rounds), while responses with larger header sets save more.
 
+Request header validation then stopped chaining case-insensitive comparisons:
+pseudo-header kinds and the forbidden/special regular names are fixed, so one
+length switch (with a first-byte split for the two ten-byte names) replaces
+five comparisons per pseudo-header and seven per regular header. Ten
+order-balanced external rounds moved batched h2c 9.03 → 8.90 µs (−1.5%) and
+server CPU per request 6.38 → 6.28 µs (−1.6%). Skipping validation entirely
+measured about −3.8%, so this keeps every check while capturing roughly 40% of
+the structural cost.
+
 Fresh framework comparison with the final binaries (32 workers for axum):
 
 - HTTP/2 sequential p50: axum 40.8–44.2 µs, weft 25.4–25.8 µs; p90
