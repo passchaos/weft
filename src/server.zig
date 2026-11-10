@@ -426,7 +426,11 @@ pub fn Server(comptime H: type) type {
                     return .drained;
                 }
                 const target = head.target;
-                var prepared: router_mod.Prepared = .{};
+                // `prepareRoute` initializes route, captures.count, and
+                // allowed.len before any read; the backing arrays are only
+                // accessed up to those counts. Leaving the arrays undefined
+                // avoids zeroing the whole match result on every request.
+                var prepared: router_mod.Prepared = undefined;
                 dispatch_mod.prepareRoute(
                     H,
                     &self.app_router,

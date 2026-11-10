@@ -1077,6 +1077,18 @@ Verification: the netz HTTP/1 filter passes (544/544), the full netz library
 suite passes (6896/6896), and weft passes 223/223 in Debug, ReleaseSafe, and
 ReleaseFast with leak checking enabled.
 
+## HTTP/1 route-match zeroing
+
+The same profile showed a 648-byte `memset` at the top of `serveConnection`,
+mapped by `addr2line` to `var prepared: Prepared = .{}`. The router's
+`prepare` contract only resets `route`, `allowed.len`, and `captures.count`;
+the capture and method arrays are written before they are read. The server now
+declares the match result as `undefined` and relies on that contract. In the
+ReleaseFast disassembly the 648-byte entry `memset` is gone; the remaining
+`memset` calls in the function are cold paths (WebSocket SHA-1, zio context
+zeroing, and stack zeroing). Captures, 405/OPTIONS, and HEAD fallback are
+covered by the package tests, which pass in all three optimization modes.
+
 ## Verification
 
 ```sh
