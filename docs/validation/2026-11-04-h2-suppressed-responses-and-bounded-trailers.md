@@ -1365,9 +1365,19 @@ Fresh framework comparison with the final binaries (32 workers for axum):
 - HTTP/1, 32 keep-alive connections: axum 784–821k req/s, p90 52–55 µs,
   p99 72–89 µs, p999 177–221 µs; weft 1.07–1.15M req/s, p90 35–38 µs,
   p99 44–50 µs, p999 58–66 µs.
-- HTTP/3 in-process benchmark after the direct-receive change: sequential
-  29.1 µs, batched 25.7 µs, upload 44.6 µs (medians of six alternating
-  rounds).
+- HTTP/3 in-process benchmark after the direct-receive and per-datagram ECN
+  changes: sequential 26.0 µs, batched 25.1 µs, upload 42.9 µs (medians of
+  eight alternating rounds).
+
+The QUIC endpoint then stopped flipping the socket-wide ECN mark: Linux
+bidirectional traffic alternates data packets (ECT(0)) and ACK-only packets
+(Not-ECT), which made every transition a `setsockopt`. The codepoint now
+travels as an `IP_TOS`/`IPV6_TCLASS` ancillary message on the existing
+send/sendmmsg/GSO calls, with the socket-wide fallback kept for SOCKS5 and
+non-Linux targets. Eight alternating H3 rounds moved batched GET 25.76 →
+25.12 µs (−2.5%), sequential 26.84 → 26.01 µs (−3.1%), and upload 43.58 →
+42.85 µs (−1.7%); netz QUIC/HTTP3 2064/2064, HTTP/2 1027/1027, and package
+26/26 tests pass.
 
 ## Verification
 
