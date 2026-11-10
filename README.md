@@ -879,7 +879,7 @@ so the status is not lost to a TCP RST.
   sizing executors close to the connection count leaves each executor mostly
   parked and adds wake-up latency to the tail even though throughput stays
   ahead. Closing that last gap needs zio-level wake and scheduling work.
-- HTTP/3 sequential latency is higher than HTTP/2 (roughly 31 µs vs 26–30 µs
+- HTTP/3 sequential latency is higher than HTTP/2 (roughly 29 µs vs 26–30 µs
   per request on the reference host); QUIC framing and recovery dominate.
 - `CONNECT` requests (HTTP/1 authority-form, HTTP/2/3 tunnel or extended
   CONNECT) receive `501`; weft exposes no tunnel writer.
@@ -889,3 +889,4 @@ so the status is not lost to a TCP RST.
 - `Etag` covers buffered responses; streamed bodies are not hashed.
 - `StaticFiles` sidecar (`.br`/`.zst`/`.gz`) responses are not range-addressable
   by design; `Range` requests receive the raw file.
+ve the raw file.

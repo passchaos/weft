@@ -1092,6 +1092,42 @@ ReleaseFast disassembly the 648-byte entry `memset` is gone; the remaining
 zeroing, and stack zeroing). Captures, 405/OPTIONS, and HEAD fallback are
 covered by the package tests, which pass in all three optimization modes.
 
+## HTTP/3 by-value connection copies
+
+A fresh H3 profile after the inline work attributed 14.2% of sampled cycles to
+`memcpy`; the immediate callers were `validateOutboundFrames` (82 samples) and
+`prepareFramesForSend` (43). Disassembling those call sites showed 5056-byte,
+6028-byte, and 11120-byte copies, not frame-sized copies. The cause was Zig
+method receivers declared as `self: Connection` instead of `self: *const
+Connection`: every read-only accessor copied the whole connection. The hot
+chain included `validateOutboundFrames`, `validateOutboundFrameAndTraits`,
+`validateResetPrefixQueued`, `findSendStreamEntryConst`,
+`ackFrequencySendEnabled`, `pacingDeadlineAt`, `pacingBudgetAt`,
+`pendingPacingDeadline`, `nextPacketPacingDeadlineAt`,
+`packetLenForFramesAtOffset`, `congestionAvailable`, `bytesInFlight`,
+`connectionSendAvailable`, `maxDatagramPayloadSize`, `currentSendDatagramSize`,
+`pmtudShouldProbe`, `qlogFailed`, and `validateDatagramSend`, plus the
+congestion, pacing, and datagram accessors. The pacing deadline check alone
+copied 11120 bytes on every in-flight send.
+
+All of those receivers now take `*const Connection`, and
+`sendAckForPacketsIfNeeded` iterates `[]const ReceivedPacket` by pointer
+instead of copying each packet. In the post-change profile `memcpy` falls to
+2.1–3.8% and the 5–11 KiB callers disappear; the remaining copies are frame
+encoding, ACK range assembly, and AEAD, which are inherent to the wire format.
+
+Interleaved A/B rounds of the in-process H3 benchmark (same host, four rounds):
+
+- sequential: 30.5–31.3 µs before, 28.7–29.2 µs after (about 7% faster).
+- batched 32-stream GETs: 28.9–29.2 µs before, 27.0–27.3 µs after (about
+  6.5% faster).
+- batched 2 KiB uploads: 50.7–51.1 µs before, 47.0–47.5 µs after (about 7.3%
+  faster).
+
+Verification: the netz QUIC filter passes (1180/1180), the HTTP/3 filter
+passes (953/953), the full netz library suite passes (6896/6896), and weft
+passes 223/223 in Debug, ReleaseSafe, and ReleaseFast.
+
 ## Verification
 
 ```sh
