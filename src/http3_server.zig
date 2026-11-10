@@ -435,7 +435,14 @@ pub fn Http3Server(comptime H: type) type {
                     arena,
                 );
             }
-            const headers = convertH3HeadHeaders(
+            // Common requests fit a stack header view, so the request arena
+            // stays untouched until the handler or response actually needs it.
+            var header_stack: [32]netz.http1.Header = undefined;
+            const headers = convertH3HeadHeadersInto(
+                header_stack[0..],
+                head.headers,
+                head.authority,
+            ) orelse (convertH3HeadHeaders(
                 arena,
                 head.headers,
                 head.authority,
@@ -444,7 +451,7 @@ pub fn Http3Server(comptime H: type) type {
                     netz.http3.ApplicationErrorCode.internal_error,
                 ) catch {};
                 return;
-            };
+            });
 
             const streaming = if (prepared.route) |route|
                 route.streaming
@@ -954,6 +961,34 @@ fn convertH3Trailers(
     return headers;
 }
 
+fn convertH3HeadHeadersInto(
+    destination: []netz.http1.Header,
+    fields: []const netz.http3.Qpack.HeaderField,
+    authority: ?[]const u8,
+) ?[]netz.http1.Header {
+    var count: usize = 0;
+    for (fields) |field| {
+        if (!isPseudoHeader(field.name)) count += 1;
+    }
+    const add_host = authority != null and findHeader(fields, "host") == null;
+    if (add_host) count += 1;
+    if (count > destination.len) return null;
+
+    var index: usize = 0;
+    for (fields) |field| {
+        if (isPseudoHeader(field.name)) continue;
+        destination[index] = .{ .name = field.name, .value = field.value };
+        index += 1;
+    }
+    if (add_host) {
+        destination[index] = .{
+            .name = "Host",
+            .value = authority.?,
+        };
+    }
+    return destination[0..count];
+}
+
 fn convertH3HeadHeaders(
     allocator: std.mem.Allocator,
     fields: []const netz.http3.Qpack.HeaderField,
@@ -963,24 +998,10 @@ fn convertH3HeadHeaders(
     for (fields) |field| {
         if (!isPseudoHeader(field.name)) count += 1;
     }
-    const has_host = findHeader(fields, "host") != null;
-    const add_host = authority != null and !has_host;
+    const add_host = authority != null and findHeader(fields, "host") == null;
     if (add_host) count += 1;
-
     const headers = try allocator.alloc(netz.http1.Header, count);
-    var index: usize = 0;
-    for (fields) |field| {
-        if (isPseudoHeader(field.name)) continue;
-        headers[index] = .{ .name = field.name, .value = field.value };
-        index += 1;
-    }
-    if (add_host) {
-        headers[index] = .{
-            .name = "Host",
-            .value = authority.?,
-        };
-    }
-    return headers;
+    return convertH3HeadHeadersInto(headers, fields, authority).?;
 }
 
 fn internalErrorResponse(

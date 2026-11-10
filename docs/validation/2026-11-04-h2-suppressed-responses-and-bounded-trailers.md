@@ -1193,6 +1193,14 @@ Frees remain arena no-ops, so a freed allocation cannot be reused to exceed
 the budget. The unit test covers the bound and the no-reuse rule; the full
 suite passes in Debug, ReleaseSafe, and ReleaseFast.
 
+The H2 and H3 adapters also build the `netz.http1.Header` request view in a
+32-entry stack array and fall back to the request arena only when a head has
+more fields. Common requests therefore skip the header-array allocation, and
+the lazy arena is first touched by the response header list instead. The H2
+batched GET benchmark measured 7.86–7.89 µs and H3 uploads 47.2 µs after the
+change; both remain within the previous ranges, and the allocation reduction
+is the deterministic effect.
+
 ## HTTP/2 and HTTP/3 declared-body reservation
 
 The H2 and H3 engines appended request DATA into a per-stream

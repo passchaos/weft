@@ -462,14 +462,21 @@ pub fn Http2Server(comptime H: type) type {
                     arena,
                 );
             }
-            const headers = convertH2Headers(
+            // Common requests fit a stack header view, so the request arena
+            // stays untouched until the handler or response actually needs it.
+            var header_stack: [32]netz.http1.Header = undefined;
+            const headers = convertH2HeadersInto(
+                header_stack[0..],
+                head.headers,
+                head.authority,
+            ) orelse (convertH2Headers(
                 arena,
                 head.headers,
                 head.authority,
             ) catch {
                 stream.reset(.internal_error) catch {};
                 return;
-            };
+            });
 
             // The concurrent engine only publishes body completion while it is
             // draining a stream, so a request with no DATA frames cannot be
@@ -884,6 +891,34 @@ fn convertH2Trailers(
     return headers;
 }
 
+fn convertH2HeadersInto(
+    destination: []netz.http1.Header,
+    fields: []const netz.http2.Hpack.HeaderField,
+    authority: ?[]const u8,
+) ?[]netz.http1.Header {
+    var count: usize = 0;
+    for (fields) |field| {
+        if (!isPseudoHeader(field.name)) count += 1;
+    }
+    const add_host = authority != null and findHeader(fields, "host") == null;
+    if (add_host) count += 1;
+    if (count > destination.len) return null;
+
+    var index: usize = 0;
+    for (fields) |field| {
+        if (isPseudoHeader(field.name)) continue;
+        destination[index] = .{ .name = field.name, .value = field.value };
+        index += 1;
+    }
+    if (add_host) {
+        destination[index] = .{
+            .name = "Host",
+            .value = authority.?,
+        };
+    }
+    return destination[0..count];
+}
+
 fn convertH2Headers(
     allocator: std.mem.Allocator,
     fields: []const netz.http2.Hpack.HeaderField,
@@ -893,24 +928,10 @@ fn convertH2Headers(
     for (fields) |field| {
         if (!isPseudoHeader(field.name)) count += 1;
     }
-    const has_host = findHeader(fields, "host") != null;
-    const add_host = authority != null and !has_host;
+    const add_host = authority != null and findHeader(fields, "host") == null;
     if (add_host) count += 1;
-
     const headers = try allocator.alloc(netz.http1.Header, count);
-    var index: usize = 0;
-    for (fields) |field| {
-        if (isPseudoHeader(field.name)) continue;
-        headers[index] = .{ .name = field.name, .value = field.value };
-        index += 1;
-    }
-    if (add_host) {
-        headers[index] = .{
-            .name = "Host",
-            .value = authority.?,
-        };
-    }
-    return headers;
+    return convertH2HeadersInto(headers, fields, authority).?;
 }
 
 fn trailerFields(
