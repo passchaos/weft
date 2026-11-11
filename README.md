@@ -126,9 +126,16 @@ allocation.
 - **OpenAPI and MCP** — OpenAPI 3.1 documents rendered from route metadata,
   and a Model Context Protocol server over Streamable HTTP. See
   [docs/guide/openapi-mcp.md](docs/guide/openapi-mcp.md).
-- **Authentication** — bounded in-memory sessions, session-bound CSRF
-  protection, HS256/EdDSA JWT signing and verification, and Bearer-token
-  middleware. See [docs/guide/auth.md](docs/guide/auth.md).
+- **Authentication** — bounded in-memory or file-backed sessions, session-bound
+  CSRF protection (header or form token), HS256/EdDSA JWT signing, RS256/ES256
+  and JWKS verification, and Bearer-token middleware. See
+  [docs/guide/auth.md](docs/guide/auth.md).
+- **Caching and cookies** — bounded response cache, HMAC-signed cookie values,
+  and CSP nonce rendering. See
+  [docs/guide/middleware.md](docs/guide/middleware.md).
+- **TLS identity reload** — atomically replace the server certificate without
+  rebinding the listener. See
+  [docs/guide/adapters.md](docs/guide/adapters.md).
 - **WebTransport and gRPC** — WebTransport sessions with datagrams and
   streams over QUIC/HTTP/3, and unary gRPC services over h2c or TLS/ALPN
   `h2`. See

@@ -19,6 +19,7 @@ pub const Bearer = @import("jwt.zig").Bearer;
 pub const bearer = @import("jwt.zig").from;
 pub const Session = @import("../session.zig").Middleware;
 pub const Csrf = @import("../csrf.zig").Middleware;
+pub const Cache = @import("cache.zig").Cache;
 
 comptime {
     _ = @import("request_id.zig");
@@ -34,4 +35,5 @@ comptime {
     _ = @import("etag.zig");
     _ = @import("alt_svc.zig");
     _ = @import("jwt.zig");
+    _ = @import("cache.zig");
 }

@@ -4,6 +4,7 @@ const cookie_mod = @import("cookie.zig");
 const handler_mod = @import("handler.zig");
 
 pub const Store = @import("session/store.zig").Store;
+pub const FileStore = @import("session/file_store.zig").FileStore;
 pub const SessionId = @import("session/store.zig").SessionId;
 pub const SameSite = cookie_mod.SameSite;
 

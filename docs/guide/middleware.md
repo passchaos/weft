@@ -40,6 +40,9 @@ Built-ins:
   will emit, and client cancellations log as `499`. `Log{ .format = .json }`
   emits one compact JSON object per request with JSON-escaped values.
 - `securityHeaders` / `SecurityHeaders` — configurable browser hardening fields.
+  Set `content_security_policy` to emit a CSP; every `{nonce}` placeholder is
+  replaced with a fresh Base64URL nonce exposed through
+  `weft.middleware.security_headers.nonce(ctx)`.
 - `BasicAuth` — constant-time Basic credential check with a challenge response.
 - `Cors` — exact-origin allow list, credential support, preflight handling,
   configured request-header validation, and `Vary: Origin` on every response
@@ -60,6 +63,10 @@ Built-ins:
   the final encoded representation. Set `max_stream_bytes` to buffer a
   streamed response up to that bound and hash it; unknown-length streams stay
   streaming and keep no ETag.
+- `Cache` — bounded in-memory GET cache. It skips authenticated requests,
+  `Set-Cookie`, and `Vary` responses, honors `Cache-Control: max-age`, and
+  clears on unsafe methods. Configure `max_entries`, `max_bytes`, and
+  `default_ttl`.
 - `AltSvc` — advertises an HTTP/3 endpoint (`Alt-Svc: h3=":443"; ma=86400` by
   default) on HTTP/1.1 and HTTP/2 responses, and skips the header when the
   request already arrived over HTTP/3.

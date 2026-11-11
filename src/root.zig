@@ -38,6 +38,7 @@ pub const withContext = @import("handler.zig").withContext;
 pub const RouteFailure = @import("dispatch.zig").RouteFailure;
 pub const query = @import("query.zig");
 pub const cookie = @import("cookie.zig");
+pub const cookie_signer = @import("cookie_signer.zig");
 pub const accept = @import("accept.zig");
 pub const multipart = @import("multipart.zig");
 pub const MultipartPart = @import("multipart.zig").Part;
@@ -79,7 +80,10 @@ pub const webtransport = @import("webtransport.zig");
 pub const WebTransportServer = @import("webtransport.zig").WebTransportServer;
 pub const WebTransportSession = @import("webtransport.zig").Session;
 pub const grpc = @import("grpc.zig");
+pub const tls = @import("tls.zig");
 pub const GrpcServer = @import("grpc.zig").GrpcServer;
+pub const grpc_streaming = @import("grpc_streaming.zig");
+pub const GrpcStreamingServer = @import("grpc_streaming.zig").GrpcStreamingServer;
 
 comptime {
     _ = @import("limits.zig");
@@ -93,6 +97,7 @@ comptime {
     _ = @import("websocket.zig");
     _ = @import("query.zig");
     _ = @import("cookie.zig");
+    _ = @import("cookie_signer.zig");
     _ = @import("accept.zig");
     _ = @import("quality.zig");
     _ = @import("multipart.zig");
@@ -138,9 +143,12 @@ comptime {
     _ = @import("jwt.zig");
     _ = @import("session.zig");
     _ = @import("session/store.zig");
+    _ = @import("session/file_store.zig");
     _ = @import("csrf.zig");
     _ = @import("webtransport.zig");
     _ = @import("grpc.zig");
+    _ = @import("grpc_streaming.zig");
+    _ = @import("tls.zig");
     _ = @import("adapter/body.zig");
     _ = @import("adapter/header_view.zig");
     _ = @import("adapter/response.zig");

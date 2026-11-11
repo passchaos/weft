@@ -60,8 +60,13 @@ into caller storage, so the buffer determines the receive bound.
 
 `route` matches exact paths. Use `setFallback` for dynamic paths and parse
 `session.path()` inside the handler. `serve` stops on `stop()` and drains
-sessions up to `drain_timeout`. The adapter does not impose an idle timeout;
-handlers should use the `*WithTimeout` variants and close sessions explicitly.
+sessions up to `drain_timeout`.
+
+Set `Options.session_timeout` for an absolute per-session budget. Methods
+without an explicit timeout (`receiveDatagram`, `receiveStream`, `readStream`,
+`sendDatagram`, `sendStream`) then use that deadline, so a stalled peer cannot
+block a handler forever. Explicit `*WithTimeout` calls are capped by the same
+deadline.
 
 ## gRPC
 
@@ -109,7 +114,15 @@ Limits and lifecycle:
 - `idle_timeout` bounds a channel waiting for its next call.
 - `serve` stops on `stop()` and drains connections up to `drain_timeout`.
 
-The adapter handles unary calls. Server-streaming and bidirectional calls are
-not routed here; use netz's `ServerConnection.readStreaming`/`acceptDuplex`
-APIs directly when those are required. Calls on one connection are processed
-serially, matching the single mutable HTTP/2 session state.
+The unary adapter handles one request/response call. For streaming RPCs use
+`weft.GrpcStreamingServer(H)`: it accepts duplex streams, collects the request
+messages, and exposes `nextMessage`, `write`, and `finish` through a streaming
+context. This covers client-streaming and server-streaming calls; interleaved
+bidirectional handlers should use netz's `ServerDuplex` directly.
+
+Set `Options.grpc_web = true` to serve gRPC-Web framing instead of native gRPC
+on that listener. `Options.cors_policy` applies to gRPC-Web preflights and
+responses. Native gRPC and gRPC-Web are separate listener modes.
+
+Calls on one connection are processed serially, matching the single mutable
+HTTP/2 session state.

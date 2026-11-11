@@ -17,6 +17,8 @@ pub const Options = struct {
     cookie_path: []const u8 = "/",
     secure: bool = false,
     same_site: ?SameSite = .lax,
+    /// Form field checked when the request is URL-encoded or multipart.
+    form_field: []const u8 = "_csrf",
     /// Exact origins accepted for unsafe requests. Empty disables the Origin
     /// check; the token comparison still applies.
     allowed_origins: []const []const u8 = &.{},
@@ -65,7 +67,7 @@ pub const Middleware = struct {
         }
 
         if (!self.originAllowed(ctx)) return self.reject(ctx);
-        const submitted = ctx.header(self.options.header_name) orelse
+        const submitted = self.submittedToken(ctx) orelse
             return self.reject(ctx);
         if (!constantTimeEql(
             std.mem.trim(u8, submitted, " \t"),
@@ -90,6 +92,37 @@ pub const Middleware = struct {
         const encoded = encodeHex(bytes[0..self.options.token_bytes], &hex);
         try session.set(self.options.session_key, encoded);
         return session.get(self.options.session_key).?;
+    }
+
+    fn submittedToken(
+        self: *Middleware,
+        ctx: *ctx_mod.Ctx,
+    ) ?[]const u8 {
+        if (ctx.header(self.options.header_name)) |value| {
+            return std.mem.trim(u8, value, " \t");
+        }
+        const content_type = ctx.header("content-type") orelse return null;
+        if (std.ascii.startsWithIgnoreCase(
+            content_type,
+            "application/x-www-form-urlencoded",
+        )) {
+            const form = ctx.bodyForm() catch return null;
+            for (form.pairs) |pair| {
+                if (std.mem.eql(u8, pair.name, self.options.form_field)) {
+                    return pair.value;
+                }
+            }
+            return null;
+        }
+        if (std.ascii.startsWithIgnoreCase(
+            content_type,
+            "multipart/form-data",
+        )) {
+            const form = ctx.multipart() catch return null;
+            const part = form.part(self.options.form_field) orelse return null;
+            return part.data;
+        }
+        return null;
     }
 
     fn ensureCookie(
@@ -171,6 +204,7 @@ test "csrf requires a token on unsafe methods and accepts a valid header" {
         allocator,
         .GET,
         &.{},
+        "",
         &.{ session_handler, csrf_handler },
         handler_mod.handler(Run.run),
     );
@@ -209,6 +243,7 @@ test "csrf requires a token on unsafe methods and accepts a valid header" {
         allocator,
         .POST,
         &headers,
+        "",
         &.{ session_handler, csrf_handler },
         handler_mod.handler(Run.run),
     );
@@ -222,12 +257,32 @@ test "csrf requires a token on unsafe methods and accepts a valid header" {
         allocator,
         .POST,
         headers[0..1],
+        "",
         &.{ session_handler, csrf_handler },
         handler_mod.handler(Run.run),
     );
     defer rejected.deinit();
     try rejected.ctx.run();
     try std.testing.expectEqual(@as(u16, 403), rejected.ctx.response.status);
+
+    const form_body = try std.fmt.allocPrint(allocator, "_csrf={s}", .{token});
+    defer allocator.free(form_body);
+    var form_headers = [_]Header{
+        .{ .name = "cookie", .value = session_cookie },
+        .{ .name = "content-type", .value = "application/x-www-form-urlencoded" },
+    };
+    var form_post: TestContext = undefined;
+    try form_post.init(
+        allocator,
+        .POST,
+        &form_headers,
+        form_body,
+        &.{ session_handler, csrf_handler },
+        handler_mod.handler(Run.run),
+    );
+    defer form_post.deinit();
+    try form_post.ctx.run();
+    try std.testing.expectEqual(@as(u16, 200), form_post.ctx.response.status);
 }
 
 const Header = netz.http1.Header;
@@ -242,6 +297,7 @@ const TestContext = struct {
         allocator: std.mem.Allocator,
         method: netz.http1.Method,
         headers: []const Header,
+        body: []const u8,
         middleware: []const handler_mod.Handler,
         final_handler: handler_mod.Handler,
     ) !void {
@@ -251,7 +307,7 @@ const TestContext = struct {
             .target = "/",
             .version = .http_1_1,
             .headers = @constCast(headers),
-            .body = "",
+            .body = body,
             .consumed = 0,
         };
         self.ctx = .{

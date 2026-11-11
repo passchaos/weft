@@ -189,3 +189,34 @@ the client. Set `.compression = true` to negotiate RFC 7692
 `compression_threshold` bytes (default 32) are compressed. HTTP/2 and HTTP/3
 use extended CONNECT and do not negotiate `permessage-deflate` in this slice.
 
+
+## TLS identity reload
+
+`weft.tls.ReloadableIdentity` owns a server identity and exposes a late-bound
+provider for HTTP/1 and HTTP/2 TLS listeners:
+
+```zig
+var identity = try weft.tls.ReloadableIdentity.init(io, gpa, try loadIdentity());
+defer identity.deinit();
+
+var server = try weft.Server(App).init(io, gpa, .{
+    .address = .{ .ip4 = .loopback(443) },
+    .tls = .{
+        .identity = identity.serverIdentity(),
+        .identity_provider = identity.provider(),
+    },
+}, .{});
+defer server.deinit();
+
+// On SIGHUP or a certificate watcher:
+try identity.reloadFromFiles(io, std.Io.Dir.cwd(), "cert.pem", "key.pem");
+```
+
+Each handshake borrows one generation; `reload` swaps it atomically and frees
+the old generation after its last in-flight handshake releases it. The
+listener keeps running.
+
+SNI-based multi-certificate selection is not exposed by the current netz
+handshake path, and ACME issuance is not built in. For multi-tenant or
+automatically renewed certificates, terminate TLS at a reverse proxy, or run
+one listener per certificate and reload it with `ReloadableIdentity`.

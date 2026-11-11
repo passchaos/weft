@@ -24,6 +24,10 @@ pub const Store = struct {
     allocator: std.mem.Allocator,
     mutex: std.Io.Mutex = .init,
     sessions: std.AutoHashMapUnmanaged(SessionId, *Entry) = .empty,
+    backend: ?Backend = null,
+    /// Optional backend storage released by `deinit` (for `FileStore`).
+    owned_backend: ?*anyopaque = null,
+    owned_deinit_fn: ?*const fn (*anyopaque) void = null,
     options: Options,
 
     const Entry = struct {
@@ -35,18 +39,61 @@ pub const Store = struct {
 
     pub const Values = std.StringHashMapUnmanaged([]const u8);
 
+    /// Pluggable storage for shared session deployments (Redis, SQL, or a
+    /// shared filesystem). Callbacks must be thread-safe and copy values.
+    pub const Backend = struct {
+        context: *anyopaque,
+        load_fn: *const fn (
+            *anyopaque,
+            std.Io,
+            SessionId,
+            std.mem.Allocator,
+            i96,
+        ) anyerror!?Values,
+        save_fn: *const fn (
+            *anyopaque,
+            std.Io,
+            SessionId,
+            *const Values,
+            i96,
+        ) anyerror!bool,
+        touch_fn: *const fn (*anyopaque, std.Io, SessionId, i96) bool,
+        remove_fn: *const fn (*anyopaque, std.Io, SessionId) void,
+        rotate_fn: *const fn (
+            *anyopaque,
+            std.Io,
+            SessionId,
+            SessionId,
+            *const Values,
+            i96,
+        ) anyerror!void,
+        count_fn: ?*const fn (*anyopaque) usize = null,
+    };
+
     pub fn init(allocator: std.mem.Allocator, options: Options) !Store {
-        if (options.max_sessions == 0 or
-            options.max_bytes_per_session == 0 or
-            options.idle_timeout.nanoseconds <= 0 or
-            options.absolute_timeout.nanoseconds <= 0)
-        {
-            return error.InvalidOptions;
-        }
+        try validateOptions(options);
         return .{ .allocator = allocator, .options = options };
     }
 
+    pub fn initBackend(
+        allocator: std.mem.Allocator,
+        backend: Backend,
+        options: Options,
+    ) !Store {
+        try validateOptions(options);
+        return .{
+            .allocator = allocator,
+            .options = options,
+            .backend = backend,
+        };
+    }
+
     pub fn deinit(self: *Store) void {
+        if (self.owned_deinit_fn) |deinit_fn| {
+            deinit_fn(self.owned_backend.?);
+            self.* = undefined;
+            return;
+        }
         var iterator = self.sessions.iterator();
         while (iterator.next()) |entry| {
             self.freeEntry(entry.value_ptr.*);
@@ -65,6 +112,15 @@ pub const Store = struct {
         allocator: std.mem.Allocator,
         now_ns: i96,
     ) !?Values {
+        if (self.backend) |backend| {
+            return backend.load_fn(
+                backend.context,
+                io,
+                id,
+                allocator,
+                now_ns,
+            );
+        }
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
 
@@ -104,6 +160,15 @@ pub const Store = struct {
         values: *const Values,
         now_ns: i96,
     ) !bool {
+        if (self.backend) |backend| {
+            return backend.save_fn(
+                backend.context,
+                io,
+                id,
+                values,
+                now_ns,
+            );
+        }
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
         return self.saveLocked(id, values, now_ns, true);
@@ -112,6 +177,9 @@ pub const Store = struct {
     /// Refresh the idle deadline without copying values. Returns false when
     /// the session is no longer retained.
     pub fn touch(self: *Store, io: std.Io, id: SessionId, now_ns: i96) bool {
+        if (self.backend) |backend| {
+            return backend.touch_fn(backend.context, io, id, now_ns);
+        }
         self.mutex.lock(io) catch return false;
         defer self.mutex.unlock(io);
         const entry = self.sessions.get(id) orelse return false;
@@ -135,6 +203,16 @@ pub const Store = struct {
         now_ns: i96,
     ) !void {
         if (std.mem.eql(u8, &old_id, &new_id)) return error.SessionCollision;
+        if (self.backend) |backend| {
+            return backend.rotate_fn(
+                backend.context,
+                io,
+                old_id,
+                new_id,
+                values,
+                now_ns,
+            );
+        }
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
 
@@ -147,6 +225,9 @@ pub const Store = struct {
         _ = try self.saveLocked(new_id, values, now_ns, true);
     }
     pub fn remove(self: *Store, io: std.Io, id: SessionId) void {
+        if (self.backend) |backend| {
+            return backend.remove_fn(backend.context, io, id);
+        }
         self.mutex.lock(io) catch return;
         defer self.mutex.unlock(io);
         const entry = self.sessions.get(id) orelse return;
@@ -156,6 +237,10 @@ pub const Store = struct {
     }
 
     pub fn count(self: *Store, io: std.Io) usize {
+        if (self.backend) |backend| {
+            if (backend.count_fn) |count_fn| return count_fn(backend.context);
+            return 0;
+        }
         self.mutex.lock(io) catch return 0;
         defer self.mutex.unlock(io);
         return self.sessions.count();
@@ -180,6 +265,16 @@ pub const Store = struct {
 
     pub fn nowNanos(io: std.Io) i96 {
         return std.Io.Timestamp.now(io, .real).nanoseconds;
+    }
+
+    fn validateOptions(options: Options) !void {
+        if (options.max_sessions == 0 or
+            options.max_bytes_per_session == 0 or
+            options.idle_timeout.nanoseconds <= 0 or
+            options.absolute_timeout.nanoseconds <= 0)
+        {
+            return error.InvalidOptions;
+        }
     }
 
     fn saveLocked(

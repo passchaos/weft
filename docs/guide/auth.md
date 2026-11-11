@@ -162,6 +162,57 @@ Missing or invalid credentials receive `401` with `WWW-Authenticate: Bearer`.
 `required = false` lets requests without a token continue; an invalid token is
 still rejected. `OPTIONS` preflights are skipped by default.
 
+## Shared session storage
+
+The default `Store` is process-local. For multiple processes on a shared
+filesystem, use `weft.session.FileStore`:
+
+```zig
+var store = try weft.session.FileStore.init(allocator, sessions_dir, .{
+    .idle_timeout = .fromSeconds(24 * 60 * 60),
+    .absolute_timeout = .fromSeconds(7 * 24 * 60 * 60),
+});
+defer store.deinit();
+```
+
+Files are written with `Dir.createFileAtomic`; readers never see a partial
+update. Concurrent writers are last-writer-wins, and cross-process eviction is
+the deployment's responsibility.
+
+For Redis or SQL, implement `weft.session.Store.Backend` (`load`, `save`,
+`touch`, `remove`, `rotate`) and pass it to `Store.initBackend`. The backend
+owns serialization and must be thread-safe; the middleware still owns cookie
+handling, rotation, and destruction semantics.
+
+## CSRF forms
+
+Unsafe requests accept the token from `Options.header_name` first, then from
+`Options.form_field` for `application/x-www-form-urlencoded` and
+`multipart/form-data` bodies. Header-based APIs and HTML forms share the same
+session-bound token.
+
+## JWT key sets and OIDC
+
+`weft.jwt.KeySet.parse` reads a JWKS document containing RSA-2048 (e=65537),
+P-256, and Ed25519 keys. `KeySet.verify` selects the key by `kid` and verifies
+the token with the same claim rules as `jwt.verify`:
+
+```zig
+var keys = try weft.jwt.KeySet.parse(allocator, jwks_json);
+defer keys.deinit();
+
+var verified = try keys.verify(allocator, id_token, .{
+    .issuer = "https://issuer.example",
+    .audience = client_id,
+    .io = io,
+});
+defer verified.deinit();
+```
+
+This covers OIDC ID-token verification when the application fetches the JWKS
+and discovery document with its own HTTP client. Full OAuth authorization-code
+flows remain application code.
+
 ## Security notes
 
 - Set `secure = true` on session and CSRF cookies when serving TLS.

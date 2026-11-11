@@ -13,6 +13,10 @@ pub const Options = struct {
     limits: netz.http2.runtime.Limits = .{},
     /// Non-null selects a TLS/ALPN `h2` listener. Null uses cleartext h2c.
     tls: ?netz.http2.runtime.TlsListenOptions = null,
+    /// Serve gRPC-Web instead of native gRPC framing on this listener.
+    grpc_web: bool = false,
+    /// Optional CORS policy applied to gRPC-Web requests and preflights.
+    cors_policy: ?netz.grpc.web.cors.Policy = null,
     max_message_size: usize = 4 * 1024 * 1024,
     max_connections: usize = 64,
     max_requests_per_connection: usize = 1000,
@@ -37,6 +41,7 @@ pub const Context = struct {
     timeout: ?Timeout,
     accepted_encodings: CompressionAlgorithmSet,
     max_message_size: usize,
+    web_request: ?*netz.grpc.web.http2.Request = null,
     responded: bool = false,
 
     pub fn respond(self: *Context, message: []const u8) !void {
@@ -54,7 +59,11 @@ pub const Context = struct {
         if (self.responded) return error.AlreadyResponded;
         var value = options;
         value.request_accepted_encodings = self.accepted_encodings;
-        try self.connection.writeUnary(self.stream_id, value);
+        if (self.web_request) |request| {
+            try request.writeUnary(value);
+        } else {
+            try self.connection.writeUnary(self.stream_id, value);
+        }
         self.responded = true;
     }
 
@@ -65,12 +74,17 @@ pub const Context = struct {
         status_message: ?[]const u8,
     ) !void {
         if (self.responded) return error.AlreadyResponded;
-        try self.connection.writeUnary(self.stream_id, .{
+        const options = netz.grpc.UnaryResponseOptions{
             .status = status,
             .status_message = status_message,
             .trailers_only = true,
             .accepted_encodings = self.accepted_encodings,
-        });
+        };
+        if (self.web_request) |request| {
+            try request.writeUnary(options);
+        } else {
+            try self.connection.writeUnary(self.stream_id, options);
+        }
         self.responded = true;
     }
 
@@ -292,6 +306,10 @@ pub fn GrpcServer(comptime H: type) type {
                 semaphore.post(self.io);
             }
 
+            if (self.options.grpc_web) {
+                return self.connectionWorkerWeb(&owned);
+            }
+
             var served: usize = 0;
             while (served < self.options.max_requests_per_connection) {
                 var request = owned.readUnaryWithTimeout(
@@ -357,6 +375,87 @@ pub fn GrpcServer(comptime H: type) type {
             }
 
             owned.gracefulShutdownWithTimeout(.fromSeconds(1)) catch {};
+        }
+
+        fn connectionWorkerWeb(
+            self: *Self,
+            connection: *netz.grpc.runtime.ServerConnection,
+        ) std.Io.Cancelable!void {
+            var served: usize = 0;
+            while (served < self.options.max_requests_per_connection) {
+                var result = connection.readWebRequestWithTimeout(
+                    .{
+                        .max_message_size = self.options.max_message_size,
+                        .cors_policy = self.options.cors_policy,
+                    },
+                    self.options.idle_timeout,
+                ) catch |err| switch (err) {
+                    error.Timeout,
+                    error.ConnectionClosed,
+                    error.Canceled,
+                    => return,
+                    else => {
+                        logging_mod.logWarn(
+                            "weft",
+                            "grpc-web connection failed: {s}",
+                            .{@errorName(err)},
+                            .{ .err = @errorName(err) },
+                        );
+                        return;
+                    },
+                };
+                switch (result) {
+                    .handled => continue,
+                    .request => |*request| {
+                        defer request.deinit();
+                        served += 1;
+
+                        const handler = self.routes.get(request.request.path) orelse
+                            self.fallback_handler orelse {
+                            request.writeUnary(.{
+                                .status = .unimplemented,
+                                .status_message = "Method not found",
+                                .trailers_only = true,
+                            }) catch {};
+                            continue;
+                        };
+
+                        var context = Context{
+                            .connection = connection,
+                            .stream_id = request.request.stream_id,
+                            .path = request.request.path,
+                            .service = request.request.service,
+                            .method = request.request.method,
+                            .message = request.request.message.payload,
+                            .headers = request.request.headers,
+                            .timeout = request.request.timeout,
+                            .accepted_encodings = request.request.accepted_encodings,
+                            .max_message_size = self.options.max_message_size,
+                            .web_request = request,
+                        };
+                        handler(&self.app, &context) catch |err| {
+                            if (err == error.Canceled) return error.Canceled;
+                            if (!context.responded) {
+                                request.writeUnary(.{
+                                    .status = .internal,
+                                    .status_message = "Handler failed",
+                                    .trailers_only = true,
+                                }) catch {};
+                            }
+                            continue;
+                        };
+                        if (!context.responded) {
+                            request.writeUnary(.{
+                                .status = .internal,
+                                .status_message = "Handler did not respond",
+                                .trailers_only = true,
+                            }) catch {};
+                        }
+                    },
+                }
+            }
+
+            connection.gracefulShutdownWithTimeout(.fromSeconds(1)) catch {};
         }
     };
 }

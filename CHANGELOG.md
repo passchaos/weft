@@ -38,6 +38,19 @@ project follows semantic versioning for public application APIs.
   datagrams, streams, exact-path routing, and bounded buffers.
 - `weft.GrpcServer`: unary gRPC dispatch over h2c or TLS/ALPN `h2`, with
   status responses, per-connection call limits, and graceful GOAWAY.
+- `weft.GrpcStreamingServer`: streaming gRPC dispatch with collected request
+  messages and multi-message responses.
+- gRPC-Web mode for `GrpcServer` (`Options.grpc_web`) with optional CORS.
+- `weft.tls.ReloadableIdentity`: atomic TLS certificate rotation for HTTP/1
+  and HTTP/2 listeners via netz's identity provider.
+- `weft.session.FileStore` and `Store.Backend` for shared-filesystem or
+  external session storage; CSRF form-field tokens.
+- `weft.jwt` RS256/ES256 verification and `KeySet` JWKS parsing for OIDC ID
+  tokens.
+- `weft.middleware.Cache` bounded GET response cache.
+- `weft.cookie_signer.Signer` HMAC-SHA256 signed cookie values.
+- CSP templates with `{nonce}` rendering in `SecurityHeaders`.
+- Router `nest`, `merge`, named routes, and `urlFor` reverse URL generation.
 
 ### Changed
 

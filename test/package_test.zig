@@ -9,6 +9,8 @@ comptime {
     _ = @import("websocket_test.zig");
     _ = @import("webtransport_test.zig");
     _ = @import("grpc_test.zig");
+    _ = @import("grpc_streaming_test.zig");
+    _ = @import("grpc_web_test.zig");
     _ = @import("multipart_test.zig");
     _ = @import("openapi_mcp_test.zig");
 }

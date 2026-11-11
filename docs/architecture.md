@@ -68,7 +68,8 @@ Rules:
 | `src/http2_server.zig` | h2c and TLS/ALPN `h2` adapter, including `inline_bodyless` |
 | `src/http3_server.zig` | QUIC/TLS HTTP/3 adapter, including `inline_bodyless` |
 | `src/webtransport.zig` | WebTransport server adapter, datagrams, streams, and path dispatch |
-| `src/grpc.zig` | Unary gRPC adapter over h2c or TLS/ALPN `h2` |
+| `src/grpc.zig` | Unary and gRPC-Web adapter over h2c or TLS/ALPN `h2` |
+| `src/grpc_streaming.zig` | Streaming gRPC adapter |
 | `src/adapter/write.zig` | Shared response-body budget accounting |
 | `src/adapter/body.zig` | Shared buffered-body reader for HTTP/2 and HTTP/3 streams |
 | `src/adapter/header_view.zig` | Shared HPACK/QPACK to HTTP/1 header-view mapping |
@@ -80,6 +81,7 @@ Rules:
 | --- | --- |
 | `src/query.zig` | Percent-decoded query pairs |
 | `src/cookie.zig` | Request cookies and validated `Set-Cookie` serialization |
+| `src/cookie_signer.zig` | HMAC-SHA256 signed cookie values |
 | `src/accept.zig` | `Accept` negotiation |
 | `src/quality.zig` | Shared `q`-value parsing |
 | `src/precondition.zig` | RFC 9110 conditional request evaluation |
@@ -100,6 +102,11 @@ Rules:
 | `src/static/variants.zig` | Precompressed sidecar selection and freshness |
 | `src/sse.zig` | Server-sent event formatting |
 | `src/websocket.zig` | RFC 6455 session, upgrade, and handshake validation |
+| `src/session.zig` | Session middleware and request-local session view |
+| `src/session/store.zig` | Bounded in-memory session storage and backend seam |
+| `src/session/file_store.zig` | Atomic shared-filesystem session storage |
+| `src/csrf.zig` | Session-bound CSRF middleware |
+| `src/jwt.zig` | HS256/RS256/ES256/EdDSA verification and JWKS key sets |
 | `src/openapi.zig` | OpenAPI facade |
 | `src/openapi/types.zig` | Schema, operation, and document option types |
 | `src/openapi/render.zig` | OpenAPI JSON rendering |
@@ -109,6 +116,7 @@ Rules:
 | `src/mcp/types.zig` | Tools, resources, prompts, and options |
 | `src/mcp/server.zig` | JSON-RPC dispatch and registration |
 | `src/logging.zig` | kron access-log middleware and fallback diagnostics |
+| `src/tls.zig` | Reloadable TLS server identity provider |
 
 ### Middleware
 
@@ -125,6 +133,7 @@ its own file. Compression is the only middleware with submodules:
 | `src/middleware/compress/zstd.zig` | Buffered zstd and incremental encoder |
 | `src/middleware/compress/continuous.zig` | Shared continuous stream wrapper |
 | `src/middleware/jwt.zig` | RFC 6750 Bearer authentication |
+| `src/middleware/cache.zig` | Bounded GET response cache |
 
 ## Request lifecycle
 

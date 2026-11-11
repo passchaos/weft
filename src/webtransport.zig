@@ -19,6 +19,10 @@ pub const Options = struct {
     max_stream_bytes: usize = 1024 * 1024,
     /// Bound for one datagram sent by `Session.sendDatagram`.
     max_datagram_bytes: usize = 64 * 1024,
+    /// Optional absolute lifetime for one accepted session. Session methods
+    /// without an explicit timeout use this deadline, so a handler cannot
+    /// block forever on a stalled peer.
+    session_timeout: ?std.Io.Duration = null,
     drain_timeout: ?std.Io.Duration = .fromSeconds(5),
 };
 
@@ -30,6 +34,7 @@ pub const Session = struct {
     inner: *netz.webtransport.runtime.AcceptedHandshakeSession,
     max_stream_bytes: usize,
     max_datagram_bytes: usize,
+    deadline: ?std.Io.Clock.Timestamp = null,
 
     pub fn path(self: *const Session) []const u8 {
         return self.inner.request.request.path;
@@ -88,6 +93,9 @@ pub const Session = struct {
         if (payload.len > @min(self.max_datagram_bytes, negotiated)) {
             return error.DatagramTooLarge;
         }
+        if (self.deadline) |deadline| {
+            return self.inner.sendDatagramWithDeadline(payload, deadline);
+        }
         return self.inner.sendDatagram(payload);
     }
 
@@ -105,6 +113,9 @@ pub const Session = struct {
     }
 
     pub fn receiveDatagram(self: *Session, output: []u8) ![]u8 {
+        if (self.deadline) |deadline| {
+            return self.inner.receiveDatagramIntoWithDeadline(output, deadline);
+        }
         return self.inner.receiveDatagramInto(output);
     }
 
@@ -113,6 +124,16 @@ pub const Session = struct {
         output: []u8,
         timeout: std.Io.Duration,
     ) ![]u8 {
+        if (self.deadline) |deadline| {
+            const requested = std.Io.Clock.Timestamp.fromNow(
+                self.inner.h3.established.connection.endpoint.io,
+                .{ .raw = timeout, .clock = .awake },
+            );
+            return self.inner.receiveDatagramIntoWithDeadline(
+                output,
+                earlier(deadline, requested),
+            );
+        }
         return self.inner.receiveDatagramIntoWithTimeout(output, timeout);
     }
 
@@ -131,6 +152,16 @@ pub const Session = struct {
         fin: bool,
     ) !void {
         if (payload.len > self.max_stream_bytes) return error.StreamTooLarge;
+        if (self.deadline) |deadline| {
+            var committed: usize = 0;
+            return self.inner.sendStreamWithDeadline(
+                stream_id,
+                payload,
+                fin,
+                &committed,
+                deadline,
+            );
+        }
         return self.inner.sendStream(stream_id, payload, fin);
     }
 
@@ -151,6 +182,11 @@ pub const Session = struct {
     }
 
     pub fn receiveStream(self: *Session) !Stream {
+        if (self.deadline) |deadline| {
+            return .{
+                .inner = try self.inner.receiveStreamWithDeadline(deadline),
+            };
+        }
         return .{ .inner = try self.inner.receiveStream() };
     }
 
@@ -162,6 +198,9 @@ pub const Session = struct {
     }
 
     pub fn readStream(self: *Session, output: []u8) !StreamRead {
+        if (self.deadline) |deadline| {
+            return self.inner.readStreamWithDeadline(output, deadline);
+        }
         return self.inner.readStream(output);
     }
 
@@ -259,7 +298,9 @@ pub fn WebTransportServer(comptime H: type) type {
                 options.max_stream_bytes == 0 or
                 options.max_datagram_bytes == 0 or
                 (options.drain_timeout != null and
-                    options.drain_timeout.?.nanoseconds <= 0))
+                    options.drain_timeout.?.nanoseconds <= 0) or
+                (options.session_timeout != null and
+                    options.session_timeout.?.nanoseconds <= 0))
             {
                 return error.InvalidOptions;
             }
@@ -423,6 +464,13 @@ pub fn WebTransportServer(comptime H: type) type {
                 .inner = &owned,
                 .max_stream_bytes = self.options.max_stream_bytes,
                 .max_datagram_bytes = self.options.max_datagram_bytes,
+                .deadline = if (self.options.session_timeout) |timeout|
+                    std.Io.Clock.Timestamp.fromNow(self.io, .{
+                        .raw = timeout,
+                        .clock = .awake,
+                    })
+                else
+                    null,
             };
             handler(&self.app, &wrapper) catch |err| {
                 if (err == error.Canceled) return error.Canceled;
@@ -437,4 +485,11 @@ pub fn WebTransportServer(comptime H: type) type {
             owned.close(0, "") catch {};
         }
     };
+}
+
+fn earlier(
+    a: std.Io.Clock.Timestamp,
+    b: std.Io.Clock.Timestamp,
+) std.Io.Clock.Timestamp {
+    return if (a.raw.nanoseconds <= b.raw.nanoseconds) a else b;
 }

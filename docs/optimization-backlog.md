@@ -898,3 +898,41 @@ were previously left to user code.
   bounds messages, calls per connection, and idle time, and sends a graceful
   GOAWAY at the call limit. Package tests cover echo, reuse, unimplemented,
   handler failure, and trailers-only statuses.
+
+---
+
+## Production depth pass (2026-11-11)
+
+| ID | Priority | Item | Status |
+| --- | --- | --- | --- |
+| WEFT-P1-10 | P1 | TLS identity hot reload | done (SNI/ACME documented as external) |
+| WEFT-P1-11 | P1 | Shared session storage seam and file store | done |
+| WEFT-P1-12 | P1 | CSRF form-field tokens | done |
+| WEFT-P1-13 | P1 | JWT RS256/ES256 and JWKS/OIDC verification | done |
+| WEFT-P1-14 | P1 | Streaming gRPC and gRPC-Web | done |
+| WEFT-P1-15 | P1 | WebTransport session timeout | done |
+| WEFT-P1-16 | P1 | Response cache, signed cookies, CSP nonce, router composition | done |
+
+### Progress notes
+
+- **WEFT-P1-10**: netz HTTP/1 and HTTP/2 `TlsListenOptions` accept a
+  `ServerIdentityProvider`; `weft.tls.ReloadableIdentity` owns generations,
+  borrows one per handshake, and swaps certificates atomically. SNI
+  multi-certificate selection and ACME issuance remain external concerns.
+- **WEFT-P1-11**: `Store.Backend` is the shared-storage seam;
+  `session.FileStore` implements it with atomic per-session files for
+  shared-filesystem deployments. Redis/SQL backends implement the same
+  callbacks.
+- **WEFT-P1-12**: CSRF accepts the token from the configured header or from
+  URL-encoded/multipart form fields.
+- **WEFT-P1-13**: JWT verification covers RS256 (RSA-2048/e=65537), ES256,
+  HS256, and Ed25519. `jwt.KeySet` parses JWKS documents, selects by `kid`, and
+  verifies OIDC ID tokens with issuer/audience checks.
+- **WEFT-P1-14**: `GrpcStreamingServer` accepts duplex streams, collects
+  request messages, and writes multi-message responses. `GrpcServer` gains a
+  `grpc_web` mode with optional CORS.
+- **WEFT-P1-15**: `WebTransportServer.Options.session_timeout` caps every
+  session method that lacks an explicit deadline.
+- **WEFT-P1-16**: `middleware.Cache` is a bounded GET cache; `cookie_signer`
+  provides HMAC-signed values; `SecurityHeaders` renders CSP nonces; the router
+  gains `nest`, `merge`, named routes, and `urlFor`.

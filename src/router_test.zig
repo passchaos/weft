@@ -387,3 +387,41 @@ test "failed group registration releases ownership" {
         .{},
     );
 }
+
+test "nest, merge, and urlFor compose routers" {
+    const allocator = std.testing.allocator;
+    const Dummy = struct {
+        fn handle(ctx: *Ctx) anyerror!void {
+            _ = ctx;
+        }
+    };
+
+    var base = Router(void).init(allocator);
+    defer base.deinit();
+    var api = Router(void).init(allocator);
+    defer api.deinit();
+
+    try api.addRaw(.GET, "/users/:id", handler_mod.handler(Dummy.handle), .{
+        .name = "user",
+    });
+    try base.nest("/api", &api);
+
+    const nested = (try base.match(.GET, "/api/users/42", allocator)).?;
+    defer allocator.free(nested.params);
+    try std.testing.expectEqualStrings("/api/users/:id", nested.route.pattern);
+    try std.testing.expectEqualStrings("42", nested.params[0].value);
+
+    var extra = Router(void).init(allocator);
+    defer extra.deinit();
+    try extra.addRaw(.GET, "/health", handler_mod.handler(Dummy.handle), .{});
+    try base.merge(&extra);
+    const merged = (try base.match(.GET, "/health", allocator)).?;
+    defer allocator.free(merged.params);
+    try std.testing.expectEqualStrings("/health", merged.route.pattern);
+
+    const url = try base.urlFor(allocator, "user", &.{
+        .{ .name = "id", .value = "a b" },
+    });
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("/api/users/a%20b", url);
+}

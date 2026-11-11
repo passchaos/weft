@@ -57,6 +57,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const kron_mod = kron_dep.module("kron");
+    const vail_dep = b.dependency("vail", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const vail_mod = vail_dep.module("vail");
 
     const weft_mod = b.addModule("weft", .{
         .root_source_file = b.path("src/root.zig"),
@@ -66,6 +71,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "netz", .module = netz_mod },
             .{ .name = "vort", .module = vort_mod },
             .{ .name = "kron", .module = kron_mod },
+            .{ .name = "vail", .module = vail_mod },
         },
     });
 

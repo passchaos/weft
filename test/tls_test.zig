@@ -292,3 +292,98 @@ test "package: one TLS port negotiates h2 and http/1.1 via ALPN" {
     server.stop();
     try group.await(io);
 }
+
+test "package: TLS identity hot reload serves requests" {
+    const allocator = std.testing.allocator;
+
+    var backend = try netz.runtime.Backend.init(allocator);
+    defer backend.deinit();
+    const io = backend.io();
+
+    var certificate_der: [netz.tls.testing.certificate_der_len]u8 = undefined;
+    try std.base64.standard.Decoder.decode(
+        &certificate_der,
+        netz.tls.testing.certificate_base64,
+    );
+    const key_pair = try netz.tls.testing.serverKeyPair();
+
+    const first_chain = try allocator.alloc([]const u8, 1);
+    first_chain[0] = try allocator.dupe(u8, &certificate_der);
+    var reloadable = try weft.tls.ReloadableIdentity.init(io, allocator, .{
+        .allocator = allocator,
+        .certificate_chain = first_chain,
+        .key_pair = .{ .ecdsa_p256_sha256 = key_pair },
+    });
+    defer reloadable.deinit();
+
+    var server = try weft.Server(App).init(
+        io,
+        allocator,
+        .{
+            .address = .{ .ip4 = .loopback(0) },
+            .limits = .{
+                .max_head_bytes = 4096,
+                .max_body_bytes = 4096,
+                .max_request_arena_bytes = 64 * 1024,
+                .max_response_bytes = 64 * 1024,
+            },
+            .max_connections = 1,
+            .tls = .{
+                .identity = reloadable.serverIdentity(),
+                .identity_provider = reloadable.provider(),
+            },
+        },
+        .{},
+    );
+    defer server.deinit();
+
+    try server.router().get("/", home, .{});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    try group.concurrent(io, serveServer, .{&server});
+
+    const uri = try std.fmt.allocPrint(
+        allocator,
+        "https://127.0.0.1:{d}/",
+        .{server.address().ip4.port},
+    );
+    defer allocator.free(uri);
+
+    var first = try netz.http1.runtime.Client.requestUriTls(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+        .{ .verify_host = false },
+    );
+    defer first.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), first.response.status);
+
+    const second_chain = try allocator.alloc([]const u8, 1);
+    second_chain[0] = try allocator.dupe(u8, &certificate_der);
+    try reloadable.reload(.{
+        .allocator = allocator,
+        .certificate_chain = second_chain,
+        .key_pair = .{ .ecdsa_p256_sha256 = key_pair },
+    });
+
+    var second = try netz.http1.runtime.Client.requestUriTls(
+        allocator,
+        io,
+        uri,
+        .{},
+        .{ .max_head_bytes = 4096, .max_body_bytes = 4096 },
+        .{ .verify_host = false },
+    );
+    defer second.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 200), second.response.status);
+    try std.testing.expectEqualStrings(
+        "hello from weft",
+        second.response.body,
+    );
+
+    server.stop();
+    try group.await(io);
+}

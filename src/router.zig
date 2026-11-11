@@ -17,6 +17,8 @@ pub const max_path_segments = trie.max_path_segments;
 pub const max_allowed_methods = 16;
 
 pub const RouteOptions = struct {
+    /// Optional unique route name for `Router.urlFor`.
+    name: ?[]const u8 = null,
     /// Middleware runs in order before the route handler.
     middleware: []const Handler = &.{},
     /// Read the request body incrementally and deliver it through
@@ -48,6 +50,8 @@ pub const GroupOptions = struct {
 };
 
 pub const Route = struct {
+    /// Optional unique route name for reverse URL generation.
+    name: ?[]const u8 = null,
     /// null matches every method.
     method: ?netz.http1.Method,
     pattern: []const u8,
@@ -206,6 +210,7 @@ pub fn Router(comptime H: type) type {
                     combined_pattern,
                     handler,
                     .{
+                        .name = route_options.name,
                         .middleware = combined_middleware,
                         .streaming = route_options.streaming,
                         .max_body_bytes = route_options.max_body_bytes,
@@ -405,6 +410,7 @@ pub fn Router(comptime H: type) type {
 
         pub fn deinit(self: *@This()) void {
             for (self.all_routes.items) |route| {
+                if (route.name) |name| self.allocator.free(name);
                 self.allocator.free(route.pattern);
                 self.allocator.free(route.middleware);
                 if (route.capture_names.len != 0) {
@@ -440,6 +446,16 @@ pub fn Router(comptime H: type) type {
             if (route_options.max_body_bytes) |limit| {
                 if (limit == 0) return error.InvalidBodyLimit;
             }
+            if (route_options.name) |name| {
+                if (name.len == 0) return error.InvalidRouteName;
+                for (self.all_routes.items) |existing| {
+                    if (existing.name) |existing_name| {
+                        if (std.mem.eql(u8, existing_name, name)) {
+                            return error.DuplicateRouteName;
+                        }
+                    }
+                }
+            }
             try self.checkConflict(pattern, method);
 
             const route = try self.allocator.create(Route);
@@ -451,6 +467,11 @@ pub fn Router(comptime H: type) type {
                 route_options.middleware,
             );
             errdefer self.allocator.free(middleware_copy);
+            const name_copy: ?[]const u8 = if (route_options.name) |name|
+                try self.allocator.dupe(u8, name)
+            else
+                null;
+            errdefer if (name_copy) |name| self.allocator.free(name);
 
             var capture_names: []const []const u8 = &.{};
             // Function-scoped so a later allocation failure also releases the
@@ -480,6 +501,7 @@ pub fn Router(comptime H: type) type {
             }
 
             route.* = .{
+                .name = name_copy,
                 .method = method,
                 .pattern = pattern_copy,
                 .handler = handler,
@@ -522,6 +544,93 @@ pub fn Router(comptime H: type) type {
             if (!wildcard) {
                 try node.routes.append(self.allocator, route);
             }
+        }
+
+        /// Copy every route from `other` into this router.
+        pub fn merge(self: *@This(), other: *Self) !void {
+            for (other.all_routes.items) |route| {
+                try self.addRaw(route.method, route.pattern, route.handler, .{
+                    .name = route.name,
+                    .middleware = route.middleware,
+                    .streaming = route.streaming,
+                    .max_body_bytes = route.max_body_bytes,
+                    .timeout = route.timeout,
+                    .openapi = route.openapi,
+                    .inline_bodyless = route.inline_bodyless,
+                });
+            }
+        }
+
+        /// Mount every route from `other` under `prefix`.
+        pub fn nest(
+            self: *@This(),
+            prefix: []const u8,
+            other: *Self,
+        ) !void {
+            var nested_group = try self.group(prefix, .{});
+            for (other.all_routes.items) |route| {
+                try nested_group.addRaw(route.method, route.pattern, route.handler, .{
+                    .name = route.name,
+                    .middleware = route.middleware,
+                    .streaming = route.streaming,
+                    .max_body_bytes = route.max_body_bytes,
+                    .timeout = route.timeout,
+                    .openapi = route.openapi,
+                    .inline_bodyless = route.inline_bodyless,
+                });
+            }
+        }
+
+        /// Build a path for a named route. `:param` values are percent-encoded;
+        /// a trailing `*` value is inserted verbatim so it can span segments.
+        pub fn urlFor(
+            self: *const Self,
+            allocator: std.mem.Allocator,
+            name: []const u8,
+            params: []const Param,
+        ) ![]const u8 {
+            var route: ?*const Route = null;
+            for (self.all_routes.items) |candidate| {
+                if (candidate.name) |candidate_name| {
+                    if (std.mem.eql(u8, candidate_name, name)) {
+                        route = candidate;
+                        break;
+                    }
+                }
+            }
+            const matched = route orelse return error.UnknownRoute;
+            var writer = std.Io.Writer.Allocating.init(allocator);
+            errdefer writer.deinit();
+            try writer.writer.writeByte('/');
+            var segments = SegmentIterator{
+                .source = std.mem.trim(u8, matched.pattern, "/"),
+            };
+            var first = true;
+            while (segments.next()) |segment| {
+                if (!first) try writer.writer.writeByte('/');
+                first = false;
+                if (segment.text.len != 0 and segment.text[0] == ':') {
+                    const value = findParam(params, segment.text[1..]) orelse
+                        return error.MissingParam;
+                    try std.Uri.Component.percentEncode(
+                        &writer.writer,
+                        value,
+                        pathComponentChar,
+                    );
+                } else if (std.mem.eql(u8, segment.text, "*")) {
+                    const value = findParam(params, "*") orelse
+                        return error.MissingParam;
+                    try writer.writer.writeAll(value);
+                } else {
+                    try writer.writer.writeAll(segment.text);
+                }
+            }
+            if (matched.pattern.len > 1 and
+                matched.pattern[matched.pattern.len - 1] == '/')
+            {
+                try writer.writer.writeByte('/');
+            }
+            return writer.toOwnedSlice();
         }
 
         pub fn get(
@@ -1070,6 +1179,20 @@ fn normalizeGroupPrefix(prefix: []const u8) ![]const u8 {
         }
     }
     return trimmed;
+}
+
+fn findParam(params: []const Param, name: []const u8) ?[]const u8 {
+    for (params) |param| {
+        if (std.mem.eql(u8, param.name, name)) return param.value;
+    }
+    return null;
+}
+
+fn pathComponentChar(char: u8) bool {
+    return switch (char) {
+        'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
+        else => false,
+    };
 }
 
 fn joinPath(

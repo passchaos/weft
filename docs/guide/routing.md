@@ -32,3 +32,29 @@ handlers.
 - Path depth, captures per route, allowed methods, and middleware length are
   all bounded.
 
+
+## Named routes and composition
+
+`RouteOptions.name` assigns a unique name for reverse URL generation. `nest`
+mounts every route from another router under a prefix, and `merge` copies them
+at the same paths:
+
+```zig
+var api = weft.Router(App).init(gpa);
+defer api.deinit();
+try api.get("/users/:id", user, .{ .name = "user" });
+
+var router = weft.Router(App).init(gpa);
+defer router.deinit();
+try router.nest("/api", &api);
+
+const url = try router.urlFor(gpa, "user", &.{
+    .{ .name = "id", .value = "a b" },
+});
+// "/api/users/a%20b"
+```
+
+`:param` values are percent-encoded; a trailing `*` value is inserted verbatim
+so it can span segments. Duplicate route names are rejected at registration.
+Host-based routing, trailing-slash redirects, and SPA fallback helpers remain
+application-level concerns.
