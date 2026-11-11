@@ -27,6 +27,8 @@ These are kept in sync with the current tree.
 | [guide/routing.md](guide/routing.md) | Segment trie, precedence, groups, automatic `OPTIONS`, fallbacks |
 | [guide/middleware.md](guide/middleware.md) | Middleware contract, order, built-ins, access logging |
 | [guide/static-files.md](guide/static-files.md) | Validators, ranges, index files, precompressed sidecars |
+| [guide/auth.md](guide/auth.md) | Sessions, CSRF, JWT, and Bearer authentication |
+| [guide/webtransport-grpc.md](guide/webtransport-grpc.md) | WebTransport sessions and unary gRPC adapters |
 | [guide/openapi-mcp.md](guide/openapi-mcp.md) | OpenAPI 3.1 documents and the MCP Streamable HTTP server |
 | [guide/limits-lifecycle.md](guide/limits-lifecycle.md) | `Limits`, connection bounds, cooperative shutdown |
 

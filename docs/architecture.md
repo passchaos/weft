@@ -67,6 +67,8 @@ Rules:
 | `src/server.zig` | HTTP/1.1 cleartext, TLS, and Unix-socket adapter |
 | `src/http2_server.zig` | h2c and TLS/ALPN `h2` adapter, including `inline_bodyless` |
 | `src/http3_server.zig` | QUIC/TLS HTTP/3 adapter, including `inline_bodyless` |
+| `src/webtransport.zig` | WebTransport server adapter, datagrams, streams, and path dispatch |
+| `src/grpc.zig` | Unary gRPC adapter over h2c or TLS/ALPN `h2` |
 | `src/adapter/write.zig` | Shared response-body budget accounting |
 | `src/adapter/body.zig` | Shared buffered-body reader for HTTP/2 and HTTP/3 streams |
 | `src/adapter/header_view.zig` | Shared HPACK/QPACK to HTTP/1 header-view mapping |
@@ -122,6 +124,7 @@ its own file. Compression is the only middleware with submodules:
 | `src/middleware/compress/brotli.zig` | Buffered Brotli and incremental encoder |
 | `src/middleware/compress/zstd.zig` | Buffered zstd and incremental encoder |
 | `src/middleware/compress/continuous.zig` | Shared continuous stream wrapper |
+| `src/middleware/jwt.zig` | RFC 6750 Bearer authentication |
 
 ## Request lifecycle
 
@@ -173,6 +176,11 @@ owner; all other requests use bounded handler tasks.
 
 All adapters share `Router`, `Ctx`, middleware, decoded inputs, `Limits`, and
 error mapping.
+
+`WebTransportServer` and `GrpcServer` are separate listeners rather than HTTP
+route adapters: WebTransport dispatches sessions by CONNECT path, and gRPC
+dispatches unary calls by method path. They reuse netz's QUIC/HTTP/3 and
+HTTP/2 runtimes but do not enter the `Ctx` middleware chain.
 
 ## Dependency surface
 

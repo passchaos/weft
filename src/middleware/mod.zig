@@ -15,6 +15,10 @@ pub const metrics = @import("metrics.zig").metrics;
 pub const RateLimit = @import("rate_limit.zig").RateLimit;
 pub const Etag = @import("etag.zig").Etag;
 pub const AltSvc = @import("alt_svc.zig").AltSvc;
+pub const Bearer = @import("jwt.zig").Bearer;
+pub const bearer = @import("jwt.zig").from;
+pub const Session = @import("../session.zig").Middleware;
+pub const Csrf = @import("../csrf.zig").Middleware;
 
 comptime {
     _ = @import("request_id.zig");
@@ -29,4 +33,5 @@ comptime {
     _ = @import("rate_limit.zig");
     _ = @import("etag.zig");
     _ = @import("alt_svc.zig");
+    _ = @import("jwt.zig");
 }

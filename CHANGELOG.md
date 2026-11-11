@@ -28,6 +28,16 @@ project follows semantic versioning for public application APIs.
 - RFC 8441 WebSocket over HTTP/2 extended CONNECT, gated by
   `Limits.http2_enable_connect_protocol`, with a stream-agnostic frame
   transport in netz.
+- `weft.session`: bounded in-memory session store, middleware, rotation,
+  destruction, and typed/JSON values.
+- `weft.csrf`: session-bound CSRF middleware with safe-method tokens,
+  `x-csrf-token` validation, and optional Origin allow lists.
+- `weft.jwt`: HS256 and EdDSA compact JWS encode/verify with standard-claim
+  validation, plus `weft.middleware.Bearer`.
+- `weft.WebTransportServer`: WebTransport sessions over QUIC/HTTP/3 with
+  datagrams, streams, exact-path routing, and bounded buffers.
+- `weft.GrpcServer`: unary gRPC dispatch over h2c or TLS/ALPN `h2`, with
+  status responses, per-connection call limits, and graceful GOAWAY.
 
 ### Changed
 

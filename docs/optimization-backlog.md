@@ -859,3 +859,42 @@ initial structure backlog.
   because their stream stays open for WebSocket frames. Package tests echo a
   message with `netz.websocket.runtime.H2Client` and
   `netz.websocket.runtime.h3.Client`.
+
+---
+
+## Authentication and realtime adapters (2026-11-11)
+
+This pass adds the application-security and realtime protocol surfaces that
+were previously left to user code.
+
+| ID | Priority | Item | Status |
+| --- | --- | --- | --- |
+| WEFT-P1-05 | P1 | Bounded session store and middleware | done |
+| WEFT-P1-06 | P1 | CSRF middleware with Origin allow lists | done |
+| WEFT-P1-07 | P1 | JWT HS256/EdDSA helpers and Bearer middleware | done |
+| WEFT-P1-08 | P1 | WebTransport server adapter (datagrams and streams) | done |
+| WEFT-P1-09 | P1 | Unary gRPC server adapter | done |
+
+### Progress notes
+
+- **WEFT-P1-05**: `weft.session.Store` keeps a bounded, process-local map with
+  idle and absolute deadlines, LRU-style eviction, value-size limits, id
+  rotation, and destruction. `Middleware` copies values into the request arena
+  and writes them back after the handler chain, so no shared pointer escapes.
+- **WEFT-P1-06**: `weft.csrf.Middleware` stores a synchronizer token in the
+  session, exposes it through `weft.csrf.from(ctx)`, sets a non-HttpOnly
+  double-submit cookie on safe methods, and requires `x-csrf-token` plus an
+  optional exact `Origin` match on unsafe methods.
+- **WEFT-P1-07**: `weft.jwt` signs and verifies compact JWS with HS256 and
+  Ed25519, validates `exp`/`nbf`/`iss`/`aud`, rejects algorithm mismatches, and
+  exposes `weft.middleware.Bearer` for RFC 6750 credentials.
+- **WEFT-P1-08**: `weft.WebTransportServer(H)` wraps netz's QUIC/TLS
+  WebTransport handshake runtime, dispatches exact CONNECT paths, and exposes
+  datagrams, whole-stream and incremental reads, stream writes, close, and
+  drain through `WebTransportSession`. Buffers are bounded by
+  `max_stream_bytes` and `max_datagram_bytes`.
+- **WEFT-P1-09**: `weft.GrpcServer(H)` wraps netz's HTTP/2 gRPC runtime for
+  unary calls over h2c or TLS/ALPN `h2`, maps handler outcomes to gRPC status,
+  bounds messages, calls per connection, and idle time, and sends a graceful
+  GOAWAY at the call limit. Package tests cover echo, reuse, unimplemented,
+  handler failure, and trailers-only statuses.

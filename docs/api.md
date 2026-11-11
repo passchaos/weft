@@ -54,6 +54,8 @@ Everything in this document is exported by `src/root.zig` and available as
 | `Server(H)` / `Options` | HTTP/1.1 cleartext, TLS, and Unix-socket adapter |
 | `Http2Server(H)` / `Http2Options` | h2c and TLS/ALPN `h2` adapter; optional `alpn_http1` TLS fallback and `h2c_upgrade` cleartext mode |
 | `Http3Server(H)` / `Http3Options` | QUIC/TLS HTTP/3 adapter |
+| `WebTransportServer(H)` / `WebTransportSession` | QUIC/TLS WebTransport sessions, datagrams, and streams |
+| `GrpcServer(H)` / `grpc.Context` | Unary gRPC over h2c or TLS/ALPN `h2` |
 
 ## Request data
 
@@ -76,6 +78,11 @@ Everything in this document is exported by `src/root.zig` and available as
 | `stream` | Streaming response helpers |
 | `sse` | Server-sent event writer |
 | `websocket` | WebSocket session and upgrade types |
+| `session` | Bounded session store, middleware, and request-local `Session` view |
+| `csrf` | Session-bound CSRF middleware and `Token` |
+| `jwt` | HS256/EdDSA encode and verify helpers |
+| `webtransport` | WebTransport server adapter types |
+| `grpc` | gRPC status, context, and server adapter types |
 | `middleware` | Built-in middleware namespace |
 | `logging` | kron access-log middleware and fallback diagnostics |
 | `openapi` | OpenAPI 3.1 types, renderer, and `Document` |
@@ -88,7 +95,8 @@ Everything in this document is exported by `src/root.zig` and available as
 - `requestId`, `serverHeader`, `log`, `Log`, `LogFormat`
 - `BasicAuth`, `SecurityHeaders`, `securityHeaders`, `Cors`
 - `recoverHandler`, `Compress`, `compress`
-- `Metrics`, `metrics`, `RateLimit`, `Etag`, `AltSvc`
+- `Metrics`, `metrics`, `RateLimit`, `Etag`, `AltSvc`, `Bearer`, `bearer`,
+  `Session`, `Csrf`
 
 ## Runtime dependency
 

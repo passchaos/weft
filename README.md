@@ -114,10 +114,11 @@ allocation.
   ETag, Alt-Svc, Prometheus metrics, and bounded per-key rate limiting. See
   [docs/guide/middleware.md](docs/guide/middleware.md).
 - **Adapters** — HTTP/1.1 cleartext, TLS, Unix sockets, h2c, TLS/ALPN `h2`,
-  QUIC/TLS HTTP/3, and HTTP/1.1 WebSocket upgrades. A TLS listener can
-  negotiate `h2` and `http/1.1` on one port, and the cleartext HTTP/2 listener
-  can accept `Upgrade: h2c`. All share the same `Router`, `Ctx`, middleware,
-  and limits. See [docs/guide/adapters.md](docs/guide/adapters.md).
+  QUIC/TLS HTTP/3, and WebSocket upgrades over HTTP/1.1 and HTTP/2/HTTP/3
+  extended CONNECT. A TLS listener can negotiate `h2` and `http/1.1` on one
+  port, and the cleartext HTTP/2 listener can accept `Upgrade: h2c`. All share
+  the same `Router`, `Ctx`, middleware, and limits. See
+  [docs/guide/adapters.md](docs/guide/adapters.md).
 - **Static files** — validators, RFC 9110 preconditions, single and multipart
   ranges, index files, MIME detection, traversal-safe paths, and
   precompressed `.br`/`.zst`/`.gz` sidecars. See
@@ -125,6 +126,13 @@ allocation.
 - **OpenAPI and MCP** — OpenAPI 3.1 documents rendered from route metadata,
   and a Model Context Protocol server over Streamable HTTP. See
   [docs/guide/openapi-mcp.md](docs/guide/openapi-mcp.md).
+- **Authentication** — bounded in-memory sessions, session-bound CSRF
+  protection, HS256/EdDSA JWT signing and verification, and Bearer-token
+  middleware. See [docs/guide/auth.md](docs/guide/auth.md).
+- **WebTransport and gRPC** — WebTransport sessions with datagrams and
+  streams over QUIC/HTTP/3, and unary gRPC services over h2c or TLS/ALPN
+  `h2`. See
+  [docs/guide/webtransport-grpc.md](docs/guide/webtransport-grpc.md).
 - **Budgets and lifecycle** — every request, response, middleware chain,
   multipart count, query count, and connection count is bounded by `Limits`;
   shutdown is cooperative and drain-bounded. See
@@ -196,8 +204,10 @@ so the status is not lost to a TCP RST.
   CONNECT) receive `501`; weft exposes no tunnel writer.
 - Handlers cannot be preempted while running CPU-bound code without reaching a
   cancellation point.
-- WebSocket upgrades work on HTTP/1.1 and HTTP/2 extended CONNECT. HTTP/3
-extended CONNECT needs a netz accept path and currently returns `400`.
+- WebSocket upgrades work on HTTP/1.1 and HTTP/2/HTTP/3 extended CONNECT.
+  Extended CONNECT requires the peer to advertise
+  `SETTINGS_ENABLE_CONNECT_PROTOCOL`; `permessage-deflate` is not negotiated on
+  the extended CONNECT paths.
 - `Etag` hashes buffered responses. Streamed responses are hashed only when
   `Etag.max_stream_bytes` opts in and the producer declares a known length
   within that cap.

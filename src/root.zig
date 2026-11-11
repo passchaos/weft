@@ -72,6 +72,14 @@ pub const middleware = @import("middleware/mod.zig");
 pub const logging = @import("logging.zig");
 pub const openapi = @import("openapi.zig");
 pub const mcp = @import("mcp.zig");
+pub const jwt = @import("jwt.zig");
+pub const session = @import("session.zig");
+pub const csrf = @import("csrf.zig");
+pub const webtransport = @import("webtransport.zig");
+pub const WebTransportServer = @import("webtransport.zig").WebTransportServer;
+pub const WebTransportSession = @import("webtransport.zig").Session;
+pub const grpc = @import("grpc.zig");
+pub const GrpcServer = @import("grpc.zig").GrpcServer;
 
 comptime {
     _ = @import("limits.zig");
@@ -127,6 +135,12 @@ comptime {
     _ = @import("mcp/types.zig");
     _ = @import("mcp/server.zig");
     _ = @import("mcp_test.zig");
+    _ = @import("jwt.zig");
+    _ = @import("session.zig");
+    _ = @import("session/store.zig");
+    _ = @import("csrf.zig");
+    _ = @import("webtransport.zig");
+    _ = @import("grpc.zig");
     _ = @import("adapter/body.zig");
     _ = @import("adapter/header_view.zig");
     _ = @import("adapter/response.zig");
